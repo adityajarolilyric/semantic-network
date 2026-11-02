@@ -1,0 +1,49 @@
+name: semantic
+
+services:
+  sources-clickhouse:
+    restart: unless-stopped
+    image: clickhouse/clickhouse-server:25.3
+    ports:
+      - "127.0.0.1:${METADATA_CLICKHOUSE_PORT:-8123}:8123"
+    environment:
+      CLICKHOUSE_DB: ${METADATA_CLICKHOUSE_DATABASE:-semantic}
+      CLICKHOUSE_USER: ${METADATA_CLICKHOUSE_USERNAME:-default}
+      CLICKHOUSE_PASSWORD: ${METADATA_CLICKHOUSE_PASSWORD:-semantic}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - sources-clickhouse:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --user \"$$CLICKHOUSE_USER\" --password \"$$CLICKHOUSE_PASSWORD\" --query 'SELECT 1'"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+  metadata-mongo:
+    restart: unless-stopped
+    image: mongo:8.0
+    command: ["mongod", "--replSet", "metadata-rs", "--bind_ip_all", "--port", "27018"]
+    ports:
+      - "127.0.0.1:${METADATA_MONGO_PORT:-27018}:27018"
+    volumes:
+      - metadata-mongo:/data/db
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          mongosh --quiet --port 27018 --eval
+          'try { if (!rs.status().ok) quit(1); }
+          catch (e) { rs.initiate({_id:"metadata-rs",members:[{_id:0,host:"localhost:27018"}]}); quit(1); }
+          if (!db.hello().isWritablePrimary) quit(1);'
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+volumes:
+  metadata-mongo:
+    name: ${METADATA_MONGO_VOLUME:-backend_v1_metadata-mongo}
+  sources-clickhouse:
+    name: ${METADATA_CLICKHOUSE_VOLUME:-backend_v1_sources-clickhouse}

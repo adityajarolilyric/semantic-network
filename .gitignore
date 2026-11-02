@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.venv/
+.env
+.DS_Store
+*.local
+.vite/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.json

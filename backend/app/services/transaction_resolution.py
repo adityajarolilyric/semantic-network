@@ -1,0 +1,434 @@
+import asyncio
+from contextlib import suppress
+from datetime import timedelta
+from uuid import uuid4
+
+from ..core.errors import Conflict, MetadataError
+from ..engine.date_range_resolution import calendar_source_ids
+from ..engine.contracts import Check, ExecutionPlan, RelationSchema
+from ..engine.measure_compiler import MeasureCompiler
+from ..engine.relationships import Coordinate, LevelRelationshipAnalyzer
+from ..engine.transaction_resolution import (
+    TransactionResolutionPlanner,
+    prepare_resolution_profiles,
+)
+from ..warehouse.repository import quote_identifier as q
+from .base import Service, now, scope
+
+
+class TransactionResolutionService(Service):
+    def __init__(self, store, settings, planning, managed):
+        super().__init__(store, settings.max_objects_per_revision)
+        self.settings, self.planning, self.managed = settings, planning, managed
+        self.executor, self.warehouse = planning.executor, planning.executor.warehouse
+
+    async def options(self, model, revision, level_id):
+        repo = self.store.repository
+        objects = await self.objects(repo, model, revision)
+        level = await self.require(
+            repo,
+            "semantic_objects",
+            {**scope(model, revision), "objectId": level_id, "kind": "planningLevel"},
+            "Native planning level",
+        )
+        rel = LevelRelationshipAnalyzer(objects)
+        binding = await repo.get(
+            "engine_artifact_bindings",
+            {
+                **scope(model, revision),
+                "resourceKind": "planningLevel",
+                "resourceId": level_id,
+            },
+        )
+        artifact = (
+            await repo.get("engine_artifacts", {"artifactId": binding["artifactId"]})
+            if binding
+            else None
+        )
+        names = {c["columnId"]: c["name"] for c in (artifact or {}).get("columns", [])}
+        names.update(
+            {
+                c["grainColumnId"]: c["name"]
+                for c in level["definition"]["grain"]["columns"]
+            }
+        )
+        names.update(
+            {
+                c["columnId"]: c["name"]
+                for c in level["definition"].get("populationAttributes", [])
+            }
+        )
+        targets = [
+            {
+                "target": {"dimensionId": None, "columnId": cid},
+                "label": "Native · " + names.get(cid, cid),
+            }
+            for cid in rel.outputs(level_id)
+            if cid in names
+        ]
+        for dim in rel.dimensions.values():
+            exposed = set(dim["definition"]["keyColumnIds"]) | set(
+                dim["definition"]["attributeColumnIds"]
+            )
+            for col in dim["definition"]["columns"]:
+                coordinate = Coordinate(
+                    frozenset(
+                        {
+                            ("dimension", dim["objectId"], col["columnId"]),
+                            (
+                                "source",
+                                dim["definition"]["sourceId"],
+                                col["sourceColumnId"],
+                            ),
+                        }
+                    )
+                )
+                if col["columnId"] in exposed and rel.resolve(level_id, coordinate):
+                    targets.append(
+                        {
+                            "target": {
+                                "dimensionId": dim["objectId"],
+                                "columnId": col["columnId"],
+                            },
+                            "label": dim["name"] + " · " + col["displayName"],
+                        }
+                    )
+        calendars = []
+        outputs = rel.outputs(level_id)
+        for dim in rel.dimensions.values():
+            d = dim["definition"]
+            if not dim["isTimeDim"] or d["time"]["baseGrain"] != "day":
+                continue
+            allowed = (
+                set(d["keyColumnIds"])
+                | set(d["attributeColumnIds"])
+                | {d["time"]["dateColumnId"]}
+            )
+            columns = [c for c in d["columns"] if c["columnId"] in allowed]
+            suggestions = {}
+            for key in level["definition"]["grain"]["keyIds"]:
+                for col in columns:
+                    if outputs[key].tokens & {
+                        ("dimension", dim["objectId"], col["columnId"]),
+                        ("source", d["sourceId"], col["sourceColumnId"]),
+                    }:
+                        suggestions[key] = col["columnId"]
+            calendars.append(
+                {
+                    "dimensionId": dim["objectId"],
+                    "name": dim["name"],
+                    "dateColumnId": d["time"]["dateColumnId"],
+                    "dateColumnName": next(
+                        c["displayName"]
+                        for c in columns
+                        if c["columnId"] == d["time"]["dateColumnId"]
+                    ),
+                    "columns": [
+                        {"columnId": c["columnId"], "label": c["displayName"]}
+                        for c in columns
+                    ],
+                    "suggestions": suggestions,
+                }
+            )
+        return {
+            "targets": targets,
+            "calendars": calendars,
+            "timeGrainIds": [
+                k for k in level["definition"]["grain"]["keyIds"] if outputs[k].is_time
+            ],
+        }
+
+    async def schema(self, model, revision, transaction_id):
+        repo = self.store.repository
+        objects = await self.effective(
+            repo, model, revision, await self.objects(repo, model, revision)
+        )
+        tx = next(
+            (
+                o
+                for o in objects
+                if o["objectId"] == transaction_id and o["kind"] == "transaction"
+            ),
+            None,
+        )
+        if not tx:
+            raise MetadataError("not_found", "Transaction was not found.", 404)
+        source = next(
+            o for o in objects if o["objectId"] == tx["definition"]["sourceId"]
+        )
+        if tx["definition"].get("mappingMode") != "resolve_multi_grain":
+            return {"columns": source["definition"]["columns"]}
+        planner = TransactionResolutionPlanner(
+            objects, tx, source["definition"]["columns"]
+        )
+        return {
+            "columns": planner.schema(),
+            "valueColumnIds": [
+                v["sourceColumnId"] for v in tx["definition"]["resolution"]["values"]
+            ],
+        }
+
+    async def preview(self, model, revision, payload):
+        read_id = "read_" + uuid4().hex
+
+        async def snapshot(repo):
+            rev = await self.require(
+                repo, "semantic_revisions", scope(model, revision), "Revision"
+            )
+            objects = await self.objects(repo, model, revision)
+            candidate = {**payload.model_dump(), **scope(model, revision), "version": 0}
+            if candidate["definition"]["mappingMode"] != "resolve_multi_grain":
+                raise MetadataError(
+                    "resolution_required",
+                    "Enable Resolve multi grain to preview resolved assignments.",
+                )
+            objects = [o for o in objects if o["objectId"] != candidate["objectId"]] + [
+                candidate
+            ]
+            self.validate(
+                await self.effective(repo, model, revision, objects),
+                rev["basePlanningLevelId"],
+            )
+            by_id = {o["objectId"]: o for o in objects}
+            level = by_id[candidate["definition"]["planningLevelId"]]
+            captured = await self.planning.capture(
+                repo, model, revision, level, objects
+            )
+            binding = await self.require(
+                repo,
+                "engine_artifact_bindings",
+                {
+                    **scope(model, revision),
+                    "resourceKind": "planningLevel",
+                    "resourceId": level["objectId"],
+                },
+                "Built native planning table",
+            )
+            if (
+                binding["definitionHash"] != self.planning.definition_hash(level)
+                or binding["inputHash"] != captured["inputHash"]
+            ):
+                raise Conflict(
+                    "Build the current native planning table before previewing resolution."
+                )
+            population = await self.require(
+                repo,
+                "engine_artifacts",
+                {"artifactId": binding["artifactId"]},
+                "Native population",
+            )
+            for sid in [
+                candidate["definition"]["sourceId"],
+                *calendar_source_ids(objects, candidate),
+            ]:
+                fake = {
+                    "objectId": "capture",
+                    "definition": {
+                        "population": {
+                            "operation": "source",
+                            "sourceId": sid,
+                        },
+                        "dimensionBindings": [],
+                    },
+                }
+                source_capture = await self.planning.capture(
+                    repo, model, revision, fake, objects
+                )
+                captured["relations"].update(source_capture["relations"])
+                captured["managed"].update(source_capture["managed"])
+            managed = {
+                sid: artifact
+                for sid, artifact in captured["relations"].items()
+                if sid in captured["managed"]
+            }
+            inputs = {a["artifactId"]: a for a in [population, *managed.values()]}
+            for aid in inputs:
+                current = await self.require(
+                    repo, "engine_artifacts", {"artifactId": aid}, "Resolution input"
+                )
+                if current["state"] != "ready":
+                    raise Conflict("A resolution input was retired. Retry.")
+                await repo.replace(
+                    "engine_artifacts",
+                    {"artifactId": aid},
+                    {**current, "pinVersion": current.get("pinVersion", 0) + 1},
+                )
+                await repo.insert(
+                    "engine_read_leases",
+                    {
+                        "readId": read_id,
+                        "artifactId": aid,
+                        "expiresAt": now() + timedelta(seconds=180),
+                    },
+                )
+            return (
+                objects,
+                candidate,
+                level,
+                population,
+                managed,
+                captured["managed"],
+                list(inputs),
+                rev["version"],
+            )
+
+        (
+            objects,
+            tx,
+            level,
+            population,
+            managed,
+            definitions,
+            aids,
+            version,
+        ) = await self.store.transaction(snapshot)
+
+        async def renew():
+            while True:
+                await asyncio.sleep(15)
+
+                async def update(repo):
+                    for aid in aids:
+                        identity = {"readId": read_id, "artifactId": aid}
+                        lease = await repo.get("engine_read_leases", identity)
+                        if not lease or lease["expiresAt"] <= now():
+                            raise Conflict("Resolution read lease expired. Retry.")
+                        await repo.replace(
+                            "engine_read_leases",
+                            identity,
+                            {**lease, "expiresAt": now() + timedelta(seconds=180)},
+                        )
+
+                await self.store.transaction(update)
+
+        heartbeat = asyncio.create_task(renew())
+        try:
+            await self.planning.storage.ensure_inputs([population])
+            by_id = {o["objectId"]: o for o in objects}
+            for sid, artifact in managed.items():
+                source = by_id[sid]
+                await self.managed.executor.inspect(source)
+                compiled = self.managed.compiler.compile(
+                    self.managed.planner.plan(
+                        source,
+                        self.managed.input_definition(definitions[sid]["definition"]),
+                    )
+                )
+                await self.managed.executor.verify(artifact, compiled)
+                await self.managed.executor.checks(compiled)
+            profiles = await prepare_resolution_profiles(
+                self.warehouse,
+                [
+                    o
+                    for o in objects
+                    if o["kind"] != "transaction" or o["objectId"] == tx["objectId"]
+                ],
+                managed,
+                self.settings.resolution_max_profiles,
+                self.executor.execution_settings(),
+            )
+            compiler = MeasureCompiler(
+                self.settings.clickhouse_database,
+                objects,
+                {level["objectId"]: population},
+                managed,
+                level["objectId"],
+                resolution_profiles=profiles,
+                resolution_max_rows=self.settings.resolution_max_rows,
+            )
+            compiler.max_nodes = self.settings.measure_max_nodes
+            resolved = compiler.resolve_transaction(tx["objectId"])
+            from sqlglot import parse_one
+
+            sql = compiler.with_sql("SELECT * FROM " + q(resolved.node))
+            if len(sql.encode()) > self.settings.measure_max_sql_bytes:
+                raise MetadataError(
+                    "resolution_sql_limit",
+                    "The resolution plan is too complex. Reduce matching profiles.",
+                )
+            checks = tuple(
+                Check(c.code, compiler.with_sql(c.sql)) for c in compiler.assertions
+            )
+            compiled = ExecutionPlan(
+                parse_one(sql, read="clickhouse"),
+                checks,
+                RelationSchema(tuple(resolved.columns)),
+            )
+            await self.executor.checks(compiled)
+
+            def execute(connect):
+                client = connect()
+                rows = client.query(
+                    sql + " ORDER BY ALL LIMIT 100",
+                    settings=self.executor.execution_settings(),
+                ).result_rows
+
+                def count(node):
+                    return int(
+                        client.command(
+                            compiler.with_sql("SELECT count() FROM " + q(node)),
+                            settings=self.executor.execution_settings(),
+                        )
+                    )
+
+                input_rows = int(
+                    client.command(
+                        "SELECT count() FROM "
+                        + self.warehouse.qualify(
+                            managed[tx["definition"]["sourceId"]]["physicalName"]
+                        ),
+                        settings=self.executor.execution_settings(),
+                    )
+                )
+                matched = count(resolved.matches)
+                total = count(resolved.node)
+                latest = sum(count(node) for node in resolved.latest_nodes)
+                return [[self.warehouse.cell(v) for v in row] for row in rows], {
+                    "inputRows": input_rows,
+                    "profiles": len(profiles[tx["objectId"]]),
+                    "matchedIntersections": matched,
+                    "resolvedRows": total,
+                    "overwrittenMatches": matched - total,
+                    "shadowedAssignments": input_rows - latest,
+                }
+
+            rows, diagnostics = await self.warehouse.run(execute)
+            await self.executor.checks(compiled)
+
+            async def verify(repo):
+                rev = await self.require(
+                    repo, "semantic_revisions", scope(model, revision), "Revision"
+                )
+                if rev["version"] != version:
+                    raise Conflict(
+                        "Metadata changed while resolving. Refresh and preview again."
+                    )
+                for aid in aids:
+                    lease = await repo.get(
+                        "engine_read_leases", {"readId": read_id, "artifactId": aid}
+                    )
+                    if not lease or lease["expiresAt"] <= now():
+                        raise Conflict("Resolution read lease expired. Retry.")
+
+            await self.store.transaction(verify)
+            if heartbeat.done():
+                heartbeat.result()
+            return {
+                "columns": resolved.columns,
+                "rows": rows,
+                "rowCount": diagnostics["resolvedRows"],
+                "diagnostics": diagnostics,
+                "limit": 100,
+            }
+        finally:
+            heartbeat.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await heartbeat
+
+            async def release(repo):
+                for aid in aids:
+                    await repo.delete(
+                        "engine_read_leases", {"readId": read_id, "artifactId": aid}
+                    )
+
+            await self.store.transaction(release)

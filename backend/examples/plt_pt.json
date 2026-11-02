@@ -1,0 +1,704 @@
+{
+  "semantic_models": [
+    {
+      "_id": "model_supply_planning",
+      "name": "Supply Planning",
+      "displayName": "Supply Planning",
+      "description": "Forecast at PLT; sales and aggregate-first forecast error at PT.",
+      "draftRevisionId": "rev_1",
+      "publishedRevisionId": null
+    }
+  ],
+  "semantic_revisions": [
+    {
+      "_id": "rev_1",
+      "modelId": "model_supply_planning",
+      "revisionNumber": 1,
+      "metadataContractVersion": 1,
+      "approvalStatus": "draft",
+      "changeReason": "Define shared PLT/PT semantics with server-resolved warehouse configuration.",
+      "basePlanningLevelId": "pl_plt"
+    }
+  ],
+  "semantic_objects": [
+    {
+      "_id": "rev_1:src_product",
+      "modelId": "model_supply_planning",
+      "revisionId": "rev_1",
+      "objectId": "src_product",
+      "kind": "source",
+      "schemaVersion": 1,
+      "name": "Product",
+      "description": "One row per product.",
+      "definition": {
+        "tableName": "Product",
+        "inScope": true,
+        "keyColumns": [
+          "product_id"
+        ],
+        "columns": [
+          {
+            "columnId": "product_id",
+            "name": "product_id",
+            "physicalType": "String",
+            "nullable": false,
+            "description": "Product identifier."
+          },
+          {
+            "columnId": "product_name",
+            "name": "product_name",
+            "physicalType": "String",
+            "nullable": false,
+            "description": "Product display name."
+          }
+        ]
+      }
+    },
+    {
+      "_id": "rev_1:src_location",
+      "modelId": "model_supply_planning",
+      "revisionId": "rev_1",
+      "objectId": "src_location",
+      "kind": "source",
+      "schemaVersion": 1,
+      "name": "Location",
+      "description": "One row per location.",
+      "definition": {
+        "tableName": "Location",
+        "inScope": true,
+        "keyColumns": [
+          "location_id"
+        ],
+        "columns": [
+          {
+            "columnId": "location_id",
+            "name": "location_id",
+            "physicalType": "String",
+            "nullable": false,
+            "description": "Location identifier."
+          },
+          {
+            "columnId": "location_name",
+            "name": "location_name",
+            "physicalType": "String",
+            "nullable": false,
+            "description": "Location display name."
+          }
+        ]
+      }
+    },
+    {
+      "_id": "rev_1:src_time",
+      "modelId": "model_supply_planning",
+      "revisionId": "rev_1",
+      "objectId": "src_time",
+      "kind": "source",
+      "schemaVersion": 1,
+      "name": "Time",
+      "description": "One row per planning calendar day.",
+      "definition": {
+        "tableName": "Time",
+        "inScope": true,
+        "keyColumns": [
+          "date"
+        ],
+        "columns": [
+          {
+            "columnId": "date",
+            "name": "date",
+            "physicalType": "Date",
+            "nullable": false,
+            "description": "Planning calendar day."
+          }
+        ]
+      }
+    },
+    {
+      "_id": "rev_1:src_sourcing",
+      "modelId": "model_supply_planning",
+      "revisionId": "rev_1",
+      "objectId": "src_sourcing",
+      "kind": "source",
+      "schemaVersion": 1,
+      "name": "SourcingMatrix",
+      "description": "One row per valid product-location combination.",
+      "definition": {
+        "tableName": "SourcingMatrix",
+        "inScope": true,
+        "keyColumns": [
+          "product_id",
+          "location_id"
+        ],
+        "columns": [
+          {
+            "columnId": "product_id",
+            "name": "product_id",
+            "physicalType": "String",
+            "nullable": false,
+            "description": "Product identifier."
+          },
+          {
+            "columnId": "location_id",
+            "name": "location_id",
+            "physicalType": "String",
+            "nullable": false,
+            "description": "Location identifier."
+          }
+        ]
+      }
+    },
+    {
+      "_id": "rev_1:src_forecast",
+      "modelId": "model_supply_planning",
+      "revisionId": "rev_1",
+      "objectId": "src_forecast",
+      "kind": "source",
+      "schemaVersion": 1,
+      "name": "Forecast",
+      "description": "At most one forecast row per product-location-day.",
+      "definition": {
+        "tableName": "Forecast",
+        "inScope": true,
+        "keyColumns": [
+          "product_id",
+          "location_id",
+          "date"
+        ],
+        "columns": [
+          {
+            "columnId": "product_id",
+            "name": "product_id",
+            "physicalType": "String",
+            "nullable": false,
+            "description": "Product identifier."
+          },
+          {
+            "columnId": "location_id",
+            "name": "location_id",
+            "physicalType": "String",
+            "nullable": false,
+            "description": "Location identifier."
+          },
+          {
+            "columnId": "date",
+            "name": "date",
+            "physicalType": "Date",
+            "nullable": false,
+            "description": "Planning calendar day."
+          },
+          {
+            "columnId": "forecast_qty",
+            "name": "forecast_qty",
+            "physicalType": "Decimal(18,3)",
+            "nullable": false,
+            "description": "Forecast demand quantity.",
+            "unit": "EA"
+          }
+        ]
+      }
+    },
+    {
+      "_id": "rev_1:src_sales",
+      "modelId": "model_supply_planning",
+      "revisionId": "rev_1",
+      "objectId": "src_sales",
+      "kind": "source",
+      "schemaVersion": 1,
+      "name": "Sales",
+      "description": "At most one sales row per product-day, covering the locations in PLT for that product-day.",
+      "definition": {
+        "tableName": "Sales",
+        "inScope": true,
+        "keyColumns": [
+          "product_id",
+          "date"
+        ],
+        "columns": [
+          {
+            "columnId": "product_id",
+            "name": "product_id",
+            "physicalType": "String",
+            "nullable": false,
+            "description": "Product identifier."
+          },
+          {
+            "columnId": "date",
+            "name": "date",
+            "physicalType": "Date",
+            "nullable": false,
+            "description": "Planning calendar day."
+          },
+          {
+            "columnId": "sales_qty",
+            "name": "sales_qty",
+            "physicalType": "Decimal(18,3)",
+            "nullable": false,
+            "description": "Sales quantity across the modeled location population.",
+            "unit": "EA"
+          }
+        ]
+      }
+    },
+    {
+      "_id": "rev_1:dim_product",
+      "modelId": "model_supply_planning",
+      "revisionId": "rev_1",
+      "objectId": "dim_product",
+      "kind": "dimension",
+      "schemaVersion": 1,
+      "name": "Product",
+      "displayName": "Product",
+      "description": "Product dimension.",
+      "isTimeDim": false,
+      "definition": {
+        "sourceId": "src_product",
+        "keyColumnIds": [
+          "product_id"
+        ],
+        "labelColumnId": "product_name",
+        "attributeColumnIds": [
+          "product_name"
+        ],
+        "filters": null,
+        "columns": [
+          {
+            "columnId": "product_id",
+            "name": "product_id",
+            "sourceColumnId": "product_id",
+            "displayName": "Product ID"
+          },
+          {
+            "columnId": "product_name",
+            "name": "product_name",
+            "sourceColumnId": "product_name",
+            "displayName": "Product Name"
+          }
+        ]
+      }
+    },
+    {
+      "_id": "rev_1:dim_location",
+      "modelId": "model_supply_planning",
+      "revisionId": "rev_1",
+      "objectId": "dim_location",
+      "kind": "dimension",
+      "schemaVersion": 1,
+      "name": "Location",
+      "displayName": "Location",
+      "description": "Location dimension.",
+      "isTimeDim": false,
+      "definition": {
+        "sourceId": "src_location",
+        "keyColumnIds": [
+          "location_id"
+        ],
+        "labelColumnId": "location_name",
+        "attributeColumnIds": [
+          "location_name"
+        ],
+        "filters": null,
+        "columns": [
+          {
+            "columnId": "location_id",
+            "name": "location_id",
+            "sourceColumnId": "location_id",
+            "displayName": "Location ID"
+          },
+          {
+            "columnId": "location_name",
+            "name": "location_name",
+            "sourceColumnId": "location_name",
+            "displayName": "Location Name"
+          }
+        ]
+      }
+    },
+    {
+      "_id": "rev_1:dim_time",
+      "modelId": "model_supply_planning",
+      "revisionId": "rev_1",
+      "objectId": "dim_time",
+      "kind": "dimension",
+      "schemaVersion": 1,
+      "name": "Time",
+      "displayName": "Time",
+      "description": "Time dimension.",
+      "isTimeDim": true,
+      "definition": {
+        "sourceId": "src_time",
+        "keyColumnIds": [
+          "date"
+        ],
+        "labelColumnId": "date",
+        "attributeColumnIds": [],
+        "filters": null,
+        "time": {
+          "baseGrain": "day",
+          "dateColumnId": "date",
+          "orderingColumnId": "date"
+        },
+        "columns": [
+          {
+            "columnId": "date",
+            "name": "date",
+            "sourceColumnId": "date",
+            "displayName": "Date"
+          }
+        ]
+      }
+    },
+    {
+      "_id": "rev_1:pl_plt",
+      "modelId": "model_supply_planning",
+      "revisionId": "rev_1",
+      "objectId": "pl_plt",
+      "kind": "planningLevel",
+      "schemaVersion": 1,
+      "name": "PLT",
+      "displayName": "Product / Location / Time",
+      "description": "Valid sourcing product-location pairs crossed with planning calendar days.",
+      "definition": {
+        "population": {
+          "operation": "cartesian_product",
+          "factors": [
+            {
+              "factorId": "sourcing",
+              "sourceId": "src_sourcing",
+              "selectedColumnIds": [
+                "product_id",
+                "location_id"
+              ]
+            },
+            {
+              "factorId": "calendar",
+              "sourceId": "src_time",
+              "selectedColumnIds": [
+                "date"
+              ]
+            }
+          ]
+        },
+        "grain": {
+          "keyIds": [
+            "plt_product",
+            "plt_location",
+            "plt_date"
+          ],
+          "columns": [
+            {
+              "grainColumnId": "plt_product",
+              "name": "product_id",
+              "populationRef": {
+                "factorId": "sourcing",
+                "columnId": "product_id"
+              }
+            },
+            {
+              "grainColumnId": "plt_location",
+              "name": "location_id",
+              "populationRef": {
+                "factorId": "sourcing",
+                "columnId": "location_id"
+              }
+            },
+            {
+              "grainColumnId": "plt_date",
+              "name": "date",
+              "populationRef": {
+                "factorId": "calendar",
+                "columnId": "date"
+              }
+            }
+          ]
+        },
+        "dimensionBindings": [
+          {
+            "dimensionId": "dim_product",
+            "keyMappings": [
+              {
+                "grainColumnId": "plt_product",
+                "dimensionColumnId": "product_id"
+              }
+            ],
+            "selectedAttributeColumnIds": [],
+            "unmatchedMemberPolicy": "reject"
+          },
+          {
+            "dimensionId": "dim_location",
+            "keyMappings": [
+              {
+                "grainColumnId": "plt_location",
+                "dimensionColumnId": "location_id"
+              }
+            ],
+            "selectedAttributeColumnIds": [],
+            "unmatchedMemberPolicy": "reject"
+          },
+          {
+            "dimensionId": "dim_time",
+            "keyMappings": [
+              {
+                "grainColumnId": "plt_date",
+                "dimensionColumnId": "date"
+              }
+            ],
+            "selectedAttributeColumnIds": [],
+            "unmatchedMemberPolicy": "reject"
+          }
+        ],
+        "filters": null,
+        "duplicateKeyPolicy": "reject",
+        "nullKeyPolicy": "reject"
+      }
+    },
+    {
+      "_id": "rev_1:pl_pt",
+      "modelId": "model_supply_planning",
+      "revisionId": "rev_1",
+      "objectId": "pl_pt",
+      "kind": "planningLevel",
+      "schemaVersion": 1,
+      "name": "PT",
+      "displayName": "Product / Time",
+      "description": "Distinct product-day population derived from PLT by removing location.",
+      "definition": {
+        "population": {
+          "operation": "distinct_projection",
+          "sourcePlanningLevelId": "pl_plt"
+        },
+        "grain": {
+          "keyIds": [
+            "pt_product",
+            "pt_date"
+          ],
+          "columns": [
+            {
+              "grainColumnId": "pt_product",
+              "name": "product_id",
+              "populationRef": {
+                "sourceGrainColumnId": "plt_product"
+              }
+            },
+            {
+              "grainColumnId": "pt_date",
+              "name": "date",
+              "populationRef": {
+                "sourceGrainColumnId": "plt_date"
+              }
+            }
+          ]
+        },
+        "dimensionBindings": [
+          {
+            "dimensionId": "dim_product",
+            "keyMappings": [
+              {
+                "grainColumnId": "pt_product",
+                "dimensionColumnId": "product_id"
+              }
+            ],
+            "selectedAttributeColumnIds": [],
+            "unmatchedMemberPolicy": "reject"
+          },
+          {
+            "dimensionId": "dim_time",
+            "keyMappings": [
+              {
+                "grainColumnId": "pt_date",
+                "dimensionColumnId": "date"
+              }
+            ],
+            "selectedAttributeColumnIds": [],
+            "unmatchedMemberPolicy": "reject"
+          }
+        ],
+        "filters": null,
+        "duplicateKeyPolicy": "reject",
+        "nullKeyPolicy": "reject"
+      }
+    },
+    {
+      "_id": "rev_1:tx_forecast",
+      "modelId": "model_supply_planning",
+      "revisionId": "rev_1",
+      "objectId": "tx_forecast",
+      "kind": "transaction",
+      "schemaVersion": 1,
+      "name": "Forecast",
+      "displayName": "Forecast",
+      "description": "Forecast records mapped directly to their native planning level.",
+      "definition": {
+        "sourceId": "src_forecast",
+        "planningLevelId": "pl_plt",
+        "mappingMode": "direct",
+        "keyMappings": [
+          {
+            "sourceColumnId": "product_id",
+            "grainColumnId": "plt_product"
+          },
+          {
+            "sourceColumnId": "location_id",
+            "grainColumnId": "plt_location"
+          },
+          {
+            "sourceColumnId": "date",
+            "grainColumnId": "plt_date"
+          }
+        ],
+        "expectedRowsPerGrain": "zero_or_one",
+        "unmatchedGrainPolicy": "reject"
+      }
+    },
+    {
+      "_id": "rev_1:tx_sales",
+      "modelId": "model_supply_planning",
+      "revisionId": "rev_1",
+      "objectId": "tx_sales",
+      "kind": "transaction",
+      "schemaVersion": 1,
+      "name": "Sales",
+      "displayName": "Sales",
+      "description": "Sales records mapped directly to their native planning level.",
+      "definition": {
+        "sourceId": "src_sales",
+        "planningLevelId": "pl_pt",
+        "mappingMode": "direct",
+        "keyMappings": [
+          {
+            "sourceColumnId": "product_id",
+            "grainColumnId": "pt_product"
+          },
+          {
+            "sourceColumnId": "date",
+            "grainColumnId": "pt_date"
+          }
+        ],
+        "expectedRowsPerGrain": "zero_or_one",
+        "unmatchedGrainPolicy": "reject"
+      }
+    },
+    {
+      "_id": "rev_1:measure_fqty",
+      "modelId": "model_supply_planning",
+      "revisionId": "rev_1",
+      "objectId": "measure_fqty",
+      "kind": "measure",
+      "schemaVersion": 1,
+      "name": "FQTY",
+      "displayName": "Forecast Quantity",
+      "description": "Forecast quantity at product-location-day; summed across location when read at PT.",
+      "business": {
+        "unit": "EA"
+      },
+      "definition": {
+        "measureType": "referenced",
+        "transactionId": "tx_forecast",
+        "valueColumnId": "forecast_qty",
+        "nativePlanningLevelId": "pl_plt",
+        "resultType": {
+          "type": "number",
+          "nullable": true
+        },
+        "aggregation": {
+          "nonTime": "sum",
+          "time": "sum",
+          "nullInputPolicy": "ignore",
+          "allNullResult": "null"
+        },
+        "missingTransactionValue": "null",
+        "sourceNullPolicy": "reject",
+        "overflowPolicy": "error",
+        "allocation": {
+          "mode": "none"
+        },
+        "editable": false
+      }
+    },
+    {
+      "_id": "rev_1:measure_sqty",
+      "modelId": "model_supply_planning",
+      "revisionId": "rev_1",
+      "objectId": "measure_sqty",
+      "kind": "measure",
+      "schemaVersion": 1,
+      "name": "SQTY",
+      "displayName": "Sales Quantity",
+      "description": "Actual sales quantity at product-day across the same modeled location population as forecast.",
+      "business": {
+        "unit": "EA"
+      },
+      "definition": {
+        "measureType": "referenced",
+        "transactionId": "tx_sales",
+        "valueColumnId": "sales_qty",
+        "nativePlanningLevelId": "pl_pt",
+        "resultType": {
+          "type": "number",
+          "nullable": true
+        },
+        "aggregation": {
+          "nonTime": "sum",
+          "time": "sum",
+          "nullInputPolicy": "ignore",
+          "allNullResult": "null"
+        },
+        "missingTransactionValue": "null",
+        "sourceNullPolicy": "reject",
+        "overflowPolicy": "error",
+        "allocation": {
+          "mode": "none"
+        },
+        "editable": false
+      }
+    },
+    {
+      "_id": "rev_1:measure_error",
+      "modelId": "model_supply_planning",
+      "revisionId": "rev_1",
+      "objectId": "measure_error",
+      "kind": "measure",
+      "schemaVersion": 1,
+      "name": "Error",
+      "displayName": "Absolute Forecast Error",
+      "description": "Absolute difference between aggregated forecast and aggregated sales at the requested PT or coarser output grain.",
+      "business": {
+        "unit": "EA"
+      },
+      "definition": {
+        "measureType": "calculated",
+        "nativePlanningLevelId": "pl_pt",
+        "calculationType": "AggregateFirst",
+        "formula": {
+          "displayText": "ABS(FQTY - SQTY)",
+          "expression": {
+            "type": "call",
+            "function": "abs",
+            "arguments": [
+              {
+                "type": "binary",
+                "operator": "subtract",
+                "left": {
+                  "type": "measureRef",
+                  "measureId": "measure_fqty"
+                },
+                "right": {
+                  "type": "measureRef",
+                  "measureId": "measure_sqty"
+                }
+              }
+            ]
+          }
+        },
+        "resultType": {
+          "type": "decimal",
+          "precision": 38,
+          "scale": 3,
+          "nullable": true
+        },
+        "nullInputPolicy": "propagate",
+        "overflowPolicy": "error",
+        "editable": false
+      }
+    }
+  ]
+}

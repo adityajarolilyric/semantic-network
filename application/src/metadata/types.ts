@@ -1,0 +1,309 @@
+export type Identity = {
+  objectId: string
+  name: string
+  description: string
+  schemaVersion?: number
+}
+export type Semantic = Identity & { displayName: string }
+export type SourceColumn = {
+  columnId: string
+  name: string
+  physicalType: string
+  nullable: boolean
+  description?: string
+  unit?: string | null
+}
+export type AttributeValue = string | number | boolean | null
+export type PivotPair = {
+  pairId: string
+  attributeColumnId: string
+  valueColumnId: string
+  outputs: { columnId?: string | null; attributeValue: AttributeValue; name: string }[]
+}
+export type ManagedDefinition = {
+  primaryKeyColumnIds: string[]
+  pipeline: {
+    stageId: string
+    type: 'pivot'
+    enabled: boolean
+    groupByColumnIds: string[]
+    pairs: PivotPair[]
+  }[]
+}
+export type ManagedTable = {
+  ready?: boolean
+  sourceId: string
+  version: number
+  definitionHash: string
+  definition: ManagedDefinition & { columns: SourceColumn[] }
+}
+export type EngineRun = {
+  runId: string
+  sourceId?: string
+  resourceKind: 'managedTable' | 'planningLevel' | 'planningLevelPreview' | 'measureSet'
+  resourceId: string
+  state: string
+  error: { message: string; details?: { message: string }[] } | null
+}
+export type Source = Identity & {
+  managed?: ManagedTable
+  kind: 'source'
+  definition: { tableName: string; inScope: boolean; keyColumns: string[]; columns: SourceColumn[] }
+}
+export type DimColumn = {
+  columnId: string
+  name: string
+  displayName: string
+  sourceColumnId: string
+}
+export type Dimension = Semantic & {
+  kind: 'dimension'
+  isTimeDim: boolean
+  definition: {
+    sourceId: string
+    columns: DimColumn[]
+    keyColumnIds: string[]
+    labelColumnId: string
+    attributeColumnIds: string[]
+    time: {
+      baseGrain: 'day' | 'week' | 'month'
+      dateColumnId: string
+      orderingColumnId: string
+    } | null
+    filters?: unknown
+  }
+}
+export type GrainColumn = {
+  grainColumnId: string
+  name: string
+  populationRef: {
+    factorId?: string | null
+    columnId?: string | null
+    sourceGrainColumnId?: string | null
+    sourceOutputColumnId?: string | null
+  }
+}
+export type PopulationAttribute = {
+  columnId: string
+  name: string
+  populationRef: GrainColumn['populationRef']
+}
+export type Factor = { factorId: string; sourceId: string; selectedColumnIds: string[] }
+export type Population =
+  | { operation: 'source'; sourceId: string }
+  | { operation: 'cartesian_product'; factors: Factor[] }
+  | { operation: 'distinct_projection'; sourcePlanningLevelId: string }
+export type Binding = {
+  dimensionId: string
+  lookupCardinality?: 'many_to_one'
+  keyMappings: {
+    grainColumnId?: string | null
+    populationColumnId?: string | null
+    dimensionColumnId: string
+  }[]
+  selectedAttributeColumnIds: string[]
+  unmatchedMemberPolicy?: 'reject'
+}
+export type PlanningLevel = Semantic & {
+  kind: 'planningLevel'
+  definition: {
+    population: Population
+    grain: { keyIds: string[]; columns: GrainColumn[] }
+    populationAttributes?: PopulationAttribute[]
+    dimensionBindings: Binding[]
+    filters?: unknown
+    duplicateKeyPolicy?: 'reject'
+    nullKeyPolicy?: 'reject'
+  }
+}
+export type ResolutionTarget = { dimensionId?: string | null; columnId: string }
+export type ResolutionRule = {
+  ruleId: string
+  kind: 'column' | 'level_value'
+  blankIsAbsent?: boolean
+  sourceColumnId?: string | null
+  target?: ResolutionTarget | null
+  selectorColumnId?: string | null
+  valueColumnId?: string | null
+  selectors: { value: string; target: ResolutionTarget }[]
+}
+export type ResolutionDateRange = {
+  dimensionId: string
+  calendarKeyColumnId: string
+  startColumnId: string
+  endColumnId: string
+}
+export type GrainResolution = {
+  axes: {
+    grainColumnId: string
+    allowAll: boolean
+    rules: ResolutionRule[]
+    dateRange?: ResolutionDateRange | null
+  }[]
+  values: { sourceColumnId: string; mode: 'split' | 'copy'; timeMode?: 'split' | 'copy' | null }[]
+  orderColumnIds: string[]
+  partitionColumnIds: string[]
+  passthroughColumnIds: string[]
+  overlapPolicy: 'last_applied_wins'
+}
+export type Transaction = Semantic & {
+  kind: 'transaction'
+  definition: {
+    sourceId: string
+    planningLevelId: string
+    mappingMode: 'direct' | 'resolve_multi_grain'
+    resolution?: GrainResolution | null
+    keyMappings: { sourceColumnId: string; grainColumnId: string }[]
+    expectedRowsPerGrain: 'zero_or_one' | 'many'
+    unmatchedGrainPolicy: 'reject'
+  }
+}
+export type Expression =
+  | { type: 'measureRef'; measureId: string }
+  | { type: 'grainRef'; grainColumnId: string }
+  | { type: 'literal'; value: number }
+  | {
+      type: 'binary'
+      operator: 'add' | 'subtract' | 'multiply' | 'divide'
+      left: Expression
+      right: Expression
+    }
+  | {
+      type: 'call'
+      function: 'abs' | 'round' | 'coalesce' | 'min' | 'max'
+      arguments: Expression[]
+    }
+export type Aggregation = {
+  order?: 'nonTimeThenTime' | 'timeThenNonTime'
+  nonTime: 'sum' | 'avg' | 'min' | 'max' | 'count' | 'count_distinct'
+  time: 'sum' | 'avg' | 'min' | 'max' | 'count' | 'count_distinct' | 'first' | 'last'
+  nullInputPolicy: 'ignore' | 'propagate'
+  allNullResult: 'null' | 'zero'
+}
+export type MeasureCommon = {
+  nativePlanningLevelId: string
+  resultType: {
+    type: 'number' | 'integer' | 'decimal'
+    precision?: number | null
+    scale?: number | null
+    nullable: boolean
+  }
+  editable: boolean
+  overflowPolicy?: 'error'
+}
+export type RefDefinition = MeasureCommon & {
+  measureType: 'referenced'
+  transactionId: string
+  valueColumnId: string
+  aggregation: Aggregation
+  missingTransactionValue: 'null' | 'zero'
+  sourceNullPolicy: 'reject' | 'preserve'
+  allocation: {
+    mode: 'none' | 'equal' | 'weighted' | 'weighted_by_self'
+    basisMeasureId?: string | null
+  }
+}
+export type CalcDefinition = MeasureCommon & {
+  measureType: 'calculated'
+  calculationType: 'AggregateFirst' | 'CalculateFirst'
+  formula: { displayText: string; expression: Expression }
+  aggregation?: Aggregation | null
+  allocation?: RefDefinition['allocation'] | null
+  nullInputPolicy?: 'propagate'
+}
+export type Measure = Semantic & {
+  kind: 'measure'
+  business: { unit: string | null; aliases: string[] }
+  definition: RefDefinition | CalcDefinition
+}
+export type ObjectInput = Source | Dimension | PlanningLevel | Transaction | Measure
+export type Kind = ObjectInput['kind']
+export type Envelope = {
+  modelId: string
+  revisionId: string
+  version: number
+  createdAt: string
+  updatedAt: string
+}
+export type ObjectDocument = ObjectInput & Envelope
+export type Model = {
+  modelId: string
+  name: string
+  displayName: string
+  description: string
+  draftRevisionId: string | null
+  publishedRevisionId: string | null
+  version: number
+  revisionCounter: number
+}
+export type Revision = {
+  modelId: string
+  revisionId: string
+  version: number
+  revisionNumber: number
+  approvalStatus: 'draft' | 'published'
+  metadataContractVersion?: number
+  basePlanningLevelId: string | null
+  changeReason: string
+  parentRevisionId: string | null
+}
+export type Report = {
+  valid: boolean
+  diagnostics: { code: string; message: string; objectId?: string | null; path?: string | null }[]
+}
+export type Snapshot = {
+  sources: (Source & Envelope)[]
+  dimensions: (Dimension & Envelope)[]
+  planningLevels: (PlanningLevel & Envelope)[]
+  transactions: (Transaction & Envelope)[]
+  measures: (Measure & Envelope)[]
+}
+export const emptySnapshot = (): Snapshot => ({
+  sources: [],
+  dimensions: [],
+  planningLevels: [],
+  transactions: [],
+  measures: [],
+})
+export const resources: Record<Kind, string> = {
+  source: 'sources',
+  dimension: 'dimensions',
+  planningLevel: 'planning-levels',
+  transaction: 'transactions',
+  measure: 'measures',
+}
+export const identity = (prefix: string): Identity => ({
+  objectId: prefix + '_' + crypto.randomUUID().replaceAll('-', '').slice(0, 12),
+  name: '',
+  description: '',
+})
+export function inputOf<T extends ObjectInput>(document: T): T {
+  const {
+    modelId: _m,
+    revisionId: _r,
+    version: _v,
+    createdAt: _c,
+    updatedAt: _u,
+    managed: _managed,
+    ...input
+  } = document as T & Partial<Envelope> & { managed?: ManagedTable }
+  return input as T
+}
+
+export function effectiveSnapshot(data: Snapshot): Snapshot {
+  return {
+    ...data,
+    sources: data.sources.map((source) =>
+      source.managed
+        ? {
+            ...source,
+            definition: {
+              ...source.definition,
+              columns: source.managed.definition.columns,
+              keyColumns: source.managed.definition.primaryKeyColumnIds,
+            },
+          }
+        : source,
+    ),
+  }
+}
