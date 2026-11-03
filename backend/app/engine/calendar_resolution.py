@@ -26,7 +26,9 @@ class CalendarResolutionPlanner:
         self.objects = {o["objectId"]: o for o in objects}
         self.tx = transaction
         self.config = transaction["definition"].get("calendarResolution")
-        self.source_columns = source_columns
+        from .object_inputs import input_columns
+
+        self.source_columns = input_columns(transaction, source_columns)
         self.date_id = (
             "txdate_" + digest([transaction["objectId"], "resolved-day"])[:24]
         )
@@ -59,7 +61,7 @@ class CalendarResolutionPlanner:
             raise MetadataError(
                 "invalid_calendar_key", "Choose exposed calendar attributes."
             )
-        source = {c["columnId"]: c for c in source_columns}
+        source = {c["columnId"]: c for c in self.source_columns}
         for cid in (cfg["startColumnId"], cfg["endColumnId"]):
             if cid not in source:
                 raise MetadataError(
@@ -67,7 +69,9 @@ class CalendarResolutionPlanner:
                     "A date-range endpoint is missing from the managed table.",
                 )
             self.validate_date_type(source[cid]["physicalType"])
-        self.calendar_source = self.objects[d["sourceId"]]["definition"]["columns"]
+        self.calendar_source = input_columns(
+            dim, self.objects[d["sourceId"]]["definition"]["columns"]
+        )
         physical = {c["columnId"]: c for c in self.calendar_source}
         self.validate_date_type(
             physical[cols[d["time"]["dateColumnId"]]["sourceColumnId"]]["physicalType"]
@@ -163,12 +167,14 @@ class CalendarResolutionCompiler:
         h, p = self.h, self.p
         cfg, dim = p.config, p.dimension["definition"]
         source = h.managed[dim["sourceId"]]
-        physical = {c["columnId"]: c for c in source["columns"]}
+        dim_object = h.objects[p.dimension["objectId"]]
+        calendar_table, calendar_columns = h.object_input(dim_object, source)
+        physical = {c["columnId"]: c for c in calendar_columns}
         fields = ", ".join(
             q(physical[c["sourceColumnId"]]["name"]) + " AS " + q(c["columnId"])
             for c in dim["columns"]
         )
-        sql = f"SELECT {fields} FROM {h.table(source['physicalName'])}"
+        sql = f"SELECT {fields} FROM {calendar_table}"
         if dim.get("filters"):
             sql = f"SELECT * FROM ({sql}) WHERE {h.filter_sql(dim['filters'], [c['columnId'] for c in dim['columns']])}"
         selected = [
@@ -193,11 +199,12 @@ class CalendarResolutionCompiler:
                 f"SELECT {day} FROM {q(calendar)} GROUP BY {day} HAVING uniqExact(tuple({attrs}))>1 LIMIT 20",
             ),
         ]
+        input_table, _ = h.object_input(self.tx, self.source)
         rawfields = ", ".join(
             q(c["name"]) + " AS " + q(c["columnId"]) for c in p.source_columns
         )
         raw = h.cte(
-            f"SELECT {rawfields}, rowNumberInAllBlocks() AS __calendar_record FROM {h.table(self.source['physicalName'])}"
+            f"SELECT {rawfields}, rowNumberInAllBlocks() AS __calendar_record FROM {input_table}"
         )
         bounds = h.cte(
             f"SELECT *, {strict_date(q(cfg['startColumnId']))} AS __range_start, {strict_date(q(cfg['endColumnId']))} AS __range_end FROM {q(raw)}"

@@ -33,6 +33,7 @@ export type ManagedDefinition = {
     pairs: PivotPair[]
   }[]
 }
+export type PivotStage = ManagedDefinition['pipeline'][number]
 export type ManagedTable = {
   ready?: boolean
   sourceId: string
@@ -64,6 +65,7 @@ export type Dimension = Semantic & {
   isTimeDim: boolean
   definition: {
     sourceId: string
+    pivot?: PivotStage | null
     columns: DimColumn[]
     keyColumnIds: string[]
     labelColumnId: string
@@ -163,6 +165,7 @@ export type Transaction = Semantic & {
     mappingMode: 'direct' | 'resolve_multi_grain'
     resolution?: GrainResolution | null
     calendarResolution?: CalendarResolution | null
+    pivot?: PivotStage | null
     keyMappings: { sourceColumnId: string; grainColumnId: string }[]
     expectedRowsPerGrain: 'zero_or_one' | 'many'
     unmatchedGrainPolicy: 'reject'

@@ -717,7 +717,7 @@ class MeasureBuildService(Service):
                         relation_sql(
                             warehouse, {**artifact, "columns": result["columns"]}
                         )
-                        + " ORDER BY ALL LIMIT 100",
+                        + " ORDER BY ALL LIMIT 50",
                         settings=self.executor.execution_settings(),
                     ).result_rows
                     return [[warehouse.cell(v) for v in row] for row in rows]

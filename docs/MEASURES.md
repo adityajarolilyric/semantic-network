@@ -73,7 +73,7 @@ Float64 is approximate (roughly 15–17 significant digits): decimal sources los
 
 ## Materialise and consistency
 
-Materialise is its own navigation item below Measures. It has one global **Build Semantic Network** action, visually separate from the planning-level selector that automatically previews up to 100 rows. “What gets materialised at …” explains native placement, configured policies, derivation/recalculation and unavailable reasons. Model/revision controls remain on Sources.
+Materialise is its own navigation item below Measures. It has one global **Build Semantic Network** action, visually separate from the planning-level selector that automatically previews up to 50 rows. “What gets materialised at …” explains native placement, configured policies, derivation/recalculation and unavailable reasons. Model/revision controls remain on Sources.
 
 Build current managed views and planning populations first. The network build captures semantic objects and input artifacts, pins them, compiles a dependency DAG and inserts candidate values generations into the existing values table for each level. Validate source NULLs, source/population coverage, lookups, child coverage, grain/cardinality, types and limits. Formula dependency/basis failures cannot activate stale/partial results.
 
@@ -86,7 +86,7 @@ Artifacts record generation, population identity, key/measure maps, compiler/num
 Revision-scoped APIs:
 
 - `POST /measures/execution/build`: revision If-Match and Idempotency-Key; HTTP 202/run.
-- `GET /measures/execution/levels/{levelId}?preview=true`: state, schema, generation, row count, unavailable measures and at most 100 rows; omit preview for status only.
+- `GET /measures/execution/levels/{levelId}?preview=true`: state, schema, generation, row count, unavailable measures and at most 50 rows; omit preview for status only.
 - `GET /measures/{measureId}/capabilities`: structural paths, mappings, via-Base availability and native/coarser edit eligibility. Weights, dependencies or data checks may still prevent execution.
 
 `MeasureCompiler` builds SQLGlot-rendered ClickHouse CTEs from typed metadata; `MeasureBuildService` handles snapshots, pins, durable runs and coordinated activation; MeasureAPI owns HTTP. Limits: `METADATA_MEASURE_MAX_NODES=1024`, `METADATA_MEASURE_MAX_SQL_BYTES=4194304`, plus warehouse row/memory/time/thread bounds. Queries use join_use_nulls=1 and http_write_exception_in_output_format=0 to retain reliable domain errors after result headers.

@@ -67,7 +67,14 @@ class PlanningLevelCompiler(ClickHouseCompiler):
 
     def render(self, node):
         if isinstance(node, RelationScan):
-            sql = f"SELECT {', '.join((f'assumeNotNull({q(name)})' if cid in node.nonnullable_ids else q(name)) + ' AS ' + q(cid) for cid, name in node.columns)} FROM {self.table(node.table_name)}"
+            table = self.table(node.table_name)
+            if node.transform:
+                compiled = ClickHouseCompiler(self.database).compile(node.transform)
+                for check in compiled.checks:
+                    if check not in self.input_checks:
+                        self.input_checks.append(check)
+                table = "(" + compiled.sql + ")"
+            sql = f"SELECT {', '.join((f'assumeNotNull({q(name)})' if cid in node.nonnullable_ids else q(name)) + ' AS ' + q(cid) for cid, name in node.columns)} FROM {table}"
             if node.generation:
                 sql += f" WHERE {q(GENERATION)}={lit(node.generation)}"
             ids = [cid for cid, _ in node.columns]
@@ -114,6 +121,7 @@ class PlanningLevelCompiler(ClickHouseCompiler):
         )
 
     def compile(self, plan):
+        self.input_checks = []
         query, _ = self.render(plan.root)
         checks = []
         for join in plan.joins:
@@ -148,7 +156,7 @@ class PlanningLevelCompiler(ClickHouseCompiler):
         ast = parse_one(f"SELECT DISTINCT {selected} FROM ({query})", read="clickhouse")
         return ExecutionPlan(
             ast,
-            tuple(checks),
+            tuple([*self.input_checks, *checks]),
             plan.schema,
             "planning-v4-plain-output-names-sqlglot-27.28.1",
         )

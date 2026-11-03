@@ -153,7 +153,7 @@ class ApplicationFactory:
             ManagedTablesAPI(container.managed_tables),
             EngineAPI(container.managed_tables),
             SourceRegistrationAPI(container.source_registration),
-            DimensionAPI(container.dimensions),
+            DimensionAPI(container.dimensions, container.transaction_resolution),
             PlanningLevelAPI(container.planning_levels, container.planning_builds),
             TransactionAPI(container.transactions, container.transaction_resolution),
             MeasureAPI(container.measures, container.measure_builds),

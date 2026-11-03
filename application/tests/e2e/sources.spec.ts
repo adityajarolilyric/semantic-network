@@ -34,13 +34,13 @@ test('pagination and persistence after a page reload', async ({ page }) => {
     .setInputFiles({ name: 'Sales.csv', mimeType: 'text/csv', buffer: Buffer.from(content) })
   await page.getByLabel('Table name', { exact: true }).fill('Sales_e2e')
   await page.getByRole('button', { name: 'Upload & create table' }).click()
-  await expect(page.getByText('Showing 1–50 of 60 rows', { exact: true })).toBeVisible()
+  await expect(page.getByText('50/60 rows', { exact: true })).toBeVisible()
   await page.getByRole('button', { name: 'Next page' }).click()
-  await expect(page.getByText('Showing 51–60 of 60 rows', { exact: true })).toBeVisible()
+  await expect(page.getByText('10/60 rows', { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Next page' })).toBeDisabled()
   await page.reload({ waitUntil: 'domcontentloaded' })
   await page.getByRole('button', { name: 'Preview Sales_e2e', exact: true }).click()
-  await expect(page.getByText('Showing 1–50 of 60 rows', { exact: true })).toBeVisible()
+  await expect(page.getByText('50/60 rows', { exact: true })).toBeVisible()
 })
 
 test('malformed CSV reports a usable error without a source table', async ({ page }) => {

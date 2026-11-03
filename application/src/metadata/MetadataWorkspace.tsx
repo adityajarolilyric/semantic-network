@@ -802,6 +802,7 @@ export function MetadataWorkspace({
                 {editor.input.kind === 'dimension' && (
                   <DimensionEditor
                     key={editor.input.objectId}
+                    base={metadataApi.scope(model!.modelId, revision!.revisionId)}
                     {...common}
                     initial={editor.input as Dimension}
                     onSave={save}

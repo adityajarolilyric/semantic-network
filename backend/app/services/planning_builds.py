@@ -501,7 +501,7 @@ class PlanningBuildService(Service):
                             "The planning table is missing or changed. Build it again in a draft."
                         )
                     data = client.query(
-                        relation_sql(warehouse, artifact) + " ORDER BY ALL LIMIT 100",
+                        relation_sql(warehouse, artifact) + " ORDER BY ALL LIMIT 50",
                         settings=self.executor.execution_settings(),
                     )
                     return [
@@ -597,7 +597,7 @@ class PlanningBuildService(Service):
 
             def read(connect):
                 result = connect().query(
-                    relation_sql(warehouse, artifact) + " ORDER BY ALL LIMIT 100",
+                    relation_sql(warehouse, artifact) + " ORDER BY ALL LIMIT 50",
                     settings=self.executor.execution_settings(),
                 )
                 return [[warehouse.cell(v) for v in row] for row in result.result_rows]

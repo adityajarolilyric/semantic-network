@@ -213,13 +213,13 @@ See [SQL engine implementation, APIs, recovery and revision behavior](../docs/EN
 
 ## Planning-level tables (2026-11-01)
 
-Planning-table generation is implemented through the shared engine: single managed populations, Cartesian factors, distinct parent projection, population attributes and dimension enrichment, with complete grain/lookup checks and revision-owned MergeTree artifacts. Add dimension tabs incrementally; select grain keys and population attributes side by side. Preview and Build live inside the editor; previews reuse the Source table UI and show at most 100 rows. Contract-2 publication requires ready planning tables. Materialise builds transaction-backed and calculated measure values across compatible levels.
+Planning-table generation is implemented through the shared engine: single managed populations, Cartesian factors, distinct parent projection, population attributes and dimension enrichment, with complete grain/lookup checks and revision-owned MergeTree artifacts. Add dimension tabs incrementally; select grain keys and population attributes side by side. Preview and Build live inside the editor; previews reuse the Source table UI and show at most 50 rows. Contract-2 publication requires ready planning tables. Materialise builds transaction-backed and calculated measure values across compatible levels.
 
 See [planning-level implementation, APIs, migration and limits](../docs/PLANNING_LEVELS.md) for the current operating contract. Earlier statements that planning materialization is deferred are superseded by this increment.
 
 ## Semantic network materialisation
 
-**Materialise** is a separate navigation item below **Measures**. Build managed views and planning populations, then use **Build Semantic Network** to populate compatible measure representations. Selecting a planning level displays its table preview (maximum 100 rows). All measure rollups use the configured Time/NonTime policy. Dis-Aggregation None/null repeats values; it never selects AVG implicitly. AggregateFirst recalculates at each target grain. Generations activate atomically across levels. Interactive measure editing is available in Planning View.
+**Materialise** is a separate navigation item below **Measures**. Build managed views and planning populations, then use **Build Semantic Network** to populate compatible measure representations. Selecting a planning level displays its table preview (maximum 50 rows). All measure rollups use the configured Time/NonTime policy. Dis-Aggregation None/null repeats values; it never selects AVG implicitly. AggregateFirst recalculates at each target grain. Generations activate atomically across levels. Interactive measure editing is available in Planning View.
 
 See [implementation, policies and APIs](../docs/MEASURES.md).
 

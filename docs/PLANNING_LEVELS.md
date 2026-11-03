@@ -42,7 +42,7 @@ The revision designates Base and treats it as finest among proven related levels
 
 The list toolbar places Base planning level on the left and Reload metadata, Build all planning levels and Create planning level on the right, aligned at the control bottoms. Narrow layouts stack them. Validate revision and Publish revision belong only on Sources, not Planning Levels.
 
-Show exactly these three actions at bottom right; use the shared Source table for at most 100 preview rows without pagination/refresh controls. Grain selection is mandatory before Preview/Save. Grain and population attributes appear side by side on wide screens. For projection, Retain parent keys is left and Attributes from parent level right; hide measures, duplicate key choices and internal collision fields from attribute choices.
+Show exactly these three actions at bottom right; use the shared Source table for at most 50 preview rows without pagination/refresh controls. Grain selection is mandatory before Preview/Save. Grain and population attributes appear side by side on wide screens. For projection, Retain parent keys is left and Attributes from parent level right; hide measures, duplicate key choices and internal collision fields from attribute choices.
 
 Dimension configuration uses Add dimension and tabs, initially empty. Preserve mappings/selections/tab order while switching; Remove binding sits bottom right inside its tab. Dimension-side selectors list only that dimension's columns. Attribute Select all/Deselect all affects only its binding.
 
@@ -63,9 +63,9 @@ Bulk orchestration is in `application/src/metadata/planningLevelBuilds.ts`; no n
 All paths are relative to `/api/v1/models/{model}/revisions/{revision}`:
 
 - `POST /planning-levels/editor/draft/build`: proposed definition, nullable expectedVersion, Idempotency-Key; enqueue staged build.
-- `GET /planning-levels/editor/draft/{runId}/preview`: schema and at most 100 built candidate rows under a short read lease.
+- `GET /planning-levels/editor/draft/{runId}/preview`: schema and at most 50 built candidate rows under a short read lease.
 - `POST /planning-levels/editor/draft/commit`: exact definition + runId; commit metadata/binding atomically.
-- Compatibility: `POST /planning-levels/{id}/build` builds saved metadata with If-Match/Idempotency-Key; `GET /planning-levels/{id}/table?preview=true` returns status/schema and optional 100-row bound preview; `POST /planning-levels/preview/population` gives a proposed bounded query without full candidate activation. The current editor uses the staged flow above.
+- Compatibility: `POST /planning-levels/{id}/build` builds saved metadata with If-Match/Idempotency-Key; `GET /planning-levels/{id}/table?preview=true` returns status/schema and optional 50-row bound preview; `POST /planning-levels/preview/population` gives a proposed bounded query without full candidate activation. The current editor uses the staged flow above.
 - Generic engine run polling/cancellation handles planning and planning-preview targets.
 
 Status is Not built, Building, Ready, Needs rebuild or Failed. Metadata/dependency changes and parent rebuilds stale dependent drafts. A failed rebuild may preserve an older snapshot, clearly marked with its stale state/error. Contract-2 publication requires every declared planning level to have a current owned/readable population; measure values are not required. Contract-1 metadata-only publication remains compatible. Clones copy definitions/IDs without bindings; initialize managed views, then build parents before children. Published population snapshots cannot use view-style repair against changed sources; restore the original snapshot or create a draft.
@@ -78,4 +78,4 @@ Factor counts remain diagnostic. The population estimate counts the final distin
 
 Planning previews use resourceKind `planningLevelPreview`, while their artifacts belong to the planningLevel resource. Lease recovery gets a fresh row token in that same table. Activation checks target/revision versions and captured artifact identities; unrelated revision edits can conservatively supersede a build. Deletion releases bindings for later collection. See [shared activation and strict storage](ENGINE_AND_STORAGE.md).
 
-Regression coverage includes parent-first bulk ordering, waiting for parent activation, dependency-cycle/missing-parent rejection, partial failure refresh, read-only/empty/busy actions, optional/composite/attribute bindings, membership versus functional enrichment, Cartesian name collisions, projection grain/ambiguous attributes, NULL/duplicate keys, full validation with 100-row samples, build limits, staged Preview without Save, reuse, conflicts, clone/publication and previous-generation preservation.
+Regression coverage includes parent-first bulk ordering, waiting for parent activation, dependency-cycle/missing-parent rejection, partial failure refresh, read-only/empty/busy actions, optional/composite/attribute bindings, membership versus functional enrichment, Cartesian name collisions, projection grain/ambiguous attributes, NULL/duplicate keys, full validation with 50-row samples, build limits, staged Preview without Save, reuse, conflicts, clone/publication and previous-generation preservation.

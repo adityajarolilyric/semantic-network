@@ -2,6 +2,7 @@ from typing import Literal
 
 from pydantic import Field, model_validator, model_serializer
 
+from .managed_tables import PivotStage
 from .common import DocumentMetadata, Identifier, Schema, SemanticInput, unique
 
 
@@ -80,6 +81,7 @@ class CalendarSchemaInput(Schema):
     transactionId: Identifier
     sourceId: Identifier
     calendarResolution: CalendarResolution
+    pivot: PivotStage | None = None
 
 
 class ResolutionAxis(Schema):
@@ -140,6 +142,7 @@ class GrainResolution(Schema):
 
 class TransactionDefinition(Schema):
     sourceId: Identifier
+    pivot: PivotStage | None = None
     planningLevelId: Identifier
     mappingMode: Literal["direct", "resolve_multi_grain"] = "direct"
     resolution: GrainResolution | None = None
@@ -180,6 +183,8 @@ class TransactionDefinition(Schema):
     @model_serializer(mode="wrap")
     def serialize(self, handler):
         value = handler(self)
+        if value.get("pivot") is None:
+            value.pop("pivot", None)
         if value.get("calendarResolution") is None:
             value.pop("calendarResolution", None)
         return value

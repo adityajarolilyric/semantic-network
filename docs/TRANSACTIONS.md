@@ -13,7 +13,7 @@ Map every native grain key exactly once to the effective source schema. Multiple
 Use `mappingMode="resolve_multi_grain"` when rows assign values at native or coarser grains. Match the **actual native intersections**, not a Cartesian product of dimension members.
 
 - Fixed-column rules map supplied source fields to native/dimension attributes. All present restrictions must hold.
-- Level/value rules map a selector literal (for example id or brand) and member value to a stable semantic attribute.
+- New rules use **Column equals attribute** only. Pivot long attribute/value pairs into explicit columns first. Saved legacy Level/Value rules remain executable and unchanged rules can be saved; new or modified selector rules are rejected by CRUD.
 - Every native axis needs a constraint unless `allowAll` explicitly permits absence. Missing is not an implicit broadcast. Time must be covered too.
 - A row is one independent assignment. EAV rows that jointly describe one fact must be pivoted/grouped using fact identity first.
 
@@ -36,14 +36,10 @@ An abbreviated definition (add an axis for every native key):
       "grainColumnId": "product",
       "allowAll": false,
       "rules": [{
-        "ruleId": "product_selector",
-        "kind": "level_value",
-        "selectorColumnId": "col_level",
-        "valueColumnId": "col_member",
-        "selectors": [
-          {"value": "id", "target": {"dimensionId": "Product", "columnId": "product_id"}},
-          {"value": "brand", "target": {"dimensionId": "Product", "columnId": "brand"}}
-        ],
+        "ruleId": "product_brand",
+        "kind": "column",
+        "sourceColumnId": "pv_brand",
+        "target": {"dimensionId": "Product", "columnId": "brand"},
         "blankIsAbsent": true
       }]
     }],
@@ -75,18 +71,19 @@ Profiles changing between discovery and execution fail instead of losing assignm
 
 Defaults: `METADATA_RESOLUTION_MAX_PROFILES=64` (max 256), `METADATA_RESOLUTION_MAX_ROWS=1000000` expanded matches (max 10,000,000). Typed contracts also bound 16 rules total (eight per axis), 32 native axes, 32 values and four order fields. SQL-node/byte, memory/time/thread limits apply. Expansion checks themselves are resource-bounded queries, not advance cardinality estimates; large legitimate broadcasts may fail clearly. Never truncate an active result. Diagnostics include input rows, profiles, matches before overlay, winners, overwritten matches and replaced identical assignments.
 
-## Selector discovery and APIs
+## Pivot discovery and APIs
 
-Choosing a Level column automatically discovers distinct nonempty literals from the **saved managed output**, including pivot columns. Display fixed literals; users map each to a planning/dimension attribute. Discover refreshes, preserves surviving mappings and removes disappeared literals; new literals need mapping. No manual selector/add/remove inputs. Reject more than 32 literals or values over 200 characters; NULL/empty literals are not mappings. Discovery fills only unsaved form state.
+Authoring order is **optional object Pivot → optional Date resolution → optional Multi-grain resolution**. Each stage reads the preceding effective schema. Pivot configuration belongs to this Transaction (`definition.pivot`), independently of other objects using its Managed Table. Discover enumerates actual attribute literals from the saved managed input; users choose output columns, then map those columns to native/dimension attributes. All present column restrictions apply together; absent values follow the explicit blank/allow-all rules.
 
-Reuse `GET /managed-tables/{source}/attribute-values?managedOutput=true`, with paginated values/nextOffset and a captured artifact ID. This path leases/verifies the saved output and rejects changed/expired artifacts; Pivot's default discovery still reads raw source columns.
+Raw Data Preview reads the imported physical source. Normal **Preview** executes the configured stages in order, validates the full input, and displays at most 50 transformed rows. Intermediate Pivot and Calendar previews are also available before native mapping is complete. A final transaction Preview requires a current built native population; it does not apply measure aggregation, which is configured later.
 
 Revision-scoped paths:
 
 - `GET /transactions/resolution/options?planningLevelId={id}`: reachable targets/labels.
-- `POST /transactions/resolution/preview`: unsaved TransactionInput; validate and show at most 100 rows/diagnostics using the Source table component. Requires current native population; saves/creates nothing.
+- `POST /transactions/resolution/preview`: unsaved TransactionInput; validate and show at most 50 rows/diagnostics using the Source table component. Requires current native population; saves/creates nothing.
 - `GET /transactions/{id}/schema`: effective columns/value IDs. Do not invent native-key types before population build.
-- Existing CRUD persists resolution; Build Semantic Network compiles it when loading measures.
+- `POST /transactions/input/schema` and `/transactions/input/preview`: `{objectId, sourceId, pivot}` → object-owned pivot schema/sample, independent of native mapping.
+- Existing CRUD persists pivot/calendar/resolution metadata; Build Semantic Network compiles the same stages when loading measures.
 
 Preview captures/renews read leases and rejects revision/input changes; materialisation uses build pins. Both use the same compiler/checks. Measures are not needed to configure or preview resolution.
 
@@ -115,7 +112,7 @@ Before the native LEFT JOIN, the measure's configured Time policy combines daily
 
 Readiness/validation: capture and lease the calendar's managed artifact even if it is not a planning population dependency. Apply calendar filters; identical day/attribute rows deduplicate, conflicting day/attribute/order tuples fail. Accept Date/Date32 or ISO YYYY-MM-DD strings; reject missing/invalid/reversed endpoints, out-of-bounds ranges, no eligible dates, unmatched native mappings and expansion beyond configured limits. Sparse calendars define eligible days; missing days are not synthesized. A weekly-only calendar requires a daily calendar first. DateTime needs a future timezone contract.
 
-UI flow: enable **Resolve a date range using a calendar**, select endpoints/calendar/attributes, optionally preview calendar data, then map derived fields. The effective schema is obtained from the backend; configuration persists in MongoDB. Preview uses the shared table component (100 rows), saves nothing, and does not require a built native planning level.
+UI flow: enable **Resolve a date range using a calendar**, select endpoints/calendar/attributes, optionally preview calendar data, then map derived fields. The effective schema is obtained from the backend; configuration persists in MongoDB. Preview uses the shared table component (50 rows), saves nothing, and does not require a built native planning level.
 
 Additional endpoints (under the revision):
 
@@ -131,3 +128,5 @@ Compatibility: saved axis-level `resolution.axes[].dateRange` remains supported 
 Owners: `schemas/transactions.py`, `api/transactions.py`, `services/transaction_resolution.py`, `engine/{calendar_resolution,transaction_resolution,date_range_resolution,measure_compiler}.py`, and TransactionCalendarEditor/TransactionResolutionEditor/TransactionDateRangeEditor. Measure compilation caches the resolved relation without changing downstream policies.
 
 Tests cover order reversal/ties, NULL winners, Split/Copy/no redistribution, typed selectors, missing/unmatched/all-member constraints, shadowed rows, legacy partitions, expansion limits, native measure loads, sparse/full date ranges, fiscal weeks, Time AVG/First/Last, partial-period overrides, stale leases, saved UI state and two-table preservation. All data-changing fixtures are disposable.
+
+A schema/preview request never changes a shared Managed Table. Pivot output IDs include owner object, stage, pair and literal, preserving identity across renames/revisions while isolating owners. Column discovery precedes semantic mapping; no automatic dimension matching by display name is inferred. Transaction schema endpoints include generated pivot/calendar columns, so referenced measures can select numeric pivot outputs.

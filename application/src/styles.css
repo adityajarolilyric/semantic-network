@@ -2418,3 +2418,26 @@ fieldset:disabled textarea {
 .measure-output-level .meta-field {
   margin-bottom: 0;
 }
+
+.transformation-section {
+  border: 1px solid var(--border, #dde3ef);
+  border-radius: 12px;
+  margin: 16px 0;
+  background: var(--surface, #fff);
+  min-width: 0;
+}
+.transformation-section > summary {
+  cursor: pointer;
+  padding: 14px 18px;
+  font-weight: 600;
+}
+.transformation-section > summary > span:last-child {
+  float: right;
+  font-size: 12px;
+  font-weight: 400;
+}
+.transformation-section-body { padding: 0 18px 18px; min-width: 0; }
+.transformation-section-body > fieldset.meta-subsection { margin: 0; padding: 0; border: 0; }
+.object-preview-footer { min-width: 0; }
+.object-preview-footer > div > .secondary-button { margin: 10px 0; }
+.object-preview-footer .data-preview { margin-top: 16px; }

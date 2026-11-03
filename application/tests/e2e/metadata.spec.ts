@@ -57,7 +57,14 @@ test('manage from the source grid and capture PLT/PT metadata without visible in
       (s: { definition: { keyColumns: string[] } }) => s.definition.keyColumns.length === 0,
     ),
   ).toBeTruthy()
-  await nav(page, 'Managed Tables')
+  await expect(
+    page
+      .getByRole('navigation', { name: 'Workspace', exact: true })
+      .getByRole('button', { name: 'Managed Tables', exact: true }),
+  ).toHaveCount(0)
+  const managedUrl = new URL(page.url())
+  managedUrl.searchParams.set('tab', 'managed')
+  await page.goto(managedUrl.toString())
   await expect(page.locator('.meta-object-card')).toHaveCount(6)
   for (const f of [
     {

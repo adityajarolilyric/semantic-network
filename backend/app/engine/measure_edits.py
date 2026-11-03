@@ -299,7 +299,9 @@ class MeasureEditCompiler(MeasureCompiler):
             source = self.managed[dim["sourceId"]]
             typ = next(
                 c["physicalType"]
-                for c in source["columns"]
+                for c in self.object_input(self.objects[field["dimensionId"]], source)[
+                    1
+                ]
                 if c["columnId"] == dc["sourceColumnId"]
             )
             literal = (

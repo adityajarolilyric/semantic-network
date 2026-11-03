@@ -615,6 +615,45 @@ export function PlanningViewPanel({
                   </label>
                 ))}
               </div>
+              <ol className="planning-axis-fields" aria-label="Measure order">
+                {measures.map((id, index) => {
+                  const name = options.measures.find((m) => m.measureId === id)?.name ?? id
+                  return (
+                    <li key={id}>
+                      <span>{name}</span>
+                      <div>
+                        <button
+                          type="button"
+                          className="planning-field-action"
+                          disabled={!index}
+                          aria-label={'Move ' + name + ' up in values'}
+                          onClick={() =>
+                            change(() =>
+                              setMeasures((current) => {
+                                const next = [...current]
+                                ;[next[index - 1], next[index]] = [next[index], next[index - 1]]
+                                return next
+                              }),
+                            )
+                          }
+                        >
+                          ↑
+                        </button>
+                        <button
+                          type="button"
+                          className="planning-field-action"
+                          aria-label={'Remove ' + name + ' from values'}
+                          onClick={() =>
+                            change(() => setMeasures(measures.filter((m) => m !== id)))
+                          }
+                        >
+                          ×
+                        </button>
+                      </div>
+                    </li>
+                  )
+                })}
+              </ol>
               {!options.measures.length && (
                 <p className="planning-axis-empty">
                   Create measures, then build the Semantic Network in Materialise.

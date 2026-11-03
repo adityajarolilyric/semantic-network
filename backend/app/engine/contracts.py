@@ -72,6 +72,7 @@ class RelationScan:
     filters: dict | None = None
     generation: str | None = None
     nonnullable_ids: tuple[str, ...] = ()
+    transform: LogicalPlan | None = None
 
 
 @dataclass(frozen=True)

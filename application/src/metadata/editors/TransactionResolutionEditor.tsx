@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { FieldHelp } from '../../components/FieldHelp'
 import { metadataApi } from '../api'
 import type {
@@ -58,20 +58,15 @@ export function resolutionComplete(value: GrainResolution | null | undefined) {
     )
   )
 }
-function makeRule(
-  kind: ResolutionRule['kind'],
-  ruleId = 'rule_' + crypto.randomUUID(),
-): ResolutionRule {
-  return kind === 'column'
-    ? { ruleId, kind, sourceColumnId: '', target: null, selectors: [], blankIsAbsent: true }
-    : {
-        ruleId,
-        kind,
-        selectorColumnId: '',
-        valueColumnId: '',
-        selectors: [],
-        blankIsAbsent: true,
-      }
+function makeRule(): ResolutionRule {
+  return {
+    ruleId: 'rule_' + crypto.randomUUID(),
+    kind: 'column',
+    sourceColumnId: '',
+    target: null,
+    selectors: [],
+    blankIsAbsent: true,
+  }
 }
 
 export function TransactionResolutionEditor({
@@ -80,7 +75,6 @@ export function TransactionResolutionEditor({
   columns,
   level,
   base,
-  sourceId,
   calendarResolved = false,
 }: {
   value: GrainResolution
@@ -218,17 +212,11 @@ export function TransactionResolutionEditor({
                       key={rule.ruleId}
                       aria-label={'Rule ' + (ri + 1) + ' for ' + name}
                     >
-                      <Select
-                        label="Match using"
-                        value={rule.kind}
-                        items={[
-                          { value: 'column', label: 'Column equals attribute' },
-                          { value: 'level_value', label: 'Level and value' },
-                        ]}
-                        onChange={(kind) =>
-                          setRule(ri, makeRule(kind as ResolutionRule['kind'], rule.ruleId))
-                        }
-                      />
+                      <p className="meta-hint">
+                        {rule.kind === 'column'
+                          ? 'Column equals attribute'
+                          : 'Legacy matching rule'}
+                      </p>
                       {rule.kind === 'column' ? (
                         <div className="meta-grid">
                           <Select
@@ -245,31 +233,15 @@ export function TransactionResolutionEditor({
                           />
                         </div>
                       ) : (
-                        <>
-                          <div className="meta-grid">
-                            <Select
-                              label="Level column"
-                              value={rule.selectorColumnId ?? ''}
-                              items={sourceOptions}
-                              onChange={(selectorColumnId) =>
-                                setRule(ri, { ...rule, selectorColumnId, selectors: [] })
-                              }
-                            />
-                            <Select
-                              label="Matching value column"
-                              value={rule.valueColumnId ?? ''}
-                              items={sourceOptions}
-                              onChange={(valueColumnId) => setRule(ri, { ...rule, valueColumnId })}
-                            />
-                          </div>
-                          <DiscoveredSelectors
-                            rule={rule}
-                            base={base}
-                            sourceId={sourceId}
-                            targets={targets}
-                            onChange={(next) => setRule(ri, next)}
-                          />
-                        </>
+                        <p className="meta-hint">
+                          This saved rule uses legacy Level and Value matching. Pivot{' '}
+                          {columns.find((c) => c.columnId === rule.selectorColumnId)?.name ??
+                            'the selector'}{' '}
+                          and{' '}
+                          {columns.find((c) => c.columnId === rule.valueColumnId)?.name ??
+                            'value columns'}{' '}
+                          first, then remove this rule and add Column equals attribute rules.
+                        </p>
                       )}
                       <div className="resolution-rule-footer">
                         <Check
@@ -292,7 +264,7 @@ export function TransactionResolutionEditor({
                       type="button"
                       className="secondary-button"
                       disabled={axis.rules.length >= 8}
-                      onClick={() => setAxis({ rules: [...axis.rules, makeRule('column')] })}
+                      onClick={() => setAxis({ rules: [...axis.rules, makeRule()] })}
                     >
                       Add matching rule
                     </button>
@@ -445,119 +417,6 @@ export function TransactionResolutionEditor({
           </div>
         </div>
       </div>
-    </div>
-  )
-}
-
-function DiscoveredSelectors({
-  rule,
-  base,
-  sourceId,
-  targets,
-  onChange,
-}: {
-  rule: ResolutionRule
-  base?: string
-  sourceId: string
-  targets: TargetOption[]
-  onChange: (rule: ResolutionRule) => void
-}) {
-  const [refresh, setRefresh] = useState(0)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
-  const latest = useRef({ rule, onChange })
-  latest.current = { rule, onChange }
-  useEffect(() => {
-    if (!base || !sourceId || !rule.selectorColumnId) return
-    const controller = new AbortController()
-    setLoading(true)
-    setError('')
-    void metadataApi
-      .request<{ values: (string | number | boolean | null)[]; nextOffset: number | null }>(
-        base +
-          '/managed-tables/' +
-          encodeURIComponent(sourceId) +
-          '/attribute-values?managedOutput=true&columnId=' +
-          encodeURIComponent(rule.selectorColumnId) +
-          '&limit=34',
-        'GET',
-        undefined,
-        undefined,
-        controller.signal,
-      )
-      .then((result) => {
-        if (controller.signal.aborted) return
-        const values = [...new Set(result.values.filter((v) => v !== null && v !== '').map(String))]
-        if (result.nextOffset !== null || values.length > 32)
-          throw new Error('More than 32 selector values. Choose another Level column.')
-        if (values.some((value) => value.length > 200))
-          throw new Error('Selector values must be at most 200 characters.')
-        if (!values.length) throw new Error('No selector values found in this Level column.')
-        const current = latest.current
-        const selectors = values.map(
-          (value) =>
-            current.rule.selectors.find((s) => s.value === value) ?? {
-              value,
-              target: { columnId: '' },
-            },
-        )
-        if (JSON.stringify(selectors) !== JSON.stringify(current.rule.selectors))
-          current.onChange({ ...current.rule, selectors })
-      })
-      .catch((error) => {
-        if (!controller.signal.aborted) setError(error.message)
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setLoading(false)
-      })
-    return () => controller.abort()
-  }, [base, sourceId, rule.selectorColumnId, refresh])
-  return (
-    <div className="resolution-discovery">
-      <div className="meta-toolbar">
-        <p className="meta-hint">
-          Selector values are discovered from the saved managed table. Map each value to an
-          attribute.
-        </p>
-        <button
-          type="button"
-          className="secondary-button"
-          disabled={loading || !base || !rule.selectorColumnId}
-          onClick={() => setRefresh((v) => v + 1)}
-        >
-          {loading ? 'Discovering…' : 'Discover'}
-        </button>
-      </div>
-      {error && (
-        <p className="meta-error" role="alert">
-          {error}
-        </p>
-      )}
-      {rule.selectors.map((selector, index) => (
-        <div className="resolution-selector" key={selector.value}>
-          <span className="resolution-selector-value">{selector.value}</span>
-          <Select
-            label={'Attribute for ' + selector.value}
-            value={targetKey(selector.target)}
-            items={targets.map((t) => ({ value: targetKey(t.target), label: t.label }))}
-            onChange={(key) =>
-              onChange({
-                ...rule,
-                selectors: rule.selectors.map((s, i) =>
-                  i === index
-                    ? {
-                        ...s,
-                        target: targets.find((t) => targetKey(t.target) === key)?.target ?? {
-                          columnId: '',
-                        },
-                      }
-                    : s,
-                ),
-              })
-            }
-          />
-        </div>
-      ))}
     </div>
   )
 }

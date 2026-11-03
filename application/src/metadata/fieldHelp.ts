@@ -155,7 +155,7 @@ const help: Record<string, string> = {
   'Build Semantic Network':
     'Builds compatible measure representations across all defined planning levels using saved policies. Planning populations must be ready. The preview selection does not restrict the build.',
   'Preview planning level':
-    'Choose the built table to inspect. Shows at most 100 rows and does not trigger a build.',
+    'Choose the built table to inspect. Shows at most 50 rows and does not trigger a build.',
   'Network status':
     'Ready means built values are available. Building means work is in progress. Needs rebuild means inputs changed. Failed means the latest build could not finish; any previous generation stays intact.',
   'What gets materialised':

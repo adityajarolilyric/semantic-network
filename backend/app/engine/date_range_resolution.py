@@ -137,12 +137,13 @@ class DateRangeCompiler:
         h, cfg = self.h, self.p.config
         dim = self.p.dimension["definition"]
         source = h.managed[dim["sourceId"]]
-        source_cols = {c["columnId"]: c for c in source["columns"]}
+        input_table, columns = h.object_input(self.p.dimension, source)
+        source_cols = {c["columnId"]: c for c in columns}
         fields = ", ".join(
             q(source_cols[c["sourceColumnId"]]["name"]) + " AS " + q(c["columnId"])
             for c in dim["columns"]
         )
-        dim_sql = f"SELECT {fields} FROM {h.table(source['physicalName'])}"
+        dim_sql = f"SELECT {fields} FROM {input_table}"
         if dim.get("filters"):
             dim_sql = f"SELECT * FROM ({dim_sql}) WHERE {h.filter_sql(dim['filters'], list(c['columnId'] for c in dim['columns']))}"
         date = strict_date(q(dim["time"]["dateColumnId"]))

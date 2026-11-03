@@ -253,6 +253,8 @@ class ClickHouseWarehouseRepository(WarehouseRepository):
         return str(value)
 
     async def preview(self, table, offset, limit):
+        limit = min(limit, 50)
+
         def operation(connect):
             client = connect()
             info = self.table_info(client, table)

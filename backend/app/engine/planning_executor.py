@@ -68,6 +68,8 @@ class PlanningTableExecutor:
                     raise MetadataError(
                         check.code,
                         {
+                            "duplicate_pivot_cell": "Duplicate pivot cells must be corrected in the source data.",
+                            "conflicting_retained_values": "Retained columns must have one value per record key. Correct the source data or select the complete record keys.",
                             "resolution_profiles_changed": "Source matching profiles changed during execution. Retry the build or preview.",
                             "ambiguous_resolution_time_order": "First/Last requires calendar ordering values that distinguish dates within each native period.",
                             "invalid_resolution_calendar": "The daily calendar contains an invalid date or a null/incompatible native period key.",
@@ -275,8 +277,9 @@ class PlanningTableExecutor:
 
     async def preview(self, compiled):
         def operation(connect):
-            result = connect().query(
-                f"SELECT * FROM ({compiled.sql}) LIMIT 100",
+            client = connect()
+            result = client.query(
+                f"SELECT * FROM ({compiled.sql}) LIMIT 50",
                 settings=self.execution_settings(),
             )
             return {
@@ -284,7 +287,13 @@ class PlanningTableExecutor:
                 "rows": [
                     [self.warehouse.cell(v) for v in row] for row in result.result_rows
                 ],
-                "limit": 100,
+                "limit": 50,
+                "rowCount": int(
+                    client.command(
+                        f"SELECT count() FROM ({compiled.sql})",
+                        settings=self.execution_settings(),
+                    )
+                ),
                 "validation": "sample_only",
             }
 

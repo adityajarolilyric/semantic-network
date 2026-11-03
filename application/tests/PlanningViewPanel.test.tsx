@@ -277,3 +277,31 @@ it('detects rebuilds before querying a layout that is still open', async () => {
   expect(screen.getByLabelText('FQTY')).not.toBeChecked()
   expect(request.mock.calls.some(([path]) => path.endsWith('/query'))).toBe(false)
 })
+
+it('reorders selected measures and submits the order to the query', async () => {
+  const user = userEvent.setup()
+  const request = vi
+    .spyOn(metadataApi, 'request')
+    .mockImplementation(async (path) =>
+      path.endsWith('/options') ? (options as never) : (result as never),
+    )
+  render(<PlanningViewPanel base="/models/m/revisions/r" revisionVersion={1} />)
+  await user.click(await screen.findByLabelText('FQTY'))
+  await user.click(screen.getByLabelText('SQTY'))
+  await user.click(screen.getByLabelText('Move SQTY up in values'))
+  expect(
+    within(screen.getByLabelText('Measure order'))
+      .getAllByRole('listitem')
+      .map((li) => li.textContent),
+  ).toEqual(['SQTY↑×', 'FQTY↑×'])
+  await user.click(screen.getByRole('button', { name: 'Update pivot' }))
+  await waitFor(() =>
+    expect(request).toHaveBeenLastCalledWith(
+      '/models/m/revisions/r/planning-view/query',
+      'POST',
+      { rows: [], columns: [], measures: ['s', 'f'] },
+      undefined,
+      expect.any(AbortSignal),
+    ),
+  )
+})

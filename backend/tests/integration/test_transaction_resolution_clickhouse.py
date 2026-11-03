@@ -155,7 +155,28 @@ def test_resolution_split_copy_and_measure_loading(clickhouse_app, mode, expecte
     assert by_cell(result.json()) == {("P1", "L1"): "30.0", ("P2", "L1"): expected}
     assert result.json()["diagnostics"]["overwrittenMatches"] == 1
     assert client.get(BASE + "/transactions/mixed").status_code == 404
-    assert_post(client, "/transactions", tx)
+
+    # Seed a pre-upgrade definition: new CRUD forbids creating Level/Value rules.
+    async def seed_legacy(repo):
+        from backend.app.schemas.transactions import TransactionInput
+        from backend.app.services.base import now, scope
+
+        query = scope("default_model", "revision_1")
+        service = client.app.state.container.transactions
+        await service.touch_revision(repo, "default_model", "revision_1")
+        await repo.insert(
+            "semantic_objects",
+            {
+                **TransactionInput.model_validate(tx).model_dump(),
+                **query,
+                "version": 1,
+                "createdAt": now(),
+                "updatedAt": now(),
+            },
+        )
+
+    client.portal.call(client.app.state.container.store.transaction, seed_legacy)
+
     schema = client.get(BASE + "/transactions/mixed/schema")
     assert schema.status_code == 200, schema.text
     measure(client, "QTY", "mixed", "native", "col_5")

@@ -51,11 +51,31 @@ class MeasureCompiler(PlanningLevelCompiler):
         self.resolution_profiles = resolution_profiles or {}
         self.resolution_max_rows = resolution_max_rows
         self.transaction_relations = {}
+        self.object_inputs = {}
         self.ctes, self.cache, self.visiting, self.nodes = {}, {}, set(), []
         self.coverage_nodes = {}
-        self.assertions = []
+        self.assertions = self.input_checks
         self.max_nodes = 1024
         self._lookup_checks = set()
+
+    def object_input(self, owner, relation):
+        from .contracts import digest
+
+        pivot = owner["definition"].get("pivot")
+        if not pivot or not pivot.get("enabled", True):
+            return super().object_input(owner, relation)
+        identity = digest(
+            [
+                owner["objectId"],
+                pivot,
+                relation.get("artifactId", relation["physicalName"]),
+            ]
+        )
+        if identity not in self.object_inputs:
+            table, columns = super().object_input(owner, relation)
+            node = self.cte("SELECT * FROM " + table)
+            self.object_inputs[identity] = (q(node), columns)
+        return self.object_inputs[identity]
 
     def keys(self, level):
         return self.levels[level]["definition"]["grain"]["keyIds"]
@@ -130,16 +150,27 @@ class MeasureCompiler(PlanningLevelCompiler):
 
         if transaction_id not in self.transaction_relations:
             tx = self.objects[transaction_id]
-            if (
-                tx["definition"].get("calendarResolution")
-                and tx["definition"].get("mappingMode") != "resolve_multi_grain"
-            ):
+            if tx["definition"].get("mappingMode") != "resolve_multi_grain":
                 from .calendar_resolution import CalendarResolutionCompiler
                 from .transaction_resolution import ResolvedTransaction
 
-                c = CalendarResolutionCompiler(self, tx)
-                node = c.compile()
-                cols = [{**col, "storageName": col["columnId"]} for col in c.p.schema()]
+                if tx["definition"].get("calendarResolution"):
+                    c = CalendarResolutionCompiler(self, tx)
+                    node = c.compile()
+                    input_cols = c.p.schema()
+                else:
+                    table, input_cols = self.object_input(
+                        tx, self.managed[tx["definition"]["sourceId"]]
+                    )
+                    node = self.cte(
+                        "SELECT "
+                        + ", ".join(
+                            q(c["name"]) + " AS " + q(c["columnId"]) for c in input_cols
+                        )
+                        + " FROM "
+                        + table
+                    )
+                cols = [{**col, "storageName": col["columnId"]} for col in input_cols]
                 result = ResolvedTransaction(
                     node, cols, tx["definition"]["keyMappings"], node, [node], node
                 )
@@ -162,8 +193,8 @@ class MeasureCompiler(PlanningLevelCompiler):
         d = measure["definition"]
         level = d["nativePlanningLevelId"]
         tx = self.objects[d["transactionId"]]["definition"]
-        if tx.get("mappingMode") == "resolve_multi_grain" or tx.get(
-            "calendarResolution"
+        if tx.get("mappingMode") == "resolve_multi_grain" or (
+            tx.get("calendarResolution") or tx.get("pivot")
         ):
             resolved = self.resolve_transaction(d["transactionId"])
             table = q(resolved.node)
@@ -186,8 +217,8 @@ class MeasureCompiler(PlanningLevelCompiler):
             self.widen(value, measure), d["aggregation"]["nonTime"], d["aggregation"]
         )
         grouped = None
-        if tx.get("mappingMode") == "resolve_multi_grain" or tx.get(
-            "calendarResolution"
+        if tx.get("mappingMode") == "resolve_multi_grain" or (
+            tx.get("calendarResolution") or tx.get("pivot")
         ):
             from .date_range_resolution import RangeMeasureAggregator
 
@@ -238,7 +269,8 @@ class MeasureCompiler(PlanningLevelCompiler):
                         if b["dimensionId"] == dim_id
                     )
                     source = self.managed[definition["sourceId"]]
-                    columns = {c["columnId"]: c for c in source["columns"]}
+                    input_table, input_cols = self.object_input(dim, source)
+                    columns = {c["columnId"]: c for c in input_cols}
                     alias_dim = "lookup_" + str(len(dimensions))
                     dimensions[dim_id] = alias_dim
                     dim_sql = (
@@ -250,7 +282,7 @@ class MeasureCompiler(PlanningLevelCompiler):
                             for c in definition["columns"]
                         )
                         + " FROM "
-                        + self.table(source["physicalName"])
+                        + input_table
                     )
                     if definition.get("filters"):
                         dim_sql = f"SELECT * FROM ({dim_sql}) WHERE {self.filter_sql(definition['filters'], [c['columnId'] for c in definition['columns']])}"

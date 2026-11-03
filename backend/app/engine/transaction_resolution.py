@@ -248,6 +248,9 @@ class TransactionResolutionPlanner:
                 calendar_columns
                 or self.objects[dim["sourceId"]]["definition"]["columns"]
             )
+            from .object_inputs import input_columns
+
+            source_columns = input_columns(self.date_range.dimension, source_columns)
             physical = next(
                 (
                     c
@@ -333,7 +336,7 @@ class TransactionResolutionCompiler:
 
     def compile(self):
         h, p, config = self.host, self.planner, self.config
-        source_table = h.table(self.source["physicalName"])
+        source_table, _ = h.object_input(self.tx, self.source)
         calendar_enabled = bool(p.calendar.config)
         if calendar_enabled:
             from .calendar_resolution import CalendarResolutionCompiler
@@ -461,7 +464,10 @@ class TransactionResolutionCompiler:
                     )
                     col = next(
                         c
-                        for c in h.managed[dim["sourceId"]]["columns"]
+                        for c in h.object_input(
+                            h.objects[coordinate.dimension_id],
+                            h.managed[dim["sourceId"]],
+                        )[1]
                         if c["columnId"] == dim_col["sourceColumnId"]
                     )
                 typ = col["physicalType"]
@@ -678,7 +684,7 @@ async def prepare_resolution_profiles(warehouse, objects, managed, limit, settin
         )
         table = warehouse.qualify(source["physicalName"])
         compiler = None
-        if planner.calendar.config:
+        if planner.calendar.config or tx["definition"].get("pivot"):
             from .measure_compiler import MeasureCompiler
             from .calendar_resolution import CalendarResolutionCompiler
 
@@ -686,7 +692,16 @@ async def prepare_resolution_profiles(warehouse, objects, managed, limit, settin
                 warehouse.settings.clickhouse_database, objects, {}, managed, None
             )
             compiler.resolution_max_rows = warehouse.settings.resolution_max_rows
-            node = CalendarResolutionCompiler(compiler, tx).compile()
+            if planner.calendar.config:
+                node = CalendarResolutionCompiler(compiler, tx).compile()
+            else:
+                input_table, cols = compiler.object_input(tx, source)
+                node = compiler.cte(
+                    "SELECT "
+                    + ", ".join(q(c["name"]) + " AS " + q(c["columnId"]) for c in cols)
+                    + " FROM "
+                    + input_table
+                )
             table = (
                 "(SELECT "
                 + ", ".join(

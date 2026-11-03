@@ -1,13 +1,75 @@
+import { TransformationSection } from './TransformationSection'
+import { ObjectPivotEditor } from './ObjectPivotEditor'
+import { PlanningResult, type PlanningTableStatus } from '../PlanningTablePanel'
+import { metadataApi } from '../api'
+import { RawDataPreview } from './RawDataPreview'
 import { FieldHelp } from '../../components/FieldHelp'
-import { useState } from 'react'
-import type { Dimension } from '../types'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import type { Dimension, SourceColumn } from '../types'
 import { Actions, Check, options, Select, Text, type EditorProps } from './Fields'
 
-export function DimensionEditor({ initial, data, onSave, onCancel, busy }: EditorProps<Dimension>) {
+export function DimensionEditor({
+  initial,
+  data,
+  onSave,
+  onCancel,
+  busy,
+  base,
+}: EditorProps<Dimension> & { base?: string }) {
   const [value, set] = useState(initial)
   const d = value.definition
-  const update = (patch: Partial<typeof d>) => set({ ...value, definition: { ...d, ...patch } })
+  const update = (patch: Partial<typeof d>) =>
+    set((current) => ({ ...current, definition: { ...current.definition, ...patch } }))
   const source = data.sources.find((s) => s.objectId === d.sourceId)
+  const [inputColumns, setInputColumns] = useState<SourceColumn[] | null>(null)
+  const [preview, setPreview] = useState<PlanningTableStatus | null>(null)
+  const [previewBusy, setPreviewBusy] = useState(false)
+  const [previewError, setPreviewError] = useState('')
+  const previewRequest = useRef<AbortController | null>(null)
+  useEffect(() => {
+    previewRequest.current?.abort()
+    setPreview(null)
+    setPreviewError('')
+    setPreviewBusy(false)
+    return () => previewRequest.current?.abort()
+  }, [value])
+  const reconcileColumns = useCallback((columns: SourceColumn[] | null) => {
+    setInputColumns(columns)
+    setPreview(null)
+    if (!columns) return
+    set((current) => {
+      const d = current.definition
+      const previous = new Map(d.columns.map((c) => [c.sourceColumnId, c]))
+      const next = columns.map((c) =>
+        previous.has(c.columnId)
+          ? { ...previous.get(c.columnId)!, name: c.name }
+          : { columnId: c.columnId, name: c.name, displayName: c.name, sourceColumnId: c.columnId },
+      )
+      const ids = new Set(next.map((c) => c.columnId))
+      const oldIds = new Set(d.columns.map((c) => c.columnId))
+      const keys = d.keyColumnIds.filter((cid) => ids.has(cid))
+      const time =
+        d.time && ids.has(d.time.dateColumnId) && ids.has(d.time.orderingColumnId) ? d.time : null
+      const definition = {
+        ...d,
+        columns: next,
+        keyColumnIds: keys,
+        labelColumnId: ids.has(d.labelColumnId)
+          ? d.labelColumnId
+          : (keys[0] ?? next[0]?.columnId ?? ''),
+        attributeColumnIds: [
+          ...new Set([
+            ...d.attributeColumnIds.filter((cid) => ids.has(cid)),
+            ...next.filter((c) => !oldIds.has(c.columnId)).map((c) => c.columnId),
+          ]),
+        ],
+        time,
+      }
+      return JSON.stringify(definition) === JSON.stringify(d)
+        ? current
+        : { ...current, definition, isTimeDim: !!time }
+    })
+  }, [])
   const cols = d.columns.map((c) => ({ value: c.columnId, label: c.displayName }))
   const exposed = new Set([...d.keyColumnIds, ...d.attributeColumnIds])
   return (
@@ -56,6 +118,22 @@ export function DimensionEditor({ initial, data, onSave, onCancel, busy }: Edito
           }}
         />
       </div>
+      <TransformationSection title="Pivot transformation" configured={!!d.pivot?.enabled}>
+        <ObjectPivotEditor
+          key={d.sourceId}
+          objectId={value.objectId}
+          source={source}
+          base={base}
+          kind="dimensions"
+          value={d.pivot}
+          onChange={(pivot) => {
+            update({ pivot })
+            setPreview(null)
+          }}
+          onColumns={reconcileColumns}
+          disabled={busy || previewBusy}
+        />
+      </TransformationSection>
       {d.columns.length > 0 && (
         <div className="dimension-columns-wrap">
           <table className="dimension-columns">
@@ -80,8 +158,9 @@ export function DimensionEditor({ initial, data, onSave, onCancel, busy }: Edito
               {d.columns.map((column, index) => {
                 const isKey = d.keyColumnIds.includes(column.columnId)
                 const nullable =
-                  source?.definition.columns.find((c) => c.columnId === column.sourceColumnId)
-                    ?.nullable ?? false
+                  (inputColumns ?? source?.definition.columns ?? []).find(
+                    (c) => c.columnId === column.sourceColumnId,
+                  )?.nullable ?? false
                 return (
                   <tr key={column.columnId}>
                     <td>
@@ -209,7 +288,69 @@ export function DimensionEditor({ initial, data, onSave, onCancel, busy }: Edito
           onChange={(description) => set({ ...value, description })}
         />
       </details>
-      <Actions busy={busy} canSave={d.keyColumnIds.length > 0} onCancel={onCancel} />
+
+      {previewError && (
+        <p className="meta-error" role="alert">
+          {previewError}
+        </p>
+      )}
+      {preview && (
+        <PlanningResult data={preview} name={value.name + ' — transformed'} showRefresh={false} />
+      )}
+      <RawDataPreview
+        source={source}
+        disabled={busy || previewBusy}
+        renderActions={(rawButton) => (
+          <Actions
+            busy={busy || previewBusy}
+            canSave={d.keyColumnIds.length > 0 && (!d.pivot?.enabled || !!inputColumns)}
+            onCancel={onCancel}
+          >
+            {rawButton}
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={
+                !base ||
+                !source ||
+                !d.keyColumnIds.length ||
+                (d.pivot?.enabled && !inputColumns) ||
+                previewBusy ||
+                busy
+              }
+              onClick={async () => {
+                const controller = new AbortController()
+                previewRequest.current?.abort()
+                previewRequest.current = controller
+                setPreviewBusy(true)
+                setPreviewError('')
+                setPreview(null)
+                try {
+                  const result = await metadataApi.request<PlanningTableStatus>(
+                    base + '/dimensions/preview',
+                    'POST',
+                    {
+                      ...value,
+                      displayName: value.name,
+                      definition: { ...d, attributeColumnIds: [...exposed] },
+                    },
+                    undefined,
+                    controller.signal,
+                  )
+                  if (!controller.signal.aborted) setPreview(result)
+                } catch (e) {
+                  if (!controller.signal.aborted)
+                    setPreviewError(e instanceof Error ? e.message : 'Preview failed.')
+                } finally {
+                  if (!controller.signal.aborted) setPreviewBusy(false)
+                }
+              }}
+            >
+              {previewBusy ? 'Loading preview…' : 'Preview'}
+            </button>
+          </Actions>
+        )}
+      />
     </form>
   )
 }

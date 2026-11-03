@@ -63,7 +63,7 @@ A normal view freezes its definition, not source rows. Guards are not continuous
 Save, Preview and Close sit at the bottom right below Optional managed output primary key:
 
 - Save builds and persists configuration, stays open and reloads the normalized saved definition/version. A failed save preserves unsaved inputs and the previous working view.
-- Preview reads the **saved view**. With unsaved changes, ask to Save/build first; declining performs neither operation. Editing clears an old preview. Use the shared Source `DataPreview`, capped at 100 rows without an extra refresh action.
+- Preview reads the **saved view**. With unsaved changes, ask to Save/build first; declining performs neither operation. Editing clears an old preview. Use the shared Source `DataPreview`, capped at 50 rows without an extra refresh action.
 - Close returns to the list, confirms discarding unsaved changes and performs no build/save. Disable it during an operation. Published definitions allow saved previews and tab browsing, not mutation.
 
 With Pivot enabled, show retained columns and optional record keys left and compact pair tabs right, stacking at widths ≤1100px. Only the active pair expands; tabs preserve configurations, show mapping/output counts and support arrows/Home/End. Discover is a button beside the attribute/value choices; Remove pair occupies that compact action area. Outputs remain checkbox lists with Select all/Deselect all. Discovery selects all initially; deselected choices remain visible. Do not show expected-value, output-name or value-type inputs. Reopening must initialize from the complete saved Source/managed attachment, not the raw API serializer that strips it.
@@ -78,7 +78,7 @@ Paths below are relative to `/api/v1/models/{model}/revisions/{revision}`:
 - `POST /managed-tables/{source}/disable`: If-Match; preserve configuration/data.
 - `GET /managed-tables/{source}/attribute-values?columnId=...&offset=0&limit=200`: structured values/nextOffset. Default reads raw input for Pivot; `managedOutput=true` leases/verifies saved output for transaction selector discovery and returns the artifact ID.
 - `POST /managed-tables/{source}/schema`: metadata-only proposed output analysis, including generated IDs before Save.
-- `GET /managed-tables/{source}/preview`: checked active-view rows, maximum 100. Compatibility POST accepts an unsaved proposed definition without saving/creating an artifact; current UI does not use it.
+- `GET /managed-tables/{source}/preview`: checked active-view rows, maximum 50. Compatibility POST accepts an unsaved proposed definition without saving/creating an artifact; current UI does not use it.
 - `POST /managed-tables/{source}/ensure-view`: Idempotency-Key; repair unchanged saved definition, including published views, without changing semantics.
 - `POST /managed-tables/upgrade-contract`: revision If-Match, after enabled tables are initialized.
 
@@ -91,3 +91,24 @@ New/UI revisions use contract 2. Initialize managed views on Sources builds miss
 Warehouse modules: `api/warehouse_sources.py`, `warehouse/{csv_parser,service,repository,schemas}.py`. Managed modules: `schemas/managed_tables.py`, `services/managed_tables.py`, `engine/{planner,compiler,executor,resolver}.py`, separate ManagedTablesAPI/EngineAPI. The lazy warehouse client allows metadata-only work during warehouse downtime; blocking work runs under a guarded thread boundary and cancellation waits for cleanup.
 
 Regression coverage includes ten-file sequential uploads, count/extension/size bounds, name collisions, partial failure/retry with stable per-file keys, catalog-refresh warnings, mobile overflow, typed CSVs, malformed headers, replay/name races/cleanup, identity duplicates, NULL pivot ambiguity, multiple pairs, stable IDs, quoted literals, failure preserving bindings, saved pivot reopening, effective-column consumption and desktop/mobile layouts. Shared execution/recovery lives in [Engine and storage](ENGINE_AND_STORAGE.md).
+
+
+## Independent Dimension and Transaction pivots
+
+Dimensions and Transactions optionally store `definition.pivot`, using the same typed PivotStage/operators as Managed Tables. Configuration is owned by that object and never edits the shared managed definition/view. Input is the saved managed output, including any pre-existing shared transformation. New owner-scoped output IDs hash owner object + stage + pair + literal; retained source IDs remain stable. Absent pivots are omitted from serialization to preserve old hashes.
+
+Both editors offer **Raw Data Preview** (physical imported data), an optional Pivot section, and normal **Preview** (the transformed object output). All previews use the shared Source table component and show at most 50 rows; data checks cover complete inputs. Dimensions apply pivot before their column mappings/filters/exposure; transactions apply pivot before Date resolution and Column-equals-attribute multi-grain matching. Retained columns and optional record keys follow the existing grouping contract. Generated names are disambiguated on collision; semantic display names remain independent.
+
+No extra physical staging/output table or persistent view is created for an object pivot. Planning dimension lookups, calendars, transaction resolution, materialisation and writeback use the same compiled input. Existing dimension-key nullability and mapping contracts still apply.
+
+Metadata-only schema and read-only preview endpoints (revision scoped):
+
+- `POST /dimensions/input/schema`, `/dimensions/input/preview`.
+- `POST /transactions/input/schema`, `/transactions/input/preview`.
+- Payload: `{objectId, sourceId, pivot}`; omit/null pivot for the managed input schema.
+- `POST /dimensions/preview` accepts a full DimensionInput and previews its exposed transformed columns.
+- `POST /transactions/resolution/preview` accepts the full TransactionInput and previews the final staged data.
+
+Schema discovery can run before native mappings are complete. Previews capture/renew managed read leases, verify input definitions and reject revision changes; they do not save metadata. Object pivots are committed with normal object CRUD and execute from frozen metadata snapshots when consumed. Previously saved Level/Value rules remain readable/executable during migration; the new UI creates only Column equals attribute rules.
+
+Preview UX: all table samples are capped at 50 rows and display shown/total rows (for example `50/159`); counting does not limit builds or full-input checks. Dimension/Transaction actions appear as Cancel → Raw Data Preview → Preview → Save metadata. Pivot and date resolution have collapsible configuration sections with status; object-owned transformations remain independent.

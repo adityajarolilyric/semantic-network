@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { metadataApi } from '../api'
-import type { CalendarResolution, SourceColumn } from '../types'
+import type { CalendarResolution, SourceColumn, PivotStage } from '../types'
 import type { ResolutionCalendar } from './TransactionDateRangeEditor'
 import { Checks, Select } from './Fields'
 import { PlanningResult, type PlanningTableStatus } from '../PlanningTablePanel'
@@ -14,6 +14,7 @@ export function TransactionCalendarEditor({
   sourceId,
   transactionId,
   levelId,
+  pivot,
 }: {
   value: CalendarResolution
   onChange: (value: CalendarResolution) => void
@@ -23,12 +24,14 @@ export function TransactionCalendarEditor({
   sourceId: string
   transactionId: string
   levelId: string
+  pivot?: PivotStage | null
 }) {
   const [calendars, setCalendars] = useState<ResolutionCalendar[]>([])
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [preview, setPreview] = useState<PlanningTableStatus | null>(null)
   const serialized = JSON.stringify(value)
+  const pivotSignature = JSON.stringify(pivot ?? null)
   useEffect(() => {
     if (!base || !levelId) return
     const controller = new AbortController()
@@ -70,6 +73,7 @@ export function TransactionCalendarEditor({
           transactionId,
           sourceId,
           calendarResolution: JSON.parse(serialized),
+          pivot: JSON.parse(pivotSignature),
         },
         undefined,
         controller.signal,
@@ -83,7 +87,7 @@ export function TransactionCalendarEditor({
     return () => controller.abort()
     // The serialized configuration keeps requests independent of parent renders.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [base, sourceId, transactionId, serialized, onColumns])
+  }, [base, sourceId, transactionId, serialized, pivotSignature, onColumns])
   const calendar = calendars.find((c) => c.dimensionId === value.dimensionId)
   const dateColumns = columns
     .filter((c) => /String|^(Date|Date32)$/.test(c.physicalType))
@@ -151,6 +155,7 @@ export function TransactionCalendarEditor({
                 transactionId,
                 sourceId,
                 calendarResolution: value,
+                pivot,
               }),
             )
           } catch (e) {

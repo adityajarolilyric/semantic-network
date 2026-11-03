@@ -253,9 +253,9 @@ describe('source workspace', () => {
     tables = [table('Forecast', 60), table('Sales')]
     render(<App />)
     await user.click(await screen.findByRole('button', { name: 'Preview Forecast' }))
-    expect(await screen.findByText('Showing 1–50 of 60 rows')).toBeVisible()
+    expect(await screen.findByText('50/60 rows')).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Next page' }))
-    expect(await screen.findByText('Showing 51–60 of 60 rows')).toBeVisible()
+    expect(await screen.findByText('10/60 rows')).toBeVisible()
     expect(screen.getByRole('button', { name: 'Next page' })).toBeDisabled()
     await user.type(screen.getByLabelText('Search tables'), 'Sales')
     expect(screen.queryByRole('button', { name: 'Preview Forecast' })).not.toBeInTheDocument()

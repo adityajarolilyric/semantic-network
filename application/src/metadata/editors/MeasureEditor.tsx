@@ -1,9 +1,10 @@
+import { metadataApi } from '../api'
 import { MeasureBaseVisibility } from './MeasureBaseVisibility'
 import { FieldHelp } from '../../components/FieldHelp'
-import { useId, useState } from 'react'
+import { useEffect, useId, useState } from 'react'
 import { formatFormula, parseFormula, formulaUnit } from '../formula'
 import { referencedResultType } from '../measureTypes'
-import type { Aggregation, CalcDefinition, Measure, RefDefinition } from '../types'
+import type { Aggregation, CalcDefinition, Measure, RefDefinition, SourceColumn } from '../types'
 import { Actions, Check, Field, IdentityFields, options, Select, type EditorProps } from './Fields'
 export const defaultAggregation: Aggregation = {
   nonTime: 'sum',
@@ -41,14 +42,49 @@ export function MeasureEditor({
       ? data.transactions.find((t) => t.objectId === d.transactionId)
       : undefined
   const source = data.sources.find((s) => s.objectId === tx?.definition.sourceId)
+  const transformedTransaction =
+    !!tx?.definition.pivot?.enabled || !!tx?.definition.calendarResolution
+  const schemaKey =
+    base && tx ? base + '/transactions/' + encodeURIComponent(tx.objectId) + '/schema' : ''
+  const [transactionSchema, setTransactionSchema] = useState<{
+    key: string
+    columns: SourceColumn[]
+    valueColumnIds?: string[]
+  } | null>(null)
+  const [schemaError, setSchemaError] = useState('')
+  useEffect(() => {
+    setSchemaError('')
+    if (!schemaKey || !transformedTransaction) return
+    const controller = new AbortController()
+    void metadataApi
+      .request<{ columns: SourceColumn[]; valueColumnIds?: string[] }>(
+        schemaKey,
+        'GET',
+        undefined,
+        undefined,
+        controller.signal,
+      )
+      .then((result) => {
+        if (!controller.signal.aborted) setTransactionSchema({ key: schemaKey, ...result })
+      })
+      .catch((e) => {
+        if (!controller.signal.aborted) setSchemaError(e.message)
+      })
+    return () => controller.abort()
+  }, [schemaKey, transformedTransaction, tx?.version])
+  const effectiveColumns = transformedTransaction
+    ? transactionSchema?.key === schemaKey
+      ? transactionSchema.columns
+      : []
+    : (source?.definition.columns ?? [])
   const valueColumns =
     tx?.definition.mappingMode === 'resolve_multi_grain'
-      ? (source?.definition.columns ?? [])
+      ? effectiveColumns
           .filter((c) =>
             tx.definition.resolution?.values.some((v) => v.sourceColumnId === c.columnId),
           )
           .map((c) => ({ ...c, physicalType: 'Float64' }))
-      : (source?.definition.columns ?? [])
+      : effectiveColumns
   const aggregation = d.aggregation ?? defaultAggregation
   const valueColumn =
     d.measureType === 'referenced'
@@ -169,6 +205,11 @@ export function MeasureEditor({
       </fieldset>
       {d.measureType === 'referenced' && (
         <>
+          {schemaError && (
+            <p className="meta-error" role="alert">
+              {schemaError}
+            </p>
+          )}
           <div className="meta-grid">
             <Select
               label="Transaction"

@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useState } from 'react'
 import { metadataApi } from '../src/metadata/api'
@@ -39,7 +39,7 @@ it('requires explicit order, values and coverage of every configured axis', () =
   expect(resolutionComplete(config)).toBe(true)
 })
 
-it('discovers selector values automatically and preserves attribute mappings on refresh', async () => {
+it('keeps saved legacy rules readable but offers only Column equals attribute for new rules', async () => {
   const request = vi
     .spyOn(metadataApi, 'request')
     .mockImplementation(async (path) =>
@@ -102,23 +102,15 @@ it('discovers selector values automatically and preserves attribute mappings on 
   }
   try {
     render(<Harness />)
-    const field = await screen.findByLabelText('Attribute for brand')
-    await userEvent.selectOptions(field, JSON.stringify([null, 'brand']))
-    expect(screen.queryByLabelText('Order tie-breaker columns')).not.toBeInTheDocument()
-    expect(screen.queryByLabelText('Independent assignment series')).not.toBeInTheDocument()
-    expect(screen.queryByLabelText('Selector value 1')).not.toBeInTheDocument()
-    await userEvent.click(screen.getByRole('button', { name: 'Discover' }))
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Discover' })).toBeEnabled())
-    expect(screen.getByLabelText('Attribute for brand')).toHaveValue(
-      JSON.stringify([null, 'brand']),
-    )
-    expect(request).toHaveBeenCalledWith(
-      expect.stringContaining('managedOutput=true'),
-      'GET',
-      undefined,
-      undefined,
-      expect.any(AbortSignal),
-    )
+    expect(await screen.findByText(/saved rule uses legacy Level and Value matching/)).toBeVisible()
+    expect(screen.queryByLabelText('Match using')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Level column')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Discover' })).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Remove rule' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Add matching rule' }))
+    expect(screen.getByLabelText('Match source column')).toBeVisible()
+    expect(screen.getByLabelText('Match native attribute')).toBeVisible()
+    expect(request.mock.calls.every(([path]) => path.includes('/resolution/options'))).toBe(true)
   } finally {
     request.mockRestore()
   }

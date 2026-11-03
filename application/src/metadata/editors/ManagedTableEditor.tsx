@@ -7,6 +7,7 @@ import { DataPreview } from '../../components/DataPreview'
 
 const newId = (prefix: string) => prefix + crypto.randomUUID().replaceAll('-', '')
 type Preview = {
+  rowCount?: number
   columns: { name: string; columnId: string; physicalType: string }[]
   rows: (string | null)[][]
 }
@@ -583,14 +584,14 @@ export function ManagedTableEditor({
               type: column.physicalType,
             })),
             rows: preview.rows,
-            total: preview.rows.length,
+            total: preview.rowCount ?? preview.rows.length,
             offset: 0,
-            limit: 100,
+            limit: 50,
           }}
           loading={false}
           error=""
           offset={0}
-          limit={100}
+          limit={50}
           onOffset={() => {}}
           onLimit={() => {}}
           onRefresh={() => {}}

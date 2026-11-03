@@ -274,7 +274,7 @@ def test_row_limit_and_failed_build_retains_previous_table(clickhouse_app):
     assert run["error"]["code"] == "planning_row_limit", run
 
 
-def test_previews_cap_at_100_without_truncating_materialized_table(clickhouse_app):
+def test_previews_cap_at_50_without_truncating_materialized_table(clickhouse_app):
     client, _, _, _ = clickhouse_app
     source = managed(
         client,
@@ -285,11 +285,12 @@ def test_previews_cap_at_100_without_truncating_materialized_table(clickhouse_ap
     create(client, payload)
     preview = client.post(BASE + "/planning-levels/preview/population", json=payload)
     assert preview.status_code == 200, preview.text
-    assert len(preview.json()["rows"]) == 100
+    assert len(preview.json()["rows"]) == 50
+    assert preview.json()["rowCount"] == 150
     run = build(client, "pl_main")
     assert run["state"] == "succeeded", run
     result = table(client, "pl_main")
-    assert result["rowCount"] == 150 and len(result["rows"]) == 100
+    assert result["rowCount"] == 150 and len(result["rows"]) == 50
 
 
 def test_projection_rejects_attributes_that_vary_at_new_grain(clickhouse_app):

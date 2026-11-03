@@ -112,7 +112,17 @@ class PlanningLevelPlanner:
             dimension = objects[binding["dimensionId"]]
             dim_def = dimension["definition"]
             relation = relations[dim_def["sourceId"]]
-            source_columns = {c["columnId"]: c for c in relation["columns"]}
+            from .object_inputs import input_plan
+
+            transform = input_plan(
+                dimension, relation["columns"], relation["physicalName"]
+            )
+            source_columns = {
+                c["columnId"]: c
+                for c in (
+                    transform.schema.columns if transform else relation["columns"]
+                )
+            }
             dim_columns = {c["columnId"]: c for c in dim_def["columns"]}
             # Names within a dimension relation are semantic IDs, never ambiguous physical names.
             scan = RelationScan(
@@ -122,6 +132,7 @@ class PlanningLevelPlanner:
                     for c in dim_def["columns"]
                 ),
                 dim_def.get("filters"),
+                transform=transform,
             )
             mappings = tuple(
                 (

@@ -9,12 +9,25 @@ class ClickHouseCompiler:
 
     def __init__(self, database):
         self.database = database
+        self.input_checks = []
 
     def table(self, name):
         return exp.Table(
             this=exp.to_identifier(name, quoted=True),
             db=exp.to_identifier(self.database, quoted=True),
         ).sql(dialect="clickhouse")
+
+    def object_input(self, owner, relation):
+        from .object_inputs import input_plan
+
+        plan = input_plan(owner, relation["columns"], relation["physicalName"])
+        if plan is None:
+            return self.table(relation["physicalName"]), relation["columns"]
+        compiled = ClickHouseCompiler(self.database).compile(plan)
+        for check in compiled.checks:
+            if check not in self.input_checks:
+                self.input_checks.append(check)
+        return "(" + compiled.sql + ")", list(compiled.schema.columns)
 
     @staticmethod
     def literal(value):

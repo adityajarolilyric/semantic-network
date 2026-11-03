@@ -20,7 +20,7 @@ The React UI captures definitions and renders results. FastAPI resource API clas
 
 MongoDB holds shared semantic definitions and operational manifests. ClickHouse holds raw sources, revision-owned managed views, planning populations and measure values. The server owns the single ClickHouse database and connection settings. Definitions are single tenant and shared across scenarios; no tenant IDs, scenario-specific definitions or connection bindings are embedded in them.
 
-The end-to-end flow is Sources → Managed Tables → Dimensions → Planning Levels → Transactions → Measures → Materialise → Planning View. Definitions, value generations and physical storage are separate concerns: publishing freezes definitions, normal views still read live source data, and materialised planning/value generations are build snapshots.
+The end-to-end flow is Sources → Dimensions → Planning Levels → Transactions → Measures → Materialise → Planning View. Definitions, value generations and physical storage are separate concerns: publishing freezes definitions, normal views still read live source data, and materialised planning/value generations are build snapshots.
 
 ## Rules that must survive future changes
 

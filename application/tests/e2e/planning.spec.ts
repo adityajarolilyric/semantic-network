@@ -141,7 +141,7 @@ test('create a planning table with population and dimension attributes, preview 
   await expect(page.getByRole('cell', { name: 'High', exact: true })).toBeVisible()
   await expect(page.getByRole('cell', { name: 'C1', exact: true })).toBeVisible()
   await expect(page.getByRole('table')).toHaveClass('data-table')
-  await expect(page.getByText('Showing 2 rows (maximum 100)', { exact: true })).toBeVisible()
+  await expect(page.getByText('2/2 rows', { exact: true })).toBeVisible()
   await expect(page.getByLabel('Rows per page')).toHaveCount(0)
   await page.screenshot({ path: 'test-results/planning-level-editor.png', fullPage: true })
   await page.reload()

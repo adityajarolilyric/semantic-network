@@ -229,3 +229,39 @@ def test_range_calendar_mapping_respects_the_bound_native_time_key():
     assert TransactionResolutionPlanner(
         [level, dimension, calendar], tx, columns
     ).date_range.config
+
+
+def test_new_level_value_rules_are_rejected_but_unchanged_legacy_metadata_can_be_saved():
+    from backend.app.services.transactions import TransactionService
+    from backend.app.schemas.transactions import TransactionInput
+
+    d = config()
+    d["resolution"]["axes"][0]["rules"] = [
+        {
+            "ruleId": "legacy",
+            "kind": "level_value",
+            "selectorColumnId": "selector",
+            "valueColumnId": "member",
+            "selectors": [{"value": "id", "target": {"columnId": "product"}}],
+        }
+    ]
+    document = TransactionInput.model_validate(
+        {
+            "objectId": "tx",
+            "kind": "transaction",
+            "name": "Test",
+            "displayName": "Test",
+            "definition": d,
+        }
+    ).model_dump()
+    service = TransactionService(None)
+    with pytest.raises(MetadataError) as error:
+        service.prepare_document(document, [])
+    assert error.value.code == "legacy_resolution_rule"
+    assert service.prepare_document(document, [deepcopy(document)]) == document
+    changed = deepcopy(document)
+    changed["definition"]["resolution"]["axes"][0]["rules"][0]["selectors"][0][
+        "value"
+    ] = "brand"
+    with pytest.raises(MetadataError):
+        service.prepare_document(changed, [document])

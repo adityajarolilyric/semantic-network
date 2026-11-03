@@ -68,3 +68,9 @@ class ManagedDefinition(Schema):
 
 class ManagedEnable(Schema):
     tableName: Name
+
+
+class ObjectInputTransform(Schema):
+    objectId: Identifier
+    sourceId: Identifier
+    pivot: PivotStage | None = None

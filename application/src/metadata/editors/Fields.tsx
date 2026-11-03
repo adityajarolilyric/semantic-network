@@ -1,5 +1,5 @@
 import { FieldHelp } from '../../components/FieldHelp'
-import { cloneElement, useId, type ReactElement } from 'react'
+import { cloneElement, useId, type ReactNode, type ReactElement } from 'react'
 import type { Identity, ObjectInput, Snapshot } from '../types'
 export type EditorProps<T extends ObjectInput> = {
   initial: T
@@ -221,16 +221,19 @@ export function Actions({
   busy,
   onCancel,
   canSave = true,
+  children,
 }: {
   busy: boolean
   onCancel: () => void
   canSave?: boolean
+  children?: ReactNode
 }) {
   return (
     <div className="meta-actions">
       <button type="button" className="secondary-button" onClick={onCancel} disabled={busy}>
         Cancel
       </button>
+      {children}
       <button className="primary-button" disabled={busy || !canSave}>
         {busy ? 'Saving…' : 'Save metadata'}
       </button>

@@ -1,7 +1,8 @@
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, model_validator, model_serializer
 
+from .managed_tables import PivotStage
 from .common import DocumentMetadata, Identifier, Name, Schema, SemanticInput, unique
 from .filters import FilterDefinition
 
@@ -21,6 +22,7 @@ class TimeDefinition(Schema):
 
 class DimensionDefinition(Schema):
     sourceId: Identifier
+    pivot: PivotStage | None = None
     columns: list[DimensionColumn] = Field(min_length=1, max_length=2000)
     keyColumnIds: list[Identifier] = Field(min_length=1, max_length=32)
     labelColumnId: Identifier
@@ -40,6 +42,13 @@ class DimensionDefinition(Schema):
         if not set(refs) <= set(ids):
             raise ValueError("dimension references must name dimension columns")
         return self
+
+    @model_serializer(mode="wrap")
+    def serialize(self, handler):
+        value = handler(self)
+        if value.get("pivot") is None:
+            value.pop("pivot", None)
+        return value
 
 
 class DimensionInput(SemanticInput):

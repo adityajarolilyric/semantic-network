@@ -39,7 +39,10 @@ class MeasureService(ObjectService):
             None,
         )
         columns = source["definition"]["columns"] if source else []
-        if source and transaction["definition"].get("calendarResolution"):
+        if source and (
+            transaction["definition"].get("calendarResolution")
+            or transaction["definition"].get("pivot")
+        ):
             from ..engine.calendar_resolution import CalendarResolutionPlanner
 
             columns = CalendarResolutionPlanner(objects, transaction, columns).schema()

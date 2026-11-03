@@ -22,7 +22,7 @@ export function PlanningResult({
   onRefresh = () => {},
   showRefresh = true,
 }: {
-  data: Pick<PlanningTableStatus, 'columns' | 'rows'>
+  data: Pick<PlanningTableStatus, 'columns' | 'rows'> & { rowCount?: number | null }
   name?: string
   onRefresh?: () => void
   showRefresh?: boolean
@@ -35,15 +35,15 @@ export function PlanningResult({
       preview={{
         table: name,
         columns: data.columns.map((c) => ({ name: c.name, type: c.physicalType })),
-        rows: data.rows.slice(0, 100),
-        total: data.rows.length,
+        rows: data.rows.slice(0, 50),
+        total: data.rowCount ?? data.rows.length,
         offset: 0,
-        limit: 100,
+        limit: 50,
       }}
       loading={false}
       error=""
       offset={0}
-      limit={100}
+      limit={50}
       onOffset={() => {}}
       onLimit={() => {}}
       onRefresh={onRefresh}

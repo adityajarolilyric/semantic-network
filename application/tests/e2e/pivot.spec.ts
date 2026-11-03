@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test, type Page } from '@playwright/test'
 
 test('pivot a managed table, reload its definition and consume effective columns', async ({
   page,
@@ -36,7 +36,7 @@ test('pivot a managed table, reload its definition and consume effective columns
   await manage.check()
   await expect(manage).toBeEnabled()
   const nav = page.getByRole('navigation', { name: 'Workspace', exact: true })
-  await nav.getByRole('button', { name: 'Managed Tables', exact: true }).click()
+  await openManagedTables(page)
   await page
     .locator('.meta-object-card')
     .filter({ has: page.getByRole('heading', { name: 'UI_Long', exact: true }) })
@@ -103,7 +103,7 @@ test('pivot a managed table, reload its definition and consume effective columns
   await expect(editor.getByRole('button', { name: 'Refresh preview' })).toHaveCount(0)
   await page.screenshot({ path: 'test-results/managed-saved-preview.png', fullPage: true })
   await page.reload()
-  await nav.getByRole('button', { name: 'Managed Tables', exact: true }).click()
+  await openManagedTables(page)
   await page
     .locator('.meta-object-card')
     .filter({ has: page.getByRole('heading', { name: 'UI_Long', exact: true }) })
@@ -178,7 +178,7 @@ test('expand forecast rows and choose generated Brand/Zone keys before saving', 
   await expect(manage).toBeEnabled()
   await manage.check()
   await expect(manage).toBeEnabled()
-  await page.getByRole('button', { name: 'Managed Tables', exact: true }).click()
+  await openManagedTables(page)
   await page
     .locator('.meta-object-card')
     .filter({ has: page.getByRole('heading', { name: 'Forecast_Rows', exact: true }) })
@@ -230,3 +230,98 @@ test('expand forecast rows and choose generated Brand/Zone keys before saving', 
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
   await page.screenshot({ path: 'test-results/forecast-row-pivot.png', fullPage: true })
 })
+
+test('pivot a Dimension independently, preview raw/transformed data and reopen it', async ({
+  page,
+}) => {
+  test.setTimeout(90_000)
+  await page.goto('/')
+  const model = 'owned_dimension_ui'
+  const base = `/api/v1/models/${model}/revisions/draft_1`
+  async function post(path: string, data: unknown) {
+    const response = await page.request.post(path, {
+      data,
+      headers: { 'Idempotency-Key': 'owned_' + crypto.randomUUID() },
+    })
+    expect(response.ok(), await response.text()).toBeTruthy()
+    return response.json()
+  }
+  await post('/api/v1/models', {
+    modelId: model,
+    name: 'Owned dimensions',
+    displayName: 'Owned dimensions',
+  })
+  await post(`/api/v1/models/${model}/revisions`, {
+    revisionId: 'draft_1',
+    expectedModelVersion: 1,
+    metadataContractVersion: 2,
+  })
+  const imported = await page.request.post('/api/v1/warehouse/imports/csv', {
+    headers: { 'Idempotency-Key': 'owned_' + crypto.randomUUID() },
+    multipart: {
+      tableName: 'UI_OwnedCustomers',
+      file: {
+        name: 'customers.csv',
+        mimeType: 'text/csv',
+        buffer: Buffer.from(
+          'customer_id,attribute,value\nC1,channel,Retail\nC1,sold_to,A\nC2,channel,Wholesale\nC2,sold_to,B\n',
+        ),
+      },
+    },
+  })
+  expect(imported.ok(), await imported.text()).toBeTruthy()
+  const run = await post(base + '/managed-tables/enable', { tableName: 'UI_OwnedCustomers' })
+  await expect
+    .poll(
+      async () => (await (await page.request.get(base + '/engine/runs/' + run.runId)).json()).state,
+    )
+    .toBe('succeeded')
+  const original = await (await page.request.get(base + '/managed-tables/' + run.sourceId)).json()
+  await page.goto(`/?model=${model}&revision=draft_1&tab=dimensions`)
+  await page
+    .getByRole('navigation', { name: 'Workspace', exact: true })
+    .getByRole('button', { name: 'Dimensions', exact: true })
+    .click()
+  await page.getByRole('button', { name: 'Create dimension', exact: true }).click()
+  await page.getByLabel('Dimension name', { exact: true }).fill('Owned Customer')
+  await page
+    .getByLabel('Managed table', { exact: true })
+    .selectOption({ label: 'UI_OwnedCustomers' })
+  await page.getByRole('button', { name: 'Raw Data Preview', exact: true }).click()
+  await expect(page.locator('th .column-name').filter({ hasText: /^attribute$/ })).toBeVisible()
+  await page.getByRole('button', { name: 'Close raw preview', exact: true }).click()
+  await page.getByLabel('Pivot long-format columns', { exact: true }).check()
+  await page.getByLabel('Attribute column', { exact: true }).selectOption({ label: 'attribute' })
+  await page.getByLabel('Value column', { exact: true }).selectOption({ label: 'value' })
+  await page.getByRole('button', { name: 'Discover', exact: true }).click()
+  await page
+    .getByRole('group', { name: 'Record keys for separate attribute rows (optional)', exact: true })
+    .getByRole('checkbox', { name: 'customer_id', exact: true })
+    .check()
+  await expect(page.getByLabel('Display name for channel', { exact: true })).toBeVisible()
+  await page.getByLabel('Key customer_id', { exact: true }).check()
+  await page.getByRole('button', { name: 'Preview', exact: true }).click()
+  await expect(page.getByRole('cell', { name: 'Retail', exact: true })).toBeVisible()
+  await expect(page.locator('th .column-name').filter({ hasText: /^attribute$/ })).toHaveCount(0)
+  await page.screenshot({ path: 'test-results/owned-dimension-pivot.png', fullPage: true })
+  await page.getByRole('button', { name: 'Save metadata', exact: true }).click()
+  await expect(page.getByRole('region', { name: 'Metadata editor', exact: true })).toHaveCount(0)
+  await page.reload()
+  await page
+    .locator('.meta-object-card')
+    .filter({ has: page.getByRole('heading', { name: 'Owned Customer', exact: true }) })
+    .getByRole('button', { name: 'Edit', exact: true })
+    .click()
+  await expect(page.getByLabel('Pivot long-format columns', { exact: true })).toBeChecked()
+  await expect(page.getByLabel('Display name for channel', { exact: true })).toBeVisible()
+  expect(await (await page.request.get(base + '/managed-tables/' + run.sourceId)).json()).toEqual(
+    original,
+  )
+})
+
+// Saved shared-pivot configurations remain accessible by their compatibility route.
+async function openManagedTables(page: Page) {
+  const url = new URL(page.url())
+  url.searchParams.set('tab', 'managed')
+  await page.goto(url.toString())
+}

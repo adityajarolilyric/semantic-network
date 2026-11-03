@@ -97,6 +97,19 @@ class SemanticGraphValidator:
     def columns(self, source: dict) -> dict[str, dict]:
         return {c["columnId"]: c for c in source["definition"]["columns"]}
 
+    def object_columns(self, obj, source):
+        from ..engine.object_inputs import input_columns
+        from ..core.errors import MetadataError
+
+        try:
+            return {
+                c["columnId"]: c
+                for c in input_columns(obj, list(self.columns(source).values()))
+            }
+        except MetadataError as error:
+            self.error(obj, error.code, error.message, "definition.pivot")
+            return {}
+
     def require_columns(
         self, owner: dict, requested: list[str], available: set | dict, path: str
     ):
@@ -209,7 +222,7 @@ class SemanticGraphValidator:
         source = self.objects.get(definition["sourceId"])
         if column and source and source["kind"] == "source":
             return (
-                self.columns(source)
+                self.object_columns(dimension, source)
                 .get(column["sourceColumnId"], {})
                 .get("physicalType")
             )
@@ -231,14 +244,16 @@ class SemanticGraphValidator:
             self.require_columns(
                 obj,
                 [c["sourceColumnId"] for c in definition["columns"]],
-                self.columns(source),
+                self.object_columns(obj, source),
                 "definition.columns",
             )
             mapping = {
                 c["columnId"]: c["sourceColumnId"] for c in definition["columns"]
             }
             if any(
-                self.columns(source).get(mapping[k], {}).get("nullable", False)
+                self.object_columns(obj, source)
+                .get(mapping[k], {})
+                .get("nullable", False)
                 for k in definition["keyColumnIds"]
             ):
                 self.error(
@@ -367,7 +382,7 @@ class SemanticGraphValidator:
             "planningLevel",
             "definition.planningLevelId",
         )
-        if definition.get("calendarResolution") and source:
+        if (definition.get("calendarResolution") or definition.get("pivot")) and source:
             from ..engine.calendar_resolution import CalendarResolutionPlanner
             from ..core.errors import MetadataError
 
@@ -507,7 +522,7 @@ class SemanticGraphValidator:
                 source = self.objects.get(tx["sourceId"])
                 if source and source["kind"] == "source":
                     columns = self.columns(source)
-                    if tx.get("calendarResolution"):
+                    if tx.get("calendarResolution") or tx.get("pivot"):
                         from ..engine.calendar_resolution import (
                             CalendarResolutionPlanner,
                         )

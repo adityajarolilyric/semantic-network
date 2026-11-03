@@ -149,7 +149,7 @@ class ClickHouseExecutor:
             )
             client = connect()
             result = client.query(
-                f"SELECT * FROM ({query}) ORDER BY ALL LIMIT 100",
+                f"SELECT * FROM ({query}) ORDER BY ALL LIMIT 50",
                 settings={
                     "max_execution_time": self.warehouse.settings.clickhouse_timeout_sec
                 },
@@ -159,7 +159,15 @@ class ClickHouseExecutor:
                 "rows": [
                     [self.warehouse.cell(v) for v in row] for row in result.result_rows
                 ],
-                "limit": 100,
+                "limit": 50,
+                "rowCount": int(
+                    client.command(
+                        f"SELECT count() FROM ({query})",
+                        settings={
+                            "max_execution_time": self.warehouse.settings.clickhouse_timeout_sec
+                        },
+                    )
+                ),
             }
 
         return await self.warehouse.run(operation)

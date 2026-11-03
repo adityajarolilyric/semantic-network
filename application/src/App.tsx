@@ -34,17 +34,19 @@ export default function App() {
         </div>
         <div className="workspace-label">DATA WORKSPACE</div>
         <nav aria-label="Workspace">
-          {tabs.map((item) => (
-            <button
-              key={item.id}
-              className={'nav-item ' + (tab === item.id ? 'active' : '')}
-              onClick={() => onTab(item.id)}
-              aria-current={tab === item.id ? 'page' : undefined}
-            >
-              <Database size={18} aria-hidden="true" />
-              {item.label}
-            </button>
-          ))}
+          {tabs
+            .filter((item) => item.id !== 'managed')
+            .map((item) => (
+              <button
+                key={item.id}
+                className={'nav-item ' + (tab === item.id ? 'active' : '')}
+                onClick={() => onTab(item.id)}
+                aria-current={tab === item.id ? 'page' : undefined}
+              >
+                <Database size={18} aria-hidden="true" />
+                {item.label}
+              </button>
+            ))}
         </nav>
         <div className="sidebar-footer">
           <FileSpreadsheet size={19} aria-hidden="true" />

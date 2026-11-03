@@ -76,9 +76,7 @@ export function DataPreview({
           <h2 id={titleId}>{table}</h2>
         </div>
         <div className="preview-actions">
-          {preview && !sampleOnly && (
-            <span className="preview-total">{total.toLocaleString()} total rows</span>
-          )}
+          {preview && <span className="preview-total">{total.toLocaleString()} total rows</span>}
           {showRefresh && (
             <button
               className="icon-button"
@@ -124,7 +122,7 @@ export function DataPreview({
                 </tr>
               </thead>
               <tbody>
-                {preview.rows.map((row, rowIndex) => (
+                {preview.rows.slice(0, 50).map((row, rowIndex) => (
                   <tr key={offset + rowIndex}>
                     <td className="row-number">{offset + rowIndex + 1}</td>
                     {row.map((value, index) => (
@@ -152,11 +150,7 @@ export function DataPreview({
           )}
           <div className="preview-footer">
             <p aria-live="polite">
-              {sampleOnly
-                ? `Showing ${preview.rows.length.toLocaleString()} rows (maximum 100)`
-                : total === 0
-                  ? '0 rows'
-                  : `Showing ${(offset + 1).toLocaleString()}–${(offset + preview.rows.length).toLocaleString()} of ${total.toLocaleString()} rows`}
+              {Math.min(preview.rows.length, 50).toLocaleString()}/{total.toLocaleString()} rows
             </p>
             {!sampleOnly && (
               <div className="pagination">
@@ -168,7 +162,6 @@ export function DataPreview({
                 >
                   <option value={25}>25</option>
                   <option value={50}>50</option>
-                  <option value={100}>100</option>
                 </select>
                 <button
                   type="button"

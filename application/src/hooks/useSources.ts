@@ -94,7 +94,7 @@ export function useSources() {
     setOffset(0)
   }, [])
   const changeLimit = useCallback((value: number) => {
-    setLimit(value)
+    setLimit(Math.min(value, 50))
     setOffset(0)
   }, [])
   const refreshPreview = useCallback(() => setPreviewVersion((current) => current + 1), [])

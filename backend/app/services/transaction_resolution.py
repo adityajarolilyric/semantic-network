@@ -198,6 +198,7 @@ class TransactionResolutionService(Service):
             "definition": {
                 "sourceId": payload.sourceId,
                 "calendarResolution": payload.calendarResolution.model_dump(),
+                "pivot": payload.pivot.model_dump() if payload.pivot else None,
             },
         }
         return {
@@ -206,7 +207,45 @@ class TransactionResolutionService(Service):
             ).schema()
         }
 
-    async def preview(self, model, revision, payload, *, calendar_only=False):
+    async def input_schema(self, model, revision, payload):
+        from ..engine.object_inputs import input_columns
+
+        repo = self.store.repository
+        objects = await self.effective(
+            repo, model, revision, await self.objects(repo, model, revision)
+        )
+        source = next(
+            (
+                o
+                for o in objects
+                if o["objectId"] == payload.sourceId
+                and o["kind"] == "source"
+                and o["definition"]["inScope"]
+            ),
+            None,
+        )
+        if not source:
+            raise MetadataError("invalid_resolution_source", "Choose a managed table.")
+        owner = {
+            "objectId": payload.objectId,
+            "definition": {
+                "sourceId": payload.sourceId,
+                "pivot": payload.pivot.model_dump() if payload.pivot else None,
+            },
+        }
+        return {"columns": input_columns(owner, source["definition"]["columns"])}
+
+    async def preview(
+        self,
+        model,
+        revision,
+        payload,
+        *,
+        calendar_only=False,
+        input_only=False,
+        dimension_only=False,
+    ):
+        standalone = calendar_only or input_only or dimension_only
         read_id = "read_" + uuid4().hex
 
         async def snapshot(repo):
@@ -222,23 +261,26 @@ class TransactionResolutionService(Service):
                     "definition": {
                         "sourceId": payload.sourceId,
                         "calendarResolution": payload.calendarResolution.model_dump(),
+                        "pivot": payload.pivot.model_dump() if payload.pivot else None,
                     },
                     **scope(model, revision),
                     "version": 0,
                 }
-            if (
-                not calendar_only
-                and candidate["definition"]["mappingMode"] != "resolve_multi_grain"
-                and not candidate["definition"].get("calendarResolution")
-            ):
-                raise MetadataError(
-                    "resolution_required",
-                    "Enable Resolve multi grain to preview resolved assignments.",
-                )
+            if input_only:
+                candidate = {
+                    "objectId": payload.objectId,
+                    "kind": "transaction",
+                    "definition": {
+                        "sourceId": payload.sourceId,
+                        "pivot": payload.pivot.model_dump() if payload.pivot else None,
+                    },
+                    **scope(model, revision),
+                    "version": 0,
+                }
             objects = [o for o in objects if o["objectId"] != candidate["objectId"]] + [
                 candidate
             ]
-            if calendar_only:
+            if standalone:
                 from ..engine.calendar_resolution import CalendarResolutionPlanner
 
                 effective = await self.effective(repo, model, revision, objects)
@@ -400,7 +442,7 @@ class TransactionResolutionService(Service):
                 await self.managed.executor.checks(compiled)
             profiles = (
                 {}
-                if calendar_only
+                if standalone
                 else await prepare_resolution_profiles(
                     self.warehouse,
                     [
@@ -423,7 +465,65 @@ class TransactionResolutionService(Service):
                 resolution_max_rows=self.settings.resolution_max_rows,
             )
             compiler.max_nodes = self.settings.measure_max_nodes
-            if calendar_only:
+            if input_only or dimension_only:
+                from ..engine.transaction_resolution import ResolvedTransaction
+
+                source_table, input_columns = compiler.object_input(
+                    tx, managed[tx["definition"]["sourceId"]]
+                )
+                if dimension_only:
+                    lookup = {c["columnId"]: c for c in input_columns}
+                    cols = tx["definition"]["columns"]
+                    if any(c["sourceColumnId"] not in lookup for c in cols):
+                        raise MetadataError(
+                            "unknown_column",
+                            "A dimension column is missing from the transformed input.",
+                        )
+                    node = compiler.cte(
+                        "SELECT "
+                        + ", ".join(
+                            q(lookup[c["sourceColumnId"]]["name"])
+                            + " AS "
+                            + q(c["columnId"])
+                            for c in cols
+                        )
+                        + " FROM "
+                        + source_table
+                    )
+                    if tx["definition"].get("filters"):
+                        node = compiler.cte(
+                            "SELECT * FROM "
+                            + q(node)
+                            + " WHERE "
+                            + compiler.filter_sql(
+                                tx["definition"]["filters"],
+                                [c["columnId"] for c in cols],
+                            )
+                        )
+                    allowed = set(tx["definition"]["keyColumnIds"]) | set(
+                        tx["definition"]["attributeColumnIds"]
+                    )
+                    columns = [
+                        {
+                            **lookup[c["sourceColumnId"]],
+                            "columnId": c["columnId"],
+                            "name": c["displayName"],
+                        }
+                        for c in cols
+                        if c["columnId"] in allowed
+                    ]
+                else:
+                    columns = input_columns
+                    node = compiler.cte(
+                        "SELECT "
+                        + ", ".join(
+                            q(c["name"]) + " AS " + q(c["columnId"]) for c in columns
+                        )
+                        + " FROM "
+                        + source_table
+                    )
+                resolved = ResolvedTransaction(node, columns, [], node, [node], node)
+            elif calendar_only:
                 from ..engine.calendar_resolution import CalendarResolutionCompiler
                 from ..engine.transaction_resolution import ResolvedTransaction
 
@@ -460,7 +560,7 @@ class TransactionResolutionService(Service):
             def execute(connect):
                 client = connect()
                 rows = client.query(
-                    sql + " ORDER BY ALL LIMIT 100",
+                    sql + " ORDER BY ALL LIMIT 50",
                     settings=self.executor.execution_settings(),
                 ).result_rows
 
@@ -523,7 +623,7 @@ class TransactionResolutionService(Service):
                 "rows": rows,
                 "rowCount": diagnostics["resolvedRows"],
                 "diagnostics": diagnostics,
-                "limit": 100,
+                "limit": 50,
             }
         finally:
             heartbeat.cancel()
