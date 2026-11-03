@@ -144,6 +144,11 @@ class ClickHouseWarehouseRepository(WarehouseRepository):
             except Exception as exc:
                 for marker, code, message in [
                     (
+                        "SEMANTIC_CONFLICTING_RETAINED",
+                        "conflicting_retained_values",
+                        "Retained columns have conflicting values for the same record keys.",
+                    ),
+                    (
                         "SEMANTIC_INVALID_WEIGHTS",
                         "invalid_disaggregation_weights",
                         "Dis-aggregation weights must be present and their group total must be nonzero.",

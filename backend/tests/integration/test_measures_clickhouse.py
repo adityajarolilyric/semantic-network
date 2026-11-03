@@ -244,9 +244,15 @@ def test_native_independent_aggregation_repeat_and_formula_recalculation(
 
 
 @pytest.mark.parametrize(
-    "mode,expected", [("equal", ["60.0", "60.0"]), ("weighted", ["48.0", "72.0"])]
+    "mode,expected",
+    [
+        (mode, ["60.0", "60.0"])
+        for mode in ("none", "equal", "weighted", "weighted_by_self")
+    ],
 )
-def test_disaggregation_uses_configured_policy(clickhouse_app, mode, expected):
+def test_materialisation_ignores_edit_disaggregation_policy(
+    clickhouse_app, mode, expected
+):
     client, _, _, _ = clickhouse_app
     setup(client, mode=mode)
     run = build_values(client)
@@ -271,7 +277,7 @@ def update_measure(client, oid, change):
     assert result.status_code == 200, result.text
 
 
-def test_repeat_uses_configured_sum_or_average_on_other_levels(clickhouse_app):
+def test_initialisation_reconstructs_sum_and_average_on_other_levels(clickhouse_app):
     client, _, _, _ = clickhouse_app
     setup(client, agg={**AGG, "nonTime": "avg"})
     # A separate, equivalent defined grain gets its representation from Base.
@@ -309,9 +315,9 @@ def test_repeat_uses_configured_sum_or_average_on_other_levels(clickhouse_app):
     result = build_values(client)
     assert result["state"] == "succeeded", result
     result, cols = values(client, "pt_report")
-    assert result["rows"][0][cols["SQTY"]] == "240.0"
+    assert result["rows"][0][cols["SQTY"]] == "120.0"
     native, cols = values(client, "pt")
-    assert native["rows"][0][cols["SQTY"]] == "240.0"
+    assert native["rows"][0][cols["SQTY"]] == "120.0"
 
 
 def test_failed_generation_keeps_all_previous_bindings(clickhouse_app):
@@ -356,11 +362,16 @@ def test_failed_generation_keeps_all_previous_bindings(clickhouse_app):
             allocation={"mode": "weighted", "basisMeasureId": "ZeroWeight"}
         ),
     )
+    # A genuine execution limit must still preserve every previous binding.
+    original_limit = (
+        client.app.state.container.measure_builds.settings.measure_max_sql_bytes
+    )
+    client.app.state.container.measure_builds.settings.measure_max_sql_bytes = 1
     run = build_values(client)
-    assert (
-        run["state"] == "failed"
-        and run["error"]["code"] == "invalid_disaggregation_weights"
-    ), run
+    client.app.state.container.measure_builds.settings.measure_max_sql_bytes = (
+        original_limit
+    )
+    assert run["state"] == "failed" and run["error"]["code"] == "measure_sql_limit", run
     after_base, _ = values(client, "base")
     after_pt, _ = values(client, "pt")
     assert (
@@ -372,17 +383,35 @@ def test_failed_generation_keeps_all_previous_bindings(clickhouse_app):
     assert after_base["rows"] == before_base["rows"]
 
 
-def test_weighted_by_self_uses_previous_frozen_base_values(clickhouse_app):
-    client, _, _, _ = clickhouse_app
+def test_source_rebuild_ignores_previous_self_weights(clickhouse_app):
+    client, admin, database, _ = clickhouse_app
     setup(client, mode="weighted")
     assert build_values(client)["state"] == "succeeded"
+    # Simulate an older proportional generation. Reinitialisation must not use
+    # its distribution, even if the edit policy is Weighted by self.
+    repo = client.app.state.container.store.repository
+    binding = client.portal.call(
+        repo.get,
+        "engine_artifact_bindings",
+        {"resourceKind": "measureValues", "resourceId": "base"},
+    )
+    previous = client.portal.call(
+        repo.get, "engine_artifacts", {"artifactId": binding["artifactId"]}
+    )
+    column = previous["measureColumns"]["SQTY"]
+    location = previous["keyColumns"]["location"]
+    admin.command(
+        f"ALTER TABLE `{database}`.`{previous['physicalName']}` UPDATE `{column}`=if(`{location}`='L1',48,72) WHERE 1 SETTINGS mutations_sync=1"
+    )
+    old, old_cols = values(client, "base")
+    assert [row[old_cols["SQTY"]] for row in old["rows"]] == ["48.0", "72.0"]
     update_measure(
         client, "SQTY", lambda d: d.update(allocation={"mode": "weighted_by_self"})
     )
     run = build_values(client)
     assert run["state"] == "succeeded", run
     data, cols = values(client, "base")
-    assert [r[cols["SQTY"]] for r in data["rows"]] == ["48.0", "72.0"]
+    assert [r[cols["SQTY"]] for r in data["rows"]] == ["60.0", "60.0"]
 
 
 @pytest.mark.parametrize(
@@ -627,19 +656,20 @@ def test_dimension_attribute_hierarchy_and_parent_attribute_keys(
     assert result["state"] == "succeeded", result
     data, cols = values(client, "brands")
     assert data["rows"][0][cols["FQTY"]] == "100.0"
-    assert data["rows"][0][cols["SQTY"]] == "240.0"
+    assert data["rows"][0][cols["SQTY"]] == "120.0"
 
 
-def test_weighted_self_requires_a_previous_base_generation(clickhouse_app):
+def test_initial_self_edit_policy_does_not_require_previous_values(clickhouse_app):
     client, _, _, _ = clickhouse_app
     setup(client, mode="weighted_by_self")
     result = build_values(client)
-    assert (
-        result["state"] == "failed"
-        and result["error"]["code"] == "self_weights_required"
-    ), result
-    data, _ = values(client, "base")
-    assert data["generationId"] is None
+    assert result["state"] == "succeeded", result
+    base, cols = values(client, "base")
+    assert [r[cols["SQTY"]] for r in base["rows"]] == ["60.0", "60.0"]
+    assert not base["incompleteMeasures"]
+    native, nc = values(client, "pt")
+    assert native["rows"][0][nc["SQTY"]] == "120.0"
+    assert not native["incompleteMeasures"]
 
 
 @pytest.mark.parametrize(
@@ -718,7 +748,7 @@ def test_decimal_precision_overflow_does_not_publish_candidates(clickhouse_app):
 
 
 @pytest.mark.parametrize(
-    "mode,expected", [("equal", [0.5, 0.5]), ("weighted", [0.4, 0.6])]
+    "mode,expected", [("equal", [0.5, 0.5]), ("weighted", [0.5, 0.5])]
 )
 def test_integer_sources_disaggregate_to_fractional_float64(
     clickhouse_app, mode, expected
@@ -1161,3 +1191,510 @@ def test_one_time_table_rename_resumes_and_preserves_snapshots(
     assert build_values(client)["state"] == "succeeded"
     assert values(client, "base")[0]["rows"] == before["rows"]
     assert client.portal.call(migration.apply) == journal
+
+
+@pytest.mark.parametrize(
+    "qty,expected,incomplete",
+    [
+        (b"P1,L1,40\n", ["60.0", "60.0"], 0),
+        (b"P1,L1,0\nP1,L2,0\n", ["60.0", "60.0"], 0),
+    ],
+)
+def test_missing_edit_basis_does_not_block_materialisation(
+    clickhouse_app, qty, expected, incomplete
+):
+    client, _, _, _ = clickhouse_app
+    setup(client, qty=qty, mode="weighted")
+    run = build_values(client)
+    assert run["state"] == "succeeded", run
+    base, cols = values(client, "base")
+    assert [r[cols["SQTY"]] for r in base["rows"]] == expected
+    assert base["incompleteMeasures"].get("SQTY", 0) == incomplete
+    assert all(c.get("role") != "coverage" for c in base["columns"])
+    assert len(base["rows"][0]) == len(base["columns"])
+    native, nc = values(client, "pt")
+    assert native["rows"][0][nc["SQTY"]] == "120.0"
+    assert not native["incompleteMeasures"]
+
+
+def test_nonnullable_native_materialises_without_edit_weights(clickhouse_app):
+    client, _, _, _ = clickhouse_app
+    setup(client, mode="weighted_by_self")
+    update_measure(
+        client,
+        "SQTY",
+        lambda d: d.update(
+            missingTransactionValue="zero", aggregation={**AGG, "allNullResult": "zero"}
+        ),
+    )
+    assert (
+        client.get(BASE + "/measures/SQTY").json()["definition"]["resultType"][
+            "nullable"
+        ]
+        is False
+    )
+    run = build_values(client)
+    assert run["state"] == "succeeded", run
+    finer, cols = values(client, "base")
+    assert [row[cols["SQTY"]] for row in finer["rows"]] == ["60.0", "60.0"]
+    assert finer["columns"][cols["SQTY"]]["nullable"] is False
+    native, cols = values(client, "pt")
+    assert native["rows"][0][cols["SQTY"]] == "120.0"
+
+
+def test_formula_inputs_materialise_without_edit_basis(
+    clickhouse_app,
+):
+    client, _, _, _ = clickhouse_app
+    setup(client, qty=b"P1,L1,0\nP1,L2,0\n", mode="weighted")
+    assert_post(
+        client,
+        "/measures",
+        {
+            "objectId": "SafeFormula",
+            "kind": "measure",
+            "name": "SafeFormula",
+            "displayName": "SafeFormula",
+            "business": {},
+            "definition": {
+                "measureType": "calculated",
+                "nativePlanningLevelId": "base",
+                "calculationType": "AggregateFirst",
+                "resultType": {"type": "number", "nullable": True},
+                "formula": {
+                    "displayText": "COALESCE(SQTY,0)",
+                    "expression": {
+                        "type": "call",
+                        "function": "coalesce",
+                        "arguments": [
+                            {"type": "measureRef", "measureId": "SQTY"},
+                            {"type": "literal", "value": 0},
+                        ],
+                    },
+                },
+            },
+        },
+    )
+    run = build_values(client)
+    assert run["state"] == "succeeded", run
+    finer, cols = values(client, "base")
+    assert all(row[cols["SafeFormula"]] == "60.0" for row in finer["rows"])
+    assert not finer["incompleteMeasures"]
+    native, cols = values(client, "pt")
+    assert native["rows"][0][cols["SafeFormula"]] == "120.0"
+
+
+def test_genuine_nonnullable_native_null_still_fails(clickhouse_app):
+    client, _, _, _ = clickhouse_app
+    setup(client, qty=b"P1,L1,40\n", mode="weighted")
+    assert_post(
+        client,
+        "/measures",
+        {
+            "objectId": "RequiredResult",
+            "kind": "measure",
+            "name": "RequiredResult",
+            "displayName": "RequiredResult",
+            "business": {},
+            "definition": {
+                "measureType": "calculated",
+                "nativePlanningLevelId": "base",
+                "calculationType": "CalculateFirst",
+                "aggregation": AGG,
+                "resultType": {"type": "number", "nullable": False},
+                "formula": {
+                    "displayText": "1/0",
+                    "expression": {
+                        "type": "binary",
+                        "operator": "divide",
+                        "left": {"type": "literal", "value": 1},
+                        "right": {"type": "literal", "value": 0},
+                    },
+                },
+            },
+        },
+    )
+    run = build_values(client)
+    assert run["state"] == "failed", run
+    assert run["error"]["code"] == "measure_null_result"
+    assert values(client, "base")[0]["generationId"] is None
+
+
+@pytest.mark.parametrize(
+    "method,expected", [("sum", 60), ("avg", 120), ("min", 120), ("max", 120)]
+)
+def test_materialisation_non_time_axis_follows_aggregation(
+    clickhouse_app, method, expected
+):
+    client, _, _, _ = clickhouse_app
+    setup(client, mode="equal", agg={**AGG, "nonTime": method})
+    run = build_values(client)
+    assert run["state"] == "succeeded", run
+    finer, cols = values(client, "base")
+    assert [float(row[cols["SQTY"]]) for row in finer["rows"]] == [expected, expected]
+    native, cols = values(client, "pt")
+    assert float(native["rows"][0][cols["SQTY"]]) == 120
+
+
+@pytest.mark.parametrize(
+    "non_time,time,order,expected",
+    [
+        ("sum", "avg", "nonTimeThenTime", [60, 120, 60]),
+        ("sum", "avg", "timeThenNonTime", [60, 60, 60]),
+        ("avg", "sum", "nonTimeThenTime", [60, 60, 60]),
+        ("avg", "sum", "timeThenNonTime", [60, 60, 120]),
+        ("sum", "sum", "nonTimeThenTime", [30, 60, 30]),
+        ("sum", "sum", "timeThenNonTime", [30, 30, 60]),
+        ("max", "min", "nonTimeThenTime", [120, 120, 120]),
+    ],
+)
+def test_materialisation_reverses_axes_on_irregular_intersections(
+    clickhouse_app, non_time, time, order, expected
+):
+    client, _, _, _ = clickhouse_app
+    pop = managed(
+        client,
+        "Intersections",
+        b"product,location,date\nP1,L1,2026-01-01\nP1,L1,2026-01-02\nP1,L2,2026-01-01\n",
+    )
+    calendar = managed(client, "Calendar", b"date\n2026-01-01\n2026-01-02\n")
+    assert_post(
+        client,
+        "/dimensions",
+        {
+            "objectId": "Time",
+            "kind": "dimension",
+            "name": "Time",
+            "displayName": "Time",
+            "isTimeDim": True,
+            "definition": {
+                "sourceId": calendar,
+                "columns": [
+                    {
+                        "columnId": "date",
+                        "name": "date",
+                        "displayName": "Date",
+                        "sourceColumnId": "col_1",
+                    }
+                ],
+                "keyColumnIds": ["date"],
+                "attributeColumnIds": ["date"],
+                "labelColumnId": "date",
+                "time": {
+                    "baseGrain": "day",
+                    "dateColumnId": "date",
+                    "orderingColumnId": "date",
+                },
+            },
+        },
+    )
+    create(
+        client,
+        {
+            "objectId": "base",
+            "kind": "planningLevel",
+            "name": "Base",
+            "displayName": "Base",
+            "definition": {
+                "population": {"operation": "source", "sourceId": pop},
+                "grain": {
+                    "keyIds": ["product", "location", "date"],
+                    "columns": [
+                        {
+                            "grainColumnId": name,
+                            "name": name,
+                            "populationRef": {"columnId": f"col_{index}"},
+                        }
+                        for index, name in enumerate(["product", "location", "date"], 1)
+                    ],
+                },
+                "dimensionBindings": [
+                    {
+                        "dimensionId": "Time",
+                        "keyMappings": [
+                            {"grainColumnId": "date", "dimensionColumnId": "date"}
+                        ],
+                        "selectedAttributeColumnIds": [],
+                    }
+                ],
+            },
+        },
+    )
+    create(
+        client,
+        {
+            "objectId": "pt",
+            "kind": "planningLevel",
+            "name": "Product",
+            "displayName": "Product",
+            "definition": {
+                "population": {
+                    "operation": "distinct_projection",
+                    "sourcePlanningLevelId": "base",
+                },
+                "grain": {
+                    "keyIds": ["product"],
+                    "columns": [
+                        {
+                            "grainColumnId": "product",
+                            "name": "product",
+                            "populationRef": {"sourceGrainColumnId": "product"},
+                        }
+                    ],
+                },
+            },
+        },
+    )
+    rev = client.get(BASE).json()
+    assert (
+        client.put(
+            BASE,
+            json={"basePlanningLevelId": "base", "changeReason": ""},
+            headers={"If-Match": str(rev["version"])},
+        ).status_code
+        == 200
+    )
+    source = managed(client, "Totals", b"product,quantity\nP1,120\n")
+    transaction(client, "totals", source, "pt", [("product", "col_1")])
+    measure(
+        client,
+        "QTY",
+        "totals",
+        "pt",
+        "col_2",
+        mode="weighted_by_self",
+        agg={**AGG, "nonTime": non_time, "time": time, "order": order},
+    )
+    for level_id in ["base", "pt"]:
+        assert build(client, level_id)["state"] == "succeeded"
+    run = build_values(client)
+    assert run["state"] == "succeeded", run
+    finer, cols = values(client, "base")
+    assert [float(row[cols["QTY"]]) for row in finer["rows"]] == expected
+    native, cols = values(client, "pt")
+    assert float(native["rows"][0][cols["QTY"]]) == 120
+
+
+@pytest.mark.parametrize(
+    "time_method,expected",
+    [("sum", [50, 50, 90]), ("avg", [100, 100, 90]), ("last", [100, 100, 90])],
+)
+def test_time_only_materialisation_uses_time_policy_and_each_parent_period(
+    clickhouse_app, time_method, expected
+):
+    from backend.app.engine.contracts import digest
+
+    client, _, _, _ = clickhouse_app
+    pop = managed(
+        client,
+        "DailyIntersections",
+        b"product,day\nP1,2026-01-01\nP1,2026-01-02\nP1,2026-01-08\n",
+    )
+    calendar = managed(
+        client,
+        "DailyCalendar",
+        b"day,week\n2026-01-01,W1\n2026-01-02,W1\n2026-01-08,W2\n",
+    )
+    assert_post(
+        client,
+        "/dimensions",
+        {
+            "objectId": "Time",
+            "kind": "dimension",
+            "name": "Time",
+            "displayName": "Time",
+            "isTimeDim": True,
+            "definition": {
+                "sourceId": calendar,
+                "columns": [
+                    {
+                        "columnId": name,
+                        "name": name,
+                        "displayName": name,
+                        "sourceColumnId": f"col_{i}",
+                    }
+                    for i, name in enumerate(["day", "week"], 1)
+                ],
+                "keyColumnIds": ["day"],
+                "attributeColumnIds": ["day", "week"],
+                "labelColumnId": "day",
+                "time": {
+                    "baseGrain": "day",
+                    "dateColumnId": "day",
+                    "orderingColumnId": "day",
+                },
+            },
+        },
+    )
+    create(
+        client,
+        {
+            "objectId": "base",
+            "kind": "planningLevel",
+            "name": "Daily",
+            "displayName": "Daily",
+            "definition": {
+                "population": {"operation": "source", "sourceId": pop},
+                "grain": {
+                    "keyIds": ["product", "day"],
+                    "columns": [
+                        {
+                            "grainColumnId": name,
+                            "name": name,
+                            "populationRef": {"columnId": f"col_{i}"},
+                        }
+                        for i, name in enumerate(["product", "day"], 1)
+                    ],
+                },
+                "dimensionBindings": [
+                    {
+                        "dimensionId": "Time",
+                        "keyMappings": [
+                            {"grainColumnId": "day", "dimensionColumnId": "day"}
+                        ],
+                        "selectedAttributeColumnIds": ["week"],
+                    }
+                ],
+            },
+        },
+    )
+    create(
+        client,
+        {
+            "objectId": "pt",
+            "kind": "planningLevel",
+            "name": "Weekly",
+            "displayName": "Weekly",
+            "definition": {
+                "population": {
+                    "operation": "distinct_projection",
+                    "sourcePlanningLevelId": "base",
+                },
+                "grain": {
+                    "keyIds": ["product", "week"],
+                    "columns": [
+                        {
+                            "grainColumnId": "product",
+                            "name": "product",
+                            "populationRef": {"sourceGrainColumnId": "product"},
+                        },
+                        {
+                            "grainColumnId": "week",
+                            "name": "week",
+                            "populationRef": {
+                                "sourceOutputColumnId": "da_"
+                                + digest(["base", "Time", "week"])[:28]
+                            },
+                        },
+                    ],
+                },
+                "dimensionBindings": [
+                    {
+                        "dimensionId": "Time",
+                        "keyMappings": [
+                            {"grainColumnId": "week", "dimensionColumnId": "week"}
+                        ],
+                        "selectedAttributeColumnIds": [],
+                    }
+                ],
+            },
+        },
+    )
+    rev = client.get(BASE).json()
+    assert (
+        client.put(
+            BASE,
+            json={"basePlanningLevelId": "base", "changeReason": ""},
+            headers={"If-Match": str(rev["version"])},
+        ).status_code
+        == 200
+    )
+    source = managed(
+        client, "WeeklyValues", b"product,week,quantity\nP1,W1,100\nP1,W2,90\n"
+    )
+    transaction(
+        client, "weekly_values", source, "pt", [("product", "col_1"), ("week", "col_2")]
+    )
+    measure(
+        client,
+        "QTY",
+        "weekly_values",
+        "pt",
+        "col_3",
+        agg={**AGG, "nonTime": "sum", "time": time_method},
+        mode="weighted_by_self",
+    )
+    for lid in ["base", "pt"]:
+        assert build(client, lid)["state"] == "succeeded"
+    run = build_values(client)
+    assert run["state"] == "succeeded", run
+    finer, cols = values(client, "base")
+    assert [float(row[cols["QTY"]]) for row in finer["rows"]] == expected
+    native, cols = values(client, "pt")
+    assert [float(row[cols["QTY"]]) for row in native["rows"]] == [100, 90]
+
+
+@pytest.mark.parametrize(
+    "method,expected_native", [("count", 2), ("count_distinct", 1)]
+)
+def test_count_aggregations_repeat_during_initialisation_without_reinterpreting_count_semantics(
+    clickhouse_app, method, expected_native
+):
+    client, _, _, _ = clickhouse_app
+    setup(
+        client,
+        sales=b"P1,100\nP1,200\nP1,300\n",
+        mode="equal",
+        agg={**AGG, "nonTime": method},
+    )
+    run = build_values(client)
+    assert run["state"] == "succeeded", run
+    finer, cols = values(client, "base")
+    assert [float(row[cols["SQTY"]]) for row in finer["rows"]] == [3, 3]
+    native, cols = values(client, "pt")
+    assert float(native["rows"][0][cols["SQTY"]]) == expected_native
+
+
+def test_six_place_storage_and_coarser_values_use_rounded_base(clickhouse_app):
+    client, admin, database, _ = clickhouse_app
+    setup(client, sales=b"P1,1\n", mode="weighted_by_self")
+    admin.command(f"INSERT INTO `{database}`.`Population` VALUES ('P1','L3')")
+    assert build(client, "base")["state"] == "succeeded"
+    assert build(client, "pt")["state"] == "succeeded"
+    assert_post(
+        client,
+        "/measures",
+        {
+            "objectId": "Seventh",
+            "kind": "measure",
+            "name": "Seventh",
+            "displayName": "Seventh",
+            "business": {},
+            "definition": {
+                "measureType": "calculated",
+                "nativePlanningLevelId": "base",
+                "calculationType": "CalculateFirst",
+                "aggregation": AGG,
+                "resultType": {"type": "number", "nullable": True},
+                "formula": {
+                    "displayText": "1/7",
+                    "expression": {
+                        "type": "binary",
+                        "operator": "divide",
+                        "left": {"type": "literal", "value": 1},
+                        "right": {"type": "literal", "value": 7},
+                    },
+                },
+            },
+        },
+    )
+    run = build_values(client)
+    assert run["state"] == "succeeded", run
+    finer, cols = values(client, "base")
+    assert [row[cols["SQTY"]] for row in finer["rows"]] == ["0.333333"] * 3
+    assert [row[cols["Seventh"]] for row in finer["rows"]] == ["0.142857"] * 3
+    native, cols = values(client, "pt")
+    # Do not secretly balance a remainder. Coarser values aggregate the actual
+    # six-place Base representation rather than a hidden full-precision version.
+    assert native["rows"][0][cols["SQTY"]] == "0.999999"
+    assert native["rows"][0][cols["Seventh"]] == "0.428571"

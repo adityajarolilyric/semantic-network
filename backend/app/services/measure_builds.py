@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from ..core.errors import Conflict, ImmutableRevision, MetadataError
 from ..engine.contracts import PlanningPlan, digest
-from ..engine.measure_compiler import MeasureCompiler
+from ..engine.measure_compiler import MeasureCompiler, MATERIALISATION_POLICY
 from ..engine.planning_executor import PlanningTableExecutor
 from ..engine.relationships import LevelRelationshipAnalyzer
 from .base import Service, now, scope
@@ -100,6 +100,7 @@ class MeasureBuildService(Service):
             {
                 "resolutionPolicy": RESOLUTION_POLICY,
                 "storagePolicy": STORAGE_POLICY,
+                "materialisationPolicy": MATERIALISATION_POLICY,
                 "numericPolicy": MEASURE_TYPE_POLICY,
                 "base": rev["basePlanningLevelId"],
                 "objects": {o["objectId"]: o["version"] for o in objects},
@@ -349,7 +350,10 @@ class MeasureBuildService(Service):
             await self.managed.executor.verify(artifact, compiled)
             await self.managed.executor.checks(compiled)
         await self.storage.ensure_inputs(
-            [*populations.values(), *([previous] if previous else [])]
+            [
+                *populations.values(),
+                *([previous] if previous and run.get("isEdit") else []),
+            ]
         )
         edit_document = next(
             (d["document"] for d in docs if d["inputId"] == "__edit"), None
@@ -474,6 +478,11 @@ class MeasureBuildService(Service):
                     c["measureId"]: c.get("storageName", c["name"])
                     for c in outcome["columns"]
                     if c.get("measureId")
+                },
+                "coverageColumns": {
+                    c["coverageFor"]: c.get("storageName", c["name"])
+                    for c in outcome["columns"]
+                    if c.get("coverageFor")
                 },
                 "unavailable": unavailable,
                 "populationArtifactId": populations[lid]["artifactId"],
@@ -606,7 +615,7 @@ class MeasureBuildService(Service):
                 )
             elif level_id == base and native != base and direct == "roll_down":
                 operation = "Disaggregate to Base"
-                explanation = "Distribute native values to matching Base rows using the configured disaggregation policy."
+                explanation = "Initialise matching Base rows from aggregation: split SUM axes equally and repeat other axes, in reverse aggregation order. The configured disaggregation policy applies to edits only."
             elif (
                 level_id != base
                 and base_to_target in ("roll_up", "equivalent")
@@ -678,7 +687,8 @@ class MeasureBuildService(Service):
             )
             result.update(
                 state="ready",
-                columns=artifact["columns"],
+                columns=[c for c in artifact["columns"] if c.get("role") != "coverage"],
+                incompleteMeasures=artifact.get("incompleteMeasures", {}),
                 rowCount=artifact["rowCount"],
                 unavailable=artifact["unavailable"],
                 generationId=binding["generationId"],
@@ -704,7 +714,10 @@ class MeasureBuildService(Service):
                     if not info or info[0] != "MergeTree" or info[1] != owner(artifact):
                         raise Conflict("The built measure table is missing or changed.")
                     rows = client.query(
-                        relation_sql(warehouse, artifact) + " ORDER BY ALL LIMIT 100",
+                        relation_sql(
+                            warehouse, {**artifact, "columns": result["columns"]}
+                        )
+                        + " ORDER BY ALL LIMIT 100",
                         settings=self.executor.execution_settings(),
                     ).result_rows
                     return [[warehouse.cell(v) for v in row] for row in rows]

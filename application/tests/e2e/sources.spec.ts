@@ -161,7 +161,9 @@ test('upload ten CSVs sequentially and retry only a conflicting file', async ({ 
   ]) {
     await page.getByRole('button', { name: `Preview ${table}`, exact: true }).click()
     const preview = page.getByRole('region', { name: `${table} rows`, exact: true })
-    await expect(preview.getByRole('cell', { name: value, exact: true })).toBeVisible()
+    await expect(
+      preview.locator('.cell-value').filter({ hasText: new RegExp('^' + value + '$') }),
+    ).toBeVisible()
   }
   await page.setViewportSize({ width: 375, height: 900 })
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(

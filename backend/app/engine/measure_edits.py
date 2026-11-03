@@ -3,7 +3,7 @@
 from ..core.errors import MetadataError
 from ..warehouse.repository import quote_identifier as q, quote_literal as lit
 from .contracts import Check
-from .measure_compiler import MeasureCompiler, VALUE
+from .measure_compiler import MeasureCompiler, VALUE, COMPLETE
 from .planning_view import PlanningViewPlanner, ViewRelationships, TARGET, virtual_level
 from .table_storage import GENERATION, column_sql, token
 
@@ -107,6 +107,86 @@ class MeasureEditCompiler(MeasureCompiler):
                     self.affected.add(mid)
                     changed = True
 
+    def disaggregate(self, parent, measure, source, target):
+        mapping = self.relationships.mapping(target, source)
+        child = self.cte(
+            "SELECT "
+            + ", ".join(q(k) for k in self.keys(target))
+            + f", NULL AS {q(VALUE)} FROM ({self.population(target)})"
+        )
+        enriched = self.enrich(
+            child, target, {"__parent_" + k: c for k, c in mapping.items()}
+        )
+        child = self.cte(enriched)
+        on = " AND ".join(
+            "c." + q("__parent_" + k) + " = p." + q(k) for k in self.keys(source)
+        )
+        partition = ", ".join("c." + q("__parent_" + k) for k in self.keys(source))
+        policy = measure["definition"].get("allocation") or {"mode": "none"}
+        mode = policy["mode"]
+        weight_join = ""
+        weight = None
+        if mode == "weighted":
+            basis = self.node(policy["basisMeasureId"], target)
+            weight_join = f"LEFT JOIN {q(basis)} w ON " + self.join_keys(
+                "c", "w", target
+            )
+            weight = f"w.{q(VALUE)}"
+        elif mode == "weighted_by_self":
+            old = self.previous
+            if (
+                old
+                and measure["objectId"] in old.get("measureColumns", {})
+                and old["levelId"] == target
+                and set(old["keyColumns"]) == set(self.keys(target))
+            ):
+                weight_join = (
+                    f"LEFT JOIN (SELECT * FROM {self.table(old['physicalName'])} WHERE {q(GENERATION)}={lit(token(old))}) w ON "
+                    + " AND ".join(
+                        "c." + q(k) + " = w." + q(old["keyColumns"][k])
+                        for k in self.keys(target)
+                    )
+                )
+                weight = "w." + q(old["measureColumns"][measure["objectId"]])
+            else:
+                weight = "CAST(NULL AS Nullable(Float64))"
+        if weight and measure["definition"]["resultType"]["type"] == "number":
+            weight = f"toFloat64({weight})"
+        value = "p." + q(VALUE)
+        if mode == "equal":
+            value = self.divide(
+                value, f"count() OVER (PARTITION BY {partition})", measure
+            )
+        eligible = "1"
+        if weight:
+            denominator = f"sum({weight}) OVER (PARTITION BY {partition})"
+            eligible = f"coalesce(isNotNull({weight}) AND {denominator} != 0, 0)"
+            value = f"if({eligible},({value}) * ({self.divide(weight, denominator, measure)}),NULL)"
+        # Do not lose a populated parent value simply because it has no eligible children.
+        grouped = ", ".join(q("__parent_" + k) for k in self.keys(source))
+        cover_on = " AND ".join(
+            "p." + q(k) + " = c." + q("__parent_" + k) for k in self.keys(source)
+        )
+        self.assertions.append(
+            Check(
+                "no_disaggregation_children",
+                f"SELECT p.* FROM {q(parent)} p LEFT JOIN (SELECT {grouped},toUInt8(1) AS __matched FROM {q(child)} GROUP BY {grouped}) c ON {cover_on} WHERE coalesce(c.__matched,0)=0 AND isNotNull(p.{q(VALUE)}) LIMIT 20",
+            )
+        )
+        body = f"FROM {q(child)} c LEFT JOIN {q(parent)} p ON {on} {weight_join}"
+        keys = ", ".join("c." + q(k) + " AS " + q(k) for k in self.keys(target))
+        flag = (
+            f"toUInt8(isNull(p.{q(VALUE)}) OR ({eligible}))" if weight else "toUInt8(1)"
+        )
+        if parent in self.coverage_nodes:
+            flag = f"toUInt8(({flag}) AND coalesce(p.{q(COMPLETE)},0))"
+        result = self.cte(
+            f"SELECT {keys}, {value} AS {q(VALUE)}, {flag} AS {q(COMPLETE)} {body}"
+        )
+        if weight or parent in self.coverage_nodes:
+            self.coverage_nodes[result] = True
+        return result
+
     def references(self, node):
         if node["type"] == "measureRef":
             return {node["measureId"]}
@@ -128,9 +208,14 @@ class MeasureEditCompiler(MeasureCompiler):
             q(artifact["keyColumns"][k]) + " AS " + q(k) for k in self.keys(level)
         ]
         selected.append(column_sql(column) + " AS " + q(VALUE))
-        return self.cte(
-            f"SELECT {', '.join(selected)} FROM {self.table(artifact['physicalName'])} WHERE {q(GENERATION)}={lit(token(artifact))}"
-        )
+        body = f"FROM {self.table(artifact['physicalName'])} WHERE {q(GENERATION)}={lit(token(artifact))}"
+        coverage = artifact.get("coverageColumns", {}).get(mid)
+        flag = q(coverage) if coverage else "toUInt8(1)"
+        selected.append(flag + " AS " + q(COMPLETE))
+        result = self.cte(f"SELECT {', '.join(selected)} {body}")
+        if coverage:
+            self.coverage_nodes[result] = True
+        return result
 
     def node(self, mid, target):
         key = (mid, target)
@@ -184,6 +269,7 @@ class MeasureEditCompiler(MeasureCompiler):
                 )
         else:
             return super().node(mid, target)
+        result = self.quantize_node(result, self.measures[mid], target)
         self.cache[key] = result
         return result
 
@@ -289,6 +375,8 @@ class MeasureEditCompiler(MeasureCompiler):
             f"SELECT {keys}, {value} AS {q(VALUE)}, toUInt8(1) AS __edited FROM {q(source)}"
         )
         patched = self.cte(
-            f"SELECT {', '.join('o.' + q(k) + ' AS ' + q(k) for k in self.keys(self.write_id))}, if(coalesce(p.__edited,0)=1,p.{q(VALUE)},o.{q(VALUE)}) AS {q(VALUE)} FROM {q(old)} o LEFT JOIN {q(patch)} p ON {self.join_keys('o', 'p', self.write_id)}"
+            f"SELECT {', '.join('o.' + q(k) + ' AS ' + q(k) for k in self.keys(self.write_id))}, if(coalesce(p.__edited,0)=1,p.{q(VALUE)},o.{q(VALUE)}) AS {q(VALUE)}, if(coalesce(p.__edited,0)=1,toUInt8(1),o.{q(COMPLETE)}) AS {q(COMPLETE)} FROM {q(old)} o LEFT JOIN {q(patch)} p ON {self.join_keys('o', 'p', self.write_id)}"
         )
+        if old in self.coverage_nodes:
+            self.coverage_nodes[patched] = self.coverage_nodes[old]
         return patched

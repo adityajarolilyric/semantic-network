@@ -371,3 +371,293 @@ def test_discover_saved_managed_output_columns(clickhouse_app):
     assert set(raw.json()["values"]) == {"FQTY", "SQTY"}
     missing = client.get(path, params={"columnId": "col_2", "managedOutput": True})
     assert missing.status_code == 422, missing.text
+
+
+def forecast_rows_definition():
+    return {
+        "pipeline": [
+            {
+                "stageId": "forecast_rows",
+                "mode": "expand_rows",
+                "groupByColumnIds": ["col_5", "col_6", "col_2", "col_4"],
+                "pairs": [
+                    {
+                        "pairId": "brands",
+                        "attributeColumnId": "col_1",
+                        "valueColumnId": "col_2",
+                        "outputs": [{"attributeValue": "brand", "name": "brand"}],
+                    },
+                    {
+                        "pairId": "zones",
+                        "attributeColumnId": "col_3",
+                        "valueColumnId": "col_4",
+                        "outputs": [{"attributeValue": "zone", "name": "zone"}],
+                    },
+                ],
+            }
+        ],
+        "primaryKeyColumnIds": [],
+    }
+
+
+def test_expand_same_week_quantity_different_brands_and_generated_composite_key(
+    clickhouse_app,
+):
+    client, admin, db, _ = clickhouse_app
+    base, source = setup(
+        client,
+        b"product_attribute,product_value,location_attribute,location_value,week,forecast_qty\nbrand,Crunchy,zone,West,2026-W11,240\nbrand,Zesto,zone,West,2026-W11,240\nbrand,FreshCo,zone,North,2026-W12,0\n",
+    )
+    raw = client.get("/api/v1/warehouse/tables/Forecast/preview").json()
+    definition = forecast_rows_definition()
+    response = client.post(
+        base + "/managed-tables/" + source + "/schema", json=definition
+    )
+    assert response.status_code == 200, response.text
+    cols = response.json()["columns"]
+    assert [c["name"] for c in cols] == ["week", "forecast_qty", "brand", "zone"]
+    definition["primaryKeyColumnIds"] = [cols[i]["columnId"] for i in [0, 2, 3]]
+    run = await_run(client, base, save(client, base, source, definition))
+    assert run["state"] == "succeeded", run
+    preview = client.get(base + "/managed-tables/" + source + "/preview").json()
+    assert sorted(preview["rows"]) == [
+        ["2026-W11", "240", "Crunchy", "West"],
+        ["2026-W11", "240", "Zesto", "West"],
+        ["2026-W12", "0", "FreshCo", "North"],
+    ]
+    assert client.get("/api/v1/warehouse/tables/Forecast/preview").json() == raw
+    assert (
+        admin.query(
+            f"SELECT count() FROM system.tables WHERE database='{db}' AND engine != 'View'"
+        ).first_row[0]
+        == 1
+    )
+    saved = client.get(base + "/managed-tables/" + source).json()
+    assert saved["definition"]["pipeline"][0]["mode"] == "expand_rows"
+    assert (
+        saved["definition"]["primaryKeyColumnIds"] == definition["primaryKeyColumnIds"]
+    )
+    # Switching to merge explicitly still reports the unresolved scalar-cell collision.
+    merged = forecast_rows_definition()
+    merged["pipeline"][0].update(mode="merge_rows", groupByColumnIds=["col_5", "col_6"])
+    failed = await_run(client, base, save(client, base, source, merged))
+    assert failed["error"]["code"] == "duplicate_pivot_cell"
+    assert (
+        client.get(base + "/managed-tables/" + source + "/preview").json()["rows"]
+        == preview["rows"]
+    )
+    # Duplicate output keys also fail without replacing the working row-mode view.
+    definition["primaryKeyColumnIds"] = ["col_5"]
+    failed = await_run(client, base, save(client, base, source, definition))
+    assert failed["error"]["code"] == "duplicate_managed_key"
+
+
+def test_expand_preserves_duplicate_rows_null_zero_and_missing_literals(clickhouse_app):
+    client, _, _, _ = clickhouse_app
+    base, source = setup(
+        client, b"product,attribute,value\nA,FQTY,0\nA,FQTY,0\nB,FQTY,\nC,Other,5\n"
+    )
+    definition = pivot()
+    definition["primaryKeyColumnIds"] = []
+    definition["pipeline"][0]["mode"] = "expand_rows"
+    # Generated alias can shadow a consumed raw input column safely.
+    definition["pipeline"][0]["pairs"][0]["outputs"][0]["name"] = "value"
+    run = await_run(client, base, save(client, base, source, definition))
+    assert run["state"] == "succeeded", run
+    rows = client.get(base + "/managed-tables/" + source + "/preview").json()["rows"]
+    assert rows == [
+        ["A", "0", None, None],
+        ["A", "0", None, None],
+        ["B", None, None, None],
+        ["C", None, None, None],
+    ]
+    definition["primaryKeyColumnIds"] = ["col_1"]
+    failed = await_run(client, base, save(client, base, source, definition))
+    assert failed["error"]["code"] == "duplicate_managed_key"
+
+
+def test_expand_without_retained_columns(clickhouse_app):
+    client, _, _, _ = clickhouse_app
+    base, source = setup(client, b"product,attribute,value\nA,FQTY,10\nB,SQTY,20\n")
+    definition = pivot()
+    definition["primaryKeyColumnIds"] = []
+    definition["pipeline"][0].update(mode="expand_rows", groupByColumnIds=[])
+    run = await_run(client, base, save(client, base, source, definition))
+    assert run["state"] == "succeeded", run
+    preview = client.get(base + "/managed-tables/" + source + "/preview").json()
+    assert len(preview["rows"]) == 2
+    assert [c["name"] for c in preview["columns"]] == [
+        "Forecast Quantity",
+        "Sales Quantity",
+        "Expected",
+    ]
+
+
+def test_explicit_forecast_groups_values_and_retained_columns(clickhouse_app):
+    client, admin, db, _ = clickhouse_app
+    base, source = setup(
+        client,
+        b"product_attribute,product_value,location_attribute,location_value,week,forecast_qty\nbrand,Crunchy,zone,West,2026-W11,240\nbrand,Zesto,zone,West,2026-W11,240\nbrand,Crunchy,zone,West,2026-W11,240\n",
+    )
+    definition = forecast_rows_definition()
+    stage = definition["pipeline"][0]
+    stage.pop("mode")
+    stage["recordKeyColumnIds"] = []
+    path = base + "/managed-tables/" + source
+    schema = client.post(path + "/schema", json=definition)
+    assert schema.status_code == 200, schema.text
+    assert set(schema.json()) == {"columns"}
+    assert [c["name"] for c in schema.json()["columns"]] == [
+        "week",
+        "forecast_qty",
+        "brand",
+        "zone",
+    ]
+    assert client.get(path).json()["definition"]["pipeline"] == []
+    run = await_run(client, base, save(client, base, source, definition))
+    assert run["state"] == "succeeded", run
+    preview = client.get(path + "/preview")
+    assert preview.status_code == 200, preview.text
+    assert sorted(preview.json()["rows"]) == [
+        ["2026-W11", "240", "Crunchy", "West"],
+        ["2026-W11", "240", "Zesto", "West"],
+    ]
+    saved = client.get(path).json()["definition"]
+    assert saved["pipeline"][0]["recordKeyColumnIds"] == []
+    assert (
+        "mode" not in saved["pipeline"][0]
+        and "resolvedMode" not in saved["pipeline"][0]
+    )
+    # Data never changes the grouping interpretation; exact duplicates collapse.
+    admin.command(
+        f"INSERT INTO `{db}`.`Forecast` SELECT * FROM `{db}`.`Forecast` LIMIT 1"
+    )
+    assert len(client.get(path + "/preview").json()["rows"]) == 2
+    definition["primaryKeyColumnIds"] = ["col_5"]
+    failed = await_run(client, base, save(client, base, source, definition))
+    assert failed["error"]["code"] == "duplicate_managed_key"
+    # Schema derivation does not require any source rows or profiling.
+    admin.command(f"TRUNCATE TABLE `{db}`.`Forecast`")
+    assert client.post(path + "/schema", json=definition).status_code == 200
+
+
+def test_record_keys_merge_complementary_rows_and_consistent_retained_name(
+    clickhouse_app,
+):
+    client, _, _, _ = clickhouse_app
+    base, source = setup(
+        client,
+        b"customer_id,customer_name,attribute,value\nC1,Alice,Channel,Retail\nC1,Alice,Sold To,Acme\nC2,Bob,Channel,Online\n",
+    )
+    definition = {
+        "primaryKeyColumnIds": [],
+        "pipeline": [
+            {
+                "stageId": "customer",
+                "groupByColumnIds": ["col_1", "col_2"],
+                "recordKeyColumnIds": ["col_1"],
+                "pairs": [
+                    {
+                        "pairId": "attributes",
+                        "attributeColumnId": "col_3",
+                        "valueColumnId": "col_4",
+                        "outputs": [
+                            {"attributeValue": "Channel", "name": "Channel"},
+                            {"attributeValue": "Sold To", "name": "Sold To"},
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+    run = await_run(client, base, save(client, base, source, definition))
+    assert run["state"] == "succeeded", run
+    preview = client.get(base + "/managed-tables/" + source + "/preview")
+    assert preview.status_code == 200, preview.text
+    assert sorted(preview.json()["rows"]) == [
+        ["C1", "Alice", "Retail", "Acme"],
+        ["C2", "Bob", "Online", None],
+    ]
+
+
+@pytest.mark.parametrize(
+    "rows,code",
+    [
+        (
+            b"C1,Alice,Channel,Retail\nC1,Bob,Sold To,Acme\n",
+            "conflicting_retained_values",
+        ),
+        (b"C1,Alice,Channel,Retail\nC1,Alice,Channel,Retail\n", "duplicate_pivot_cell"),
+    ],
+)
+def test_explicit_record_keys_reject_ambiguous_cells_or_retained_values(
+    clickhouse_app, rows, code
+):
+    client, _, _, _ = clickhouse_app
+    base, source = setup(client, b"customer_id,customer_name,attribute,value\n" + rows)
+    definition = {
+        "primaryKeyColumnIds": [],
+        "pipeline": [
+            {
+                "stageId": "customer",
+                "groupByColumnIds": ["col_1", "col_2"],
+                "recordKeyColumnIds": ["col_1"],
+                "pairs": [
+                    {
+                        "pairId": "attributes",
+                        "attributeColumnId": "col_3",
+                        "valueColumnId": "col_4",
+                        "outputs": [
+                            {"attributeValue": "Channel", "name": "Channel"},
+                            {"attributeValue": "Sold To", "name": "Sold To"},
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+    failed = await_run(client, base, save(client, base, source, definition))
+    assert failed["state"] == "failed" and failed["error"]["code"] == code, failed
+
+
+def test_saved_legacy_auto_expansion_preserves_duplicate_rows(clickhouse_app):
+    client, _, _, _ = clickhouse_app
+    base, source = setup(
+        client,
+        b"product_attribute,product_value,location_attribute,location_value,week,forecast_qty\nbrand,Crunchy,zone,West,W1,2\nbrand,Crunchy,zone,West,W1,2\n",
+    )
+    definition = forecast_rows_definition()
+    definition["pipeline"][0].update(mode="auto", resolvedMode="expand_rows")
+    run = await_run(client, base, save(client, base, source, definition))
+    assert run["state"] == "succeeded", run
+    path = base + "/managed-tables/" + source
+    assert len(client.get(path + "/preview").json()["rows"]) == 2
+    saved = client.get(path).json()["definition"]
+    assert "recordKeyColumnIds" not in saved["pipeline"][0]
+    assert saved["pipeline"][0]["resolvedMode"] == "expand_rows"
+    run = await_run(client, base, save(client, base, source, definition))
+    assert run["state"] == "succeeded", run
+    assert len(client.get(path + "/preview").json()["rows"]) == 2
+
+
+def test_value_grouping_keeps_discriminators_nulls_and_shadowing_alias(clickhouse_app):
+    client, _, _, _ = clickhouse_app
+    base, source = setup(
+        client,
+        b"product_attribute,product_value,location_attribute,location_value,week,forecast_qty\nbrand,X,zone,West,W1,0\nproduct_id,X,zone,West,W1,0\nbrand,,zone,West,W1,0\nbrand,,zone,West,W1,0\n",
+    )
+    definition = forecast_rows_definition()
+    stage = definition["pipeline"][0]
+    stage.pop("mode")
+    stage["recordKeyColumnIds"] = []
+    stage["pairs"][0]["outputs"][0]["name"] = "product_value"
+    run = await_run(client, base, save(client, base, source, definition))
+    assert run["state"] == "succeeded", run
+    preview = client.get(base + "/managed-tables/" + source + "/preview")
+    assert preview.status_code == 200, preview.text
+    rows = preview.json()["rows"]
+    # The unselected product_id record and the missing Brand record remain
+    # separate input contexts even though both project a NULL Brand output.
+    assert len(rows) == 3
+    assert rows.count(["W1", "0", None, "West"]) == 2
+    assert ["W1", "0", "X", "West"] in rows

@@ -1,0 +1,13 @@
+location_id,attribute_name,attribute_value
+L001,location_name,Delhi DC
+L001,zone,North
+L001,city,Delhi
+L002,location_name,Lucknow DC
+L002,zone,North
+L002,city,Lucknow
+L003,location_name,Bengaluru DC
+L003,zone,South
+L003,city,Bengaluru
+L004,location_name,Chennai DC
+L004,zone,South
+L004,city,Chennai

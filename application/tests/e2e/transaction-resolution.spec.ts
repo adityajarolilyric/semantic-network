@@ -94,9 +94,9 @@ test('configure, preview and reopen a multi-grain transaction', async ({ page })
   await expect(page.getByRole('status').filter({ hasText: '1 input rows' })).toContainText(
     '2 winning rows',
   )
-  await expect(page.getByRole('cell', { name: '50.0', exact: true })).toHaveCount(2)
+  await expect(page.getByRole('cell', { name: '50.00', exact: true })).toHaveCount(2)
   await expect(
-    page.getByRole('table').filter({ has: page.getByRole('cell', { name: '50.0', exact: true }) }),
+    page.getByRole('table').filter({ has: page.getByRole('cell', { name: '50.00', exact: true }) }),
   ).toHaveClass('data-table')
   await page.screenshot({ path: 'test-results/transaction-resolution-desktop.png', fullPage: true })
   await page.setViewportSize({ width: 390, height: 844 })
@@ -131,7 +131,7 @@ test('configure, preview and reopen a multi-grain transaction', async ({ page })
   await expect(page.getByRole('checkbox', { name: 'Resolve quantity', exact: true })).toBeChecked()
   await expect(page.getByLabel('Apply-order column', { exact: true })).toHaveValue('col_4')
   await page.getByRole('button', { name: 'Preview resolved data', exact: true }).click()
-  await expect(page.getByRole('cell', { name: '50.0', exact: true })).toHaveCount(2)
+  await expect(page.getByRole('cell', { name: '50.00', exact: true })).toHaveCount(2)
 })
 
 test('resolve daily ranges into weekly keys, save and reopen', async ({ page }) => {

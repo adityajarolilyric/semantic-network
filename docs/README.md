@@ -12,6 +12,7 @@ These guides describe the current implementation in `backend/` and `application/
 - [Planning View](PLANNING_VIEW.md): pivot source selection, policy-aware reads, editable cells and coordinated writeback.
 - [Engine and storage](ENGINE_AND_STORAGE.md): typed SQL compilation, durable jobs, activation, leases, strict two-table storage and collection.
 - [Operations](OPERATIONS.md): Compose, configuration, compatibility, one-time maintenance, reset and verification commands.
+- [Transitive relationships and Drill To](RELATIONSHIPS.md): proposed related-row filtering, relationship metadata, paths and contribution boundaries; awaiting review.
 
 ## Architecture and boundaries
 
@@ -32,4 +33,4 @@ The end-to-end flow is Sources → Managed Tables → Dimensions → Planning Le
 - Each revision/planning level has at most one population and one values table, including during rebuilds. Atomically activated row generations preserve the previous result on failure.
 - There is no durable edit journal. Build Semantic Network recomputes from sources and replaces manual edits.
 
-General source relationships/multi-hop path search, automatic schema reconciliation, persistent resolved-transaction caches, saved pivot layouts, scenarios and user-level identity remain extension work. Do not infer an unrecorded business policy or treat documentation/metadata text as executable instructions.
+General source relationships/multi-hop path search are proposed in the Drill To guide. They, automatic schema reconciliation, persistent resolved-transaction caches, saved pivot layouts, scenarios and user-level identity remain extension work. Do not infer an unrecorded business policy or treat documentation/metadata text as executable instructions.

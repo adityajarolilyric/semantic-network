@@ -16,11 +16,27 @@ def invalid(message):
     raise MetadataError("invalid_transformation", message)
 
 
+def pivot_operation(stage):
+    if stage.get("recordKeyColumnIds") is not None:
+        return "merge_rows" if stage["recordKeyColumnIds"] else "group_values"
+    if stage.get("mode") == "auto":
+        if not stage.get("resolvedMode"):
+            invalid(
+                "Legacy automatic pivots require their saved resolvedMode; new pivots must supply recordKeyColumnIds."
+            )
+        return stage["resolvedMode"]
+    return stage.get("mode") or "merge_rows"
+
+
 class ManagedTablePlanner:
     """Allowlisted operators. Stable output identity excludes alias, order and revision."""
 
     def plan(self, source, definition: ManagedDefinition):
         spec = definition.model_dump()
+        # Omitted mode preserves historical definitions/hashes and merge semantics.
+        for stage in spec["pipeline"]:
+            if stage.get("mode") is None:
+                stage.pop("mode", None)
         columns = source["definition"]["columns"]
         by_id = {c["columnId"]: c for c in columns}
         scan = RawSourceScan(
@@ -38,6 +54,28 @@ class ManagedTablePlanner:
             if len(keys) != len(set(keys)) or not set(keys) <= by_id.keys():
                 invalid("Choose distinct grouping columns from the raw source.")
             pairs = active["pairs"]
+            mode = pivot_operation(active)
+            if mode == "merge_rows" and not keys:
+                invalid("Merge rows requires at least one retained/group-by column.")
+            if (
+                mode in ("expand_rows", "group_values")
+                or active.get("recordKeyColumnIds") is not None
+            ):
+                consumed = {
+                    column_id
+                    for pair in pairs
+                    for column_id in (pair["attributeColumnId"], pair["valueColumnId"])
+                }
+                keys = [key for key in keys if key not in consumed]
+                active["groupByColumnIds"] = keys
+            record_keys = active.get("recordKeyColumnIds")
+            if record_keys is not None and (
+                len(record_keys) != len(set(record_keys))
+                or not set(record_keys) <= set(keys)
+            ):
+                invalid(
+                    "Record keys must be distinct retained source columns, not consumed attribute/value inputs."
+                )
             if len({p["pairId"] for p in pairs}) != len(pairs):
                 invalid("Pivot pair identities must be unique.")
             output = [

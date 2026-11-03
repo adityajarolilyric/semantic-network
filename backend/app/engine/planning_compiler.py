@@ -145,7 +145,10 @@ class PlanningLevelCompiler(ClickHouseCompiler):
         selected = ", ".join(
             q(c["columnId"]) + " AS " + q(c["name"]) for c in plan.schema.columns
         )
-        ast = parse_one(f"SELECT {selected} FROM ({query})", read="clickhouse")
+        ast = parse_one(f"SELECT DISTINCT {selected} FROM ({query})", read="clickhouse")
         return ExecutionPlan(
-            ast, tuple(checks), plan.schema, "planning-v2-membership-sqlglot-27.28.1"
+            ast,
+            tuple(checks),
+            plan.schema,
+            "planning-v4-plain-output-names-sqlglot-27.28.1",
         )

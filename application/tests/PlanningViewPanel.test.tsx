@@ -88,7 +88,7 @@ it('submits explicit axes and measure IDs, and renders a multi-measure pivot wit
   expect(within(table).getByRole('columnheader', { name: 'North' })).toBeVisible()
   expect(within(table).queryByRole('columnheader', { name: 'FQTY' })).not.toBeInTheDocument()
   expect(within(table).getAllByRole('rowheader', { name: 'FQTY' })).toHaveLength(2)
-  expect(within(table).getByText('12.5')).toBeVisible()
+  expect(within(table).getByText('12.50')).toBeVisible()
   expect(within(table).getByText('—')).toHaveAttribute('title', 'NULL value')
   expect(table.textContent).not.toContain('product:brand')
   await user.click(screen.getByLabelText('Remove Product · Brand from rows'))
@@ -125,7 +125,7 @@ it('renders a global result and keeps NULL dimension groups distinct from text a
     <PlanningPivot result={{ ...result, fields: [], rows: [['100', null]] }} />,
   )
   expect(screen.getByRole('rowheader', { name: 'All' })).toBeVisible()
-  expect(screen.getByText('100')).toBeVisible()
+  expect(screen.getByText('100.00')).toBeVisible()
   rerender(
     <PlanningPivot
       result={{

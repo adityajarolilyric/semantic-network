@@ -1,4 +1,5 @@
 import { useId } from 'react'
+import { formatNumericDisplay } from '../lib/numberFormat'
 import {
   ArrowLeft,
   ArrowRight,
@@ -134,7 +135,9 @@ export function DataPreview({
                           <span className="empty-value">empty</span>
                         ) : (
                           <span className="cell-value" title={value}>
-                            {value}
+                            {/Float|Decimal/.test(preview.columns[index].type)
+                              ? formatNumericDisplay(value)
+                              : value}
                           </span>
                         )}
                       </td>

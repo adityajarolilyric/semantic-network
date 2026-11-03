@@ -6,6 +6,7 @@ import { Select } from './editors/Fields'
 import type { Measure, PlanningLevel } from './types'
 
 type Values = PlanningTableStatus & {
+  incompleteMeasures?: Record<string, number>
   generationId?: string
   unavailable: Record<string, { message: string }>
   materialisation: {
@@ -140,6 +141,18 @@ export function MaterialisePanel({
               : 'These values were built from older inputs or numeric rules. Create a new draft and build its semantic network to update them.'}
           </p>
         )}
+        {status && Object.keys(status.incompleteMeasures ?? {}).length > 0 && (
+          <p className="meta-hint" role="status">
+            {Object.entries(status.incompleteMeasures ?? {})
+              .map(
+                ([id, count]) =>
+                  `${measures.find((m) => m.objectId === id)?.name ?? 'Measure'}: ${count} finer cells unavailable`,
+              )
+              .join('; ')}
+            . Allocation weights are missing or total zero. Native values remain available; no equal
+            fallback was applied.
+          </p>
+        )}
         {status && Object.keys(status.unavailable ?? {}).length > 0 && (
           <ul>
             {Object.entries(status.unavailable).map(([id, item]) => (
@@ -193,7 +206,7 @@ export function MaterialisePanel({
                     )}
                     {item.aggregation && (
                       <p className="meta-hint">
-                        Disaggregation:{' '}
+                        Edit disaggregation:{' '}
                         {item.disaggregation.mode === 'none'
                           ? 'None — repeat value'
                           : item.disaggregation.mode.replaceAll('_', ' ')}

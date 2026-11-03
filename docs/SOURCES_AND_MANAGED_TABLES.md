@@ -35,19 +35,28 @@ Raw registration (`POST .../source-registrations`) accepts table name, optional 
 
 ## Identity and pivot semantics
 
-An empty pipeline explicitly projects captured raw columns through a normal view, preserving all rows/duplicates. One optional pivot stage supports multiple attribute/value pairs:
+An empty pipeline projects captured raw columns through a normal view, preserving all rows/duplicates. One optional pivot stage supports multiple attribute/value pairs:
 
-- Stage: stable `stageId`, enabled flag, grouping column IDs and pairs.
-- Pair: stable `pairId`, raw attribute/value IDs and outputs containing typed literal, alias and server-verified output ID.
-- Retained raw columns keep IDs. Pivot IDs hash source/stage/pair/typed literal, excluding alias, order and revision. Lineage records those inputs. Persist stage/pair IDs once; cloning and disabling/re-enabling preserve them.
+- Stage: stable stageId, enabled, groupByColumnIds (retained raw columns), recordKeyColumnIds and pairs.
+- Pair: stable pairId, raw attribute/value IDs, and selected outputs with typed literal, alias and server-verified output ID.
+- Retained columns keep IDs. Generated IDs hash source/stage/pair/typed literal, excluding alias, grouping, order and revision. Lineage records those inputs. Cloning and disabling/re-enabling preserve identities.
 
-Retained columns define wide-row identity. Select every ordinary column that must survive; no arbitrary value is chosen for ungrouped columns. Pivot values retain the input scalar type/unit; String is not converted to numeric. Missing selected attributes yield NULL; zero stays zero. Groups with only unselected attributes still appear. New raw values do not silently widen a saved schema. API-only expected literals/aliases remain supported even though the UI offers discovery/checkboxes.
+## Pivot grouping and final output keys
 
-A cell is `(grouping tuple, pair, selected literal)`. More than one contributing row fails, including identical values or multiple NULLs. There is no MAX/SUM/FIRST/deduplication policy. To preserve repeated records, retain an existing record/occurrence ID; never invent pairing from row order. An optional managed output key adds only a duplicate-key check; NULL keys are not separately rejected. Pivot adds no range, completeness or other value-quality rules.
+New pivots have explicit recordKeyColumnIds and no mode/resolvedMode. Grouping follows configuration only; there is no data-layout detector, completeness profile or ambiguity-driven fallback.
 
-The compiler uses `groupArrayIf(2)(tuple(value), condition)` and `throwIf`: tuple wrapping retains NULL and two entries prove ambiguity. Full-input duplicate probes run before build, after DDL, on managed previews and before publication; at most 20 diagnostic groups are returned. Preview LIMIT never certifies uniqueness. Unselected cells do not trigger selected-cell checks. Metadata/type/reference/resource checks still apply.
+- **Empty record keys:** automatically GROUP BY retained columns plus every selected pair's raw attribute and value columns. Conditional expressions produce named outputs without splitting rows. Exact grouping tuples collapse, including NULL tuples. Attribute discriminators prevent values with different meanings from merging. For Forecast, retain Week/Quantity and select Product attribute/value → Brand and Location attribute/value → Zone. Distinct Brand/Zone/Week/Quantity combinations survive even when quantities match. Differences only in unselected source columns do not create separate records. To preserve repeated occurrences, retain an actual occurrence identifier.
+- **Record keys supplied:** keys must be distinct retained source columns, excluding consumed pair inputs. GROUP BY those entity keys, for example Customer ID when Channel and Sold To arrive on separate rows. Other retained columns must have one distinct value per key tuple, including NULL; conflicts fail conflicting_retained_values rather than selecting an arbitrary value. Each selected pivot cell is (record keys, pair, literal); multiple contributing rows fail duplicate_pivot_cell even when values are identical. No SUM/MAX/FIRST policy is inferred.
 
-A normal view freezes its definition, not source rows. Inline guards plus full preflight checks are not a continuously enforced warehouse uniqueness constraint; external writes can race them or bypass application checks. App-imported CSVs have no row-edit API.
+Raw pair inputs are consumed and excluded from the output/primary-key choices. Scalar types and units are preserved; absent/unselected outputs are NULL and zero remains zero. Separate raw grouping tuples can project the same visible NULL outputs when literals are unselected; the optional output key still validates the actual output. Discovery supplies available literals, not a grouping decision. New literals never silently widen saved columns. Expected literals/aliases remain available through the API.
+
+The optional output primaryKeyColumnIds is independent of transformation grouping and adds only a duplicate-output-key check. NULL key values are not separately rejected. Grouping and carried-value guards run over full inputs before/after view creation and on preview/publication; diagnostics are bounded to 20 groups. Tuple-wrapped bounded arrays preserve NULL cells and reject ambiguity. The preview LIMIT does not certify uniqueness.
+
+POST /managed-tables/{source}/schema derives names/types/lineage/stable output IDs from registered metadata only, with no warehouse profiling or writes. The editor debounces/cancels stale analysis and offers generated columns for key selection before Save. Save validates selected keys and revision dependencies. Schema errors block Save and offer Retry output columns.
+
+Legacy compatibility: omitted/null mode retains historical merging by all retained columns; expand_rows retains row-preserving projection without deduplication; previously saved auto plus resolvedMode runs its frozen operation. Opening or saving an unchanged pivot preserves its fields, hashes, IDs and compiler version. Editing its pivot configuration in the UI adopts explicit grouping: former merge configurations inherit their retained grouping keys; former row expansion adopts value grouping. Changing only the optional output key preserves the saved operation. Unresolved old auto requests require explicit grouping instead of reintroducing inference. Legacy mode fields cannot coexist with recordKeyColumnIds. No startup migration or data rewrite occurs.
+
+A normal view freezes its definition, not source rows. Guards are not continuously enforced warehouse constraints; external writes can race application checks. Imported CSVs have no row-edit API.
 
 ## Managed editor
 
@@ -57,7 +66,7 @@ Save, Preview and Close sit at the bottom right below Optional managed output pr
 - Preview reads the **saved view**. With unsaved changes, ask to Save/build first; declining performs neither operation. Editing clears an old preview. Use the shared Source `DataPreview`, capped at 100 rows without an extra refresh action.
 - Close returns to the list, confirms discarding unsaved changes and performs no build/save. Disable it during an operation. Published definitions allow saved previews and tab browsing, not mutation.
 
-With Pivot enabled, show retained/group-by columns left and compact pair tabs right, stacking at widths ≤1100px. Only the active pair expands; tabs preserve configurations, show mapping/output counts and support arrows/Home/End. Discover is a button beside the attribute/value choices; Remove pair occupies that compact action area. Outputs remain checkbox lists with Select all/Deselect all. Discovery selects all initially; deselected choices remain visible. Do not show expected-value, output-name or value-type inputs. Reopening must initialize from the complete saved Source/managed attachment, not the raw API serializer that strips it.
+With Pivot enabled, show retained columns and optional record keys left and compact pair tabs right, stacking at widths ≤1100px. Only the active pair expands; tabs preserve configurations, show mapping/output counts and support arrows/Home/End. Discover is a button beside the attribute/value choices; Remove pair occupies that compact action area. Outputs remain checkbox lists with Select all/Deselect all. Discovery selects all initially; deselected choices remain visible. Do not show expected-value, output-name or value-type inputs. Reopening must initialize from the complete saved Source/managed attachment, not the raw API serializer that strips it.
 
 ## Managed APIs, discovery and compatibility
 
@@ -68,11 +77,12 @@ Paths below are relative to `/api/v1/models/{model}/revisions/{revision}`:
 - `PUT /managed-tables/{source}`: definition, If-Match, Idempotency-Key; queue save/build.
 - `POST /managed-tables/{source}/disable`: If-Match; preserve configuration/data.
 - `GET /managed-tables/{source}/attribute-values?columnId=...&offset=0&limit=200`: structured values/nextOffset. Default reads raw input for Pivot; `managedOutput=true` leases/verifies saved output for transaction selector discovery and returns the artifact ID.
+- `POST /managed-tables/{source}/schema`: metadata-only proposed output analysis, including generated IDs before Save.
 - `GET /managed-tables/{source}/preview`: checked active-view rows, maximum 100. Compatibility POST accepts an unsaved proposed definition without saving/creating an artifact; current UI does not use it.
 - `POST /managed-tables/{source}/ensure-view`: Idempotency-Key; repair unchanged saved definition, including published views, without changing semantics.
 - `POST /managed-tables/upgrade-contract`: revision If-Match, after enabled tables are initialized.
 
-Limits: one stage, 20 pairs, 200 outputs/pair, 32 grouping/key columns and 2,000 total outputs. Discovery exhausts pages before Select all and fails clearly beyond bounds; never silently select a first page. Typed literals support strings/numbers/booleans/NULL, including quoted/comma-containing text; unsupported nonscalar value types fail analysis. Referenced output removal or incompatible pivot disabling fails graph validation rather than clearing keys/dependencies.
+Limits: one stage, 20 pairs, 200 outputs/pair, 32 retained/grouping or key columns and 2,000 total outputs. Discovery exhausts pages before Select all and fails clearly beyond bounds; never silently select a first page. Typed literals support strings/numbers/booleans/NULL, including quoted/comma-containing text; unsupported nonscalar value types fail analysis. Referenced output removal or incompatible pivot disabling fails graph validation rather than clearing keys/dependencies.
 
 New/UI revisions use contract 2. Initialize managed views on Sources builds missing views sequentially before upgrading an old draft. Contract-1 published metadata stays frozen; compatibility derives an identity definition and ensure-view provisions it operationally. Clones copy definitions/IDs, reset versions and create their own artifacts. Publication checks ready saved views, live schema/ownership and duplicate probes before the final revision-guard transaction.
 

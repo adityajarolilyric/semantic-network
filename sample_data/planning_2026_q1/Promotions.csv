@@ -1,0 +1,4 @@
+sequence,promotion_id,product_level,product_value,location_level,location_value,start_date,end_date,pqty
+1,PROMO01,brand,FreshCo,zone,North,2026-01-12,2026-01-18,280
+2,PROMO02,product_id,P001,location_id,L001,2026-01-15,2026-01-21,140
+3,PROMO03,brand,DailyCo,zone,South,2026-02-26,2026-03-04,560

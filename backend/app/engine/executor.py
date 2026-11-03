@@ -48,6 +48,8 @@ class ClickHouseExecutor:
                         check.code,
                         "Duplicate pivot cells must be corrected in the source data."
                         if check.code == "duplicate_pivot_cell"
+                        else "Retained columns have conflicting values for the same record keys."
+                        if check.code == "conflicting_retained_values"
                         else "The declared managed key contains duplicates.",
                         details=[
                             {"message": str([self.warehouse.cell(v) for v in row])}

@@ -261,8 +261,8 @@ def test_planning_view_exact_coarser_and_formula_semantics(clickhouse_app):
     assert view["plan"]["planningLevelId"] == "brand_zone"
     assert view["plan"]["exactGrain"]
     assert view["rows"] == [
-        ["A", "Z1", "110.0", "200.0", "90.0", "130.0"],
-        ["A", "Z2", "30.0", "120.0", "90.0", "90.0"],
+        ["A", "Z1", "110.0", "140.0", "30.0", "70.0"],
+        ["A", "Z2", "30.0", "60.0", "30.0", "30.0"],
         ["B", "Z2", "-10.0", "20.0", "30.0", "30.0"],
     ]
 
@@ -279,7 +279,7 @@ def test_planning_view_further_rollup_recalculates_aggregate_first(clickhouse_ap
     view = response.json()
     assert view["plan"]["planningLevelId"] == "brand_zone"
     assert view["rows"] == [
-        ["A", "140.0", "320.0", "180.0", "220.0"],
+        ["A", "140.0", "200.0", "60.0", "100.0"],
         ["B", "-10.0", "20.0", "30.0", "30.0"],
     ]
     assert (
@@ -335,7 +335,7 @@ def test_planning_view_global_total_and_size_errors(clickhouse_app):
     seed_view(client)
     response = query_view(client, measures=["FQTY", "SQTY", "ErrorAF", "ErrorCF"])
     assert response.status_code == 200, response.text
-    assert response.json()["rows"] == [["130.0", "340.0", "210.0", "250.0"]]
+    assert response.json()["rows"] == [["130.0", "220.0", "90.0", "130.0"]]
     settings.planning_view_max_groups = 1
     limited = query_view(
         client, [field("Product", "product")], [field("Location", "zone")]
@@ -393,3 +393,70 @@ def test_planning_view_time_and_non_time_order(
     response = query_view(client, [field("dim_time", "month")], measures=["QTY"])
     assert response.status_code == 200, response.text
     assert response.json()["rows"] == [["January", expected]]
+
+
+def test_edit_basis_missing_does_not_change_initial_finer_views(clickhouse_app):
+    client, admin, database, _ = clickhouse_app
+    seed_view(client)
+    # Exercise the multi-formula coverage graph with the production Compose
+    # budget; all existing regressions still use the standalone 512 MiB cap.
+    client.app.state.container.settings.planning_max_bytes = 2_147_483_648
+    # Native Product totals can roll to Brand only with an explicit Product
+    # binding; projection lineage alone does not prove extra attribute lookups.
+    current = client.get(BASE + "/planning-levels/pt").json()
+    payload = {
+        k: v
+        for k, v in current.items()
+        if k not in ("modelId", "revisionId", "version", "createdAt", "updatedAt")
+    }
+    payload["definition"]["dimensionBindings"] = [
+        {
+            "dimensionId": "Product",
+            "keyMappings": [
+                {"grainColumnId": "product", "dimensionColumnId": "product"}
+            ],
+            "selectedAttributeColumnIds": [],
+        }
+    ]
+    response = client.put(
+        BASE + "/planning-levels/pt",
+        json=payload,
+        headers={"If-Match": str(current["version"])},
+    )
+    assert response.status_code == 200, response.text
+    assert build(client, "pt", version=current["version"] + 1)["state"] == "succeeded"
+    # Preserve the valid population but only provide one Forecast weight.
+    admin.command(f"TRUNCATE TABLE `{database}`.`Forecast`")
+    admin.command(f"INSERT INTO `{database}`.`Forecast` VALUES ('P1','L1',10)")
+    update_measure(
+        client,
+        "SQTY",
+        lambda d: d.update(allocation={"mode": "weighted", "basisMeasureId": "FQTY"}),
+    )
+    run = build_values(client)
+    assert run["state"] == "succeeded", run
+    native = query_view(client, [field("Product", "product")], measures=["SQTY"])
+    assert native.status_code == 200, native.text
+    assert native.json()["rows"] == [["P1", "120.0"], ["P2", "80.0"], ["P3", "20.0"]]
+    brand = query_view(client, [field("Product", "brand")], measures=["SQTY"])
+    assert brand.status_code == 200, brand.text
+    assert brand.json()["rows"] == [["A", "200.0"], ["B", "20.0"]]
+    # Initial Sales uses its SUM aggregation, independent of missing edit-basis values.
+    finer = query_view(
+        client, [field("Location", "zone")], measures=["SQTY", "ErrorAF"]
+    )
+    assert finer.status_code == 200, finer.text
+    assert finer.json()["rows"] == [["Z1", "140.0", "130.0"], ["Z2", "80.0", None]]
+    assert not finer.json()["warnings"]
+    exact = query_view(
+        client,
+        [field("Product", "product"), field("Location", "location")],
+        measures=["SQTY"],
+    )
+    assert exact.status_code == 200, exact.text
+    assert exact.json()["rows"] == [
+        ["P1", "L1", "60.0"],
+        ["P1", "L2", "60.0"],
+        ["P2", "L1", "80.0"],
+        ["P3", "L2", "20.0"],
+    ]

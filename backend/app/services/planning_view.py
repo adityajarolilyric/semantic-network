@@ -98,8 +98,8 @@ class PlanningViewService(Service):
         inputs = {
             a["artifactId"]: a
             for a in [
-                populations[plan.level_id],
-                values[plan.level_id],
+                *populations.values(),
+                *values.values(),
                 *managed.values(),
             ]
         }
@@ -262,6 +262,15 @@ class PlanningViewService(Service):
                         else "recalculated",
                     }
                     for mid in request.measures
+                ],
+                "warnings": [
+                    {
+                        "measureId": mid,
+                        "message": by_id[mid]["name"]
+                        + ": some finer cells are unavailable because allocation weights are missing or total zero. Incomplete aggregates are unavailable unless a native representation can supply them.",
+                    }
+                    for mid in plan.leaves
+                    if values[plan.level_id].get("incompleteMeasures", {}).get(mid)
                 ],
                 "rows": rows,
                 "plan": {

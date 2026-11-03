@@ -318,6 +318,9 @@ export function MeasureEditor({
       {(d.measureType === 'referenced' || d.calculationType === 'CalculateFirst') && (
         <>
           <h3>Dis-Aggregation policies</h3>
+          <p className="meta-hint">
+            Used for user edits. Materialisation splits SUM axes equally and repeats other axes.
+          </p>
           <div className="meta-grid">
             <Select
               label="Dis-aggregation policy"

@@ -1,0 +1,9 @@
+product_id,product_name,brand,category
+P001,FreshCo Milk 500ml,FreshCo,Milk
+P002,FreshCo Milk 1L,FreshCo,Milk
+P003,FreshCo Yogurt Plain,FreshCo,Yogurt
+P004,FreshCo Yogurt Mango,FreshCo,Yogurt
+P005,DailyCo Milk 500ml,DailyCo,Milk
+P006,DailyCo Milk 1L,DailyCo,Milk
+P007,DailyCo Yogurt Plain,DailyCo,Yogurt
+P008,DailyCo Yogurt Mango,DailyCo,Yogurt

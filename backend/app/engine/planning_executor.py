@@ -32,9 +32,16 @@ class PlanningTableExecutor:
                         )
                     )
                 )
-            total = 1
-            for count in counts:
-                total *= count
+            # Count the final public projection, excluding internal lookup flags.
+            # Raw Cartesian counts may vastly overstate a coarser selected grain.
+            query, _ = compiler.render(plan.root)
+            selected = ", ".join(q(c["columnId"]) for c in plan.schema.columns)
+            total = int(
+                connect().command(
+                    f"SELECT count() FROM (SELECT DISTINCT {selected} FROM ({query}) LIMIT {self.settings.planning_max_rows + 1})",
+                    settings=self.execution_settings(),
+                )
+            )
             if total > self.settings.planning_max_rows:
                 raise MetadataError(
                     "planning_row_limit",
@@ -201,7 +208,7 @@ class PlanningTableExecutor:
             if rows:
                 raise MetadataError(
                     "duplicate_planning_key",
-                    "The population contains multiple rows for the same planning grain. Check population attributes and dimension mappings.",
+                    "The same planning grain has conflicting output attribute values. Select attributes determined by the grain or correct the source data.",
                     details=[
                         {"message": str([self.warehouse.cell(v) for v in row])}
                         for row in rows
@@ -221,8 +228,28 @@ class PlanningTableExecutor:
                     "planning_byte_limit",
                     "Planning output exceeds the configured storage limit.",
                 )
+            coverage_columns = [
+                (i, c)
+                for i, c in enumerate(plan.schema.columns)
+                if c.get("coverageFor")
+            ]
+            coverage_counts = {}
+            if coverage_columns:
+                expressions = ", ".join(
+                    f"countIf({q(c['name'])}=0)" for i, c in coverage_columns
+                )
+                counts = client.query(
+                    f"SELECT {expressions} FROM {table}",
+                    settings=self.execution_settings(),
+                ).first_row
+                coverage_counts = {
+                    c["coverageFor"]: int(n)
+                    for (_, c), n in zip(coverage_columns, counts)
+                    if n
+                }
             return {
                 "rowCount": count,
+                "incompleteMeasures": coverage_counts,
                 "bytesOnDisk": size,
                 "columns": [
                     {

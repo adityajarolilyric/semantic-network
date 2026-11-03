@@ -1,5 +1,5 @@
 import { FieldHelp } from '../../components/FieldHelp'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { metadataApi } from '../api'
 import type { AttributeValue, ManagedDefinition, ManagedTable, PivotPair, Source } from '../types'
 import { Check, Checks, Select } from './Fields'
@@ -63,6 +63,66 @@ export function ManagedTableEditor({
   const activePair = stage?.pairs.find((pair) => pair.pairId === selectedPairId) ?? stage?.pairs[0]
   const path = base + '/managed-tables/' + source.objectId
   const columns = source.definition.columns.map((c) => ({ value: c.columnId, label: c.name }))
+  const schemaKey = JSON.stringify({ pipeline: definition.pipeline })
+  const [analysis, setAnalysis] = useState<{
+    key: string
+    columns: Preview['columns']
+    error?: string
+  } | null>(null)
+  const explicitGrouping = stage?.recordKeyColumnIds != null
+  const expandRows =
+    stage?.mode === 'expand_rows' ||
+    (stage?.mode === 'auto' && stage.resolvedMode === 'expand_rows')
+  const recordKeys =
+    stage?.recordKeyColumnIds ?? (expandRows ? [] : (stage?.groupByColumnIds ?? []))
+  const consumed = new Set(
+    (stage?.pairs ?? []).flatMap((pair) => [pair.attributeColumnId, pair.valueColumnId]),
+  )
+  const retainedChoices =
+    expandRows || explicitGrouping ? columns.filter((c) => !consumed.has(c.value)) : columns
+  const schemaEligible =
+    !!stage?.enabled &&
+    (explicitGrouping || expandRows || stage.groupByColumnIds.length > 0) &&
+    stage.pairs.length > 0 &&
+    stage.pairs.every((pair) => pair.attributeColumnId && pair.valueColumnId && pair.outputs.length)
+  const [schemaAttempt, setSchemaAttempt] = useState(0)
+  useEffect(() => {
+    if (!schemaEligible) {
+      setAnalysis(null)
+      return
+    }
+    const controller = new AbortController()
+    const timeout = setTimeout(() => {
+      void metadataApi
+        .request<{
+          columns: Preview['columns']
+        }>(
+          path + '/schema',
+          'POST',
+          { ...JSON.parse(schemaKey), primaryKeyColumnIds: [] },
+          undefined,
+          controller.signal,
+        )
+        .then((result) => {
+          if (!controller.signal.aborted) setAnalysis({ key: schemaKey, columns: result.columns })
+        })
+        .catch((failure) => {
+          if (!controller.signal.aborted)
+            setAnalysis({
+              key: schemaKey,
+              columns: [],
+              error:
+                failure instanceof Error ? failure.message : 'Could not resolve output columns.',
+            })
+        })
+    }, 200)
+    return () => {
+      clearTimeout(timeout)
+      controller.abort()
+    }
+  }, [path, schemaKey, schemaEligible, schemaAttempt])
+  const schemaPending = schemaEligible && analysis?.key !== schemaKey
+  const schemaError = analysis?.key === schemaKey ? analysis.error : undefined
   async function action(task: () => Promise<unknown>, message: string) {
     if (working || busy) return
     setWorking(true)
@@ -79,7 +139,22 @@ export function ManagedTableEditor({
     }
   }
   function updateStage(update: Partial<NonNullable<typeof stage>>) {
-    setDefinition({ ...definition, pipeline: [{ ...stage!, ...update }] })
+    let next = { ...stage!, ...update }
+    if (stage?.recordKeyColumnIds == null) {
+      const { mode: _mode, resolvedMode: _resolved, ...saved } = next
+      next = {
+        ...saved,
+        recordKeyColumnIds: update.recordKeyColumnIds ?? (expandRows ? [] : next.groupByColumnIds),
+      }
+    }
+    const inputs = new Set(
+      next.pairs.flatMap((pair) => [pair.attributeColumnId, pair.valueColumnId]),
+    )
+    next.groupByColumnIds = next.groupByColumnIds.filter((id) => !inputs.has(id))
+    next.recordKeyColumnIds = next.recordKeyColumnIds?.filter((id) =>
+      next.groupByColumnIds.includes(id),
+    )
+    setDefinition({ ...definition, pipeline: [next] })
   }
   function updatePair(index: number, update: Partial<PivotPair>) {
     updateStage({ pairs: stage!.pairs.map((p, i) => (i === index ? { ...p, ...update } : p)) })
@@ -115,14 +190,9 @@ export function ManagedTableEditor({
     updatePair(index, { outputs: choices })
   }
   const outputColumns = stage?.enabled
-    ? [
-        ...columns.filter((c) => stage.groupByColumnIds.includes(c.value)),
-        ...stage.pairs.flatMap((pair) =>
-          pair.outputs
-            .filter((o) => o.columnId)
-            .map((o) => ({ value: o.columnId!, label: o.name })),
-        ),
-      ]
+    ? analysis?.key === schemaKey
+      ? analysis.columns.map((column) => ({ value: column.columnId, label: column.name }))
+      : retainedChoices.filter((c) => stage.groupByColumnIds.includes(c.value))
     : columns
   async function save() {
     if (readOnly) return
@@ -200,6 +270,7 @@ export function ManagedTableEditor({
                       stageId: newId('stage_'),
                       type: 'pivot',
                       enabled,
+                      recordKeyColumnIds: [],
                       groupByColumnIds: [],
                       pairs: [
                         {
@@ -216,14 +287,49 @@ export function ManagedTableEditor({
         />
         {stage?.enabled && (
           <div className="managed-pivot-layout">
-            <Checks
-              label="Retain / group by columns"
-              disabled={readOnly}
-              items={columns}
-              selected={stage.groupByColumnIds}
-              onChange={(groupByColumnIds) => updateStage({ groupByColumnIds })}
-              bulk
-            />
+            <div>
+              <Checks
+                label={
+                  explicitGrouping || expandRows ? 'Retained columns' : 'Retain / group by columns'
+                }
+                disabled={readOnly}
+                items={retainedChoices}
+                selected={stage.groupByColumnIds.filter((id) =>
+                  retainedChoices.some((c) => c.value === id),
+                )}
+                onChange={(groupByColumnIds) =>
+                  updateStage({
+                    groupByColumnIds,
+                    ...(explicitGrouping
+                      ? {
+                          recordKeyColumnIds: recordKeys.filter((id) =>
+                            groupByColumnIds.includes(id),
+                          ),
+                        }
+                      : {}),
+                  })
+                }
+                bulk
+              />
+              <Checks
+                label="Record keys for separate attribute rows (optional)"
+                disabled={readOnly}
+                items={retainedChoices.filter(
+                  (c) => stage.groupByColumnIds.includes(c.value) && !consumed.has(c.value),
+                )}
+                selected={recordKeys}
+                onChange={(recordKeyColumnIds) =>
+                  updateStage({ recordKeyColumnIds, mode: undefined, resolvedMode: undefined })
+                }
+              />
+              <p className="meta-hint">
+                {explicitGrouping
+                  ? recordKeys.length
+                    ? 'Rows sharing these keys are combined. Other retained columns must have one value per record.'
+                    : 'Pair values and retained columns are grouped automatically. Identical records collapse.'
+                  : 'Saved grouping is preserved until you edit the pivot configuration.'}
+              </p>
+            </div>
             <div className="managed-pivot-config">
               <div className="managed-pair-heading">
                 <h3>
@@ -376,35 +482,69 @@ export function ManagedTableEditor({
         )}
         <Checks
           label="Optional managed output primary key"
-          disabled={readOnly}
+          disabled={readOnly || schemaPending || !!schemaError}
           items={outputColumns}
           selected={definition.primaryKeyColumnIds}
           onChange={(primaryKeyColumnIds) => setDefinition({ ...definition, primaryKeyColumnIds })}
         />
-        {definition.primaryKeyColumnIds.some(
-          (id) => !outputColumns.some((c) => c.value === id),
-        ) && (
-          <p role="alert">
-            <button
-              type="button"
-              disabled={readOnly}
-              onClick={() => setDefinition({ ...definition, primaryKeyColumnIds: [] })}
-            >
-              Clear primary key
-            </button>
-            A declared key is absent from these outputs. Restore the column or explicitly clear the
-            key.
+        {schemaPending && (
+          <p className="meta-hint" role="status">
+            Deriving output columns…
           </p>
         )}
+        {schemaError && (
+          <p className="meta-error" role="alert">
+            {schemaError}
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => {
+                setAnalysis(null)
+                setSchemaAttempt((attempt) => attempt + 1)
+              }}
+            >
+              Retry output columns
+            </button>
+          </p>
+        )}
+        {(!stage?.enabled || (schemaEligible && !schemaPending && !schemaError)) &&
+          definition.primaryKeyColumnIds.some(
+            (id) => !outputColumns.some((c) => c.value === id),
+          ) && (
+            <p role="alert">
+              <button
+                type="button"
+                disabled={readOnly}
+                onClick={() => setDefinition({ ...definition, primaryKeyColumnIds: [] })}
+              >
+                Clear primary key
+              </button>
+              A declared key is absent from these outputs. Restore the column or explicitly clear
+              the key.
+            </p>
+          )}
       </fieldset>
       <div className="meta-actions">
-        <button type="submit" className="primary-button" disabled={busy || working || readOnly}>
+        <button
+          type="submit"
+          className="primary-button"
+          disabled={
+            busy ||
+            working ||
+            readOnly ||
+            (!!stage?.enabled && (!schemaEligible || schemaPending || !!schemaError))
+          }
+        >
           Save
         </button>
         <button
           type="button"
           className="secondary-button"
-          disabled={busy || working}
+          disabled={
+            busy ||
+            working ||
+            (dirty && !!stage?.enabled && (!schemaEligible || schemaPending || !!schemaError))
+          }
           onClick={() => void action(previewSaved, 'Loading saved view…')}
         >
           Preview

@@ -51,7 +51,7 @@ Use the measure's configured policy at the selected write level:
 - Weighted uses captured basis values; missing weights/zero denominator fails.
 - Weighted by self uses captured existing values **only in populated non-NULL cells**, preserving NULL cells. Zero-valued cells stay zero when populated total is nonzero. All-missing or zero-total patterns fail without fallback.
 
-Sparse self-weighting is intentional: a promotion may populate only a few dates in a full PLT horizon. Unpopulated dates must not prevent an edit to its existing distribution. This populated-only rule applies to interactive edits; normal source materialisation keeps its existing allocation checks. Always freeze weights before writing, never use partially updated rows.
+Sparse self-weighting is intentional: a promotion may populate only a few dates in a full PLT horizon. Unpopulated dates must not prevent an edit to its existing distribution. Interactive edits retain strict empty/zero-total checks. Source materialisation ignores edit weights: SUM axes split equally and other axes repeat, in reverse aggregation order. Always freeze weights before writing, never use partially updated rows.
 
 Preserve unaffected cells/measures. Reaggregate **complete** groups, including unchanged members, into every compatible coarser level using saved Time/NonTime/order. Recompute dependent AggregateFirst at each target grain and CalculateFirst at native before propagation. Unsupported dependent recalculation fails activation. Changing a basis measure does not immediately reallocate unrelated referenced measures; it affects subsequent allocations. Repeat+SUM can increase an aggregate; do not impose conservation or substitute AVG.
 
@@ -87,3 +87,9 @@ Active edited values survive restarts. **Build Semantic Network recomputes from 
 `api/planning_view.py` owns HTTP; `schemas/planning_view.py` bounds typed layouts; `services/planning_view.py` captures/leases/executes reads; `engine/planning_view.py` plans/compiles; `engine/measure_edits.py` and `services/measure_builds.py` coordinate writeback. UI lives in PlanningViewPanel/PlanningEditCell.
 
 Coverage includes exact/coarser reuse, AVG/NULL fallback, formulas at ad hoc grains, axis order, global groups, stale reads/leases, group/cell bounds, actual displayed-grain permissions, independent native fallback, sparse self-weighting, zero/missing patterns, idempotency, dependent recomputation, atomic rollback and the two-table limit.
+
+## Stored precision and incomplete representations
+
+Numeric measure cells display two decimal places. Inputs retain the six-place stored value for editing; only the displayed text is rounded to two places. Edit writes are rounded to six places before coarser propagation, using the same values stored at the write grain.
+
+Legacy/edit-derived incomplete distributions carry coverage flags in the same values table and generation. Planning View suppresses partial totals/formulas and can recover compatible native values. Warnings identify affected measures. Ordinary source NULL policies are separate. Initial source materialisation now derives distribution from aggregation and does not require edit weights. Native artifacts used for recovery are pinned during reads.

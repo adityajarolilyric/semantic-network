@@ -330,7 +330,7 @@ test('manage from the source grid and capture PLT/PT metadata without visible in
   await expect(pivot.getByRole('rowheader', { name: 'P1', exact: true })).toBeVisible()
   await expect(pivot.getByRole('rowheader', { name: 'FQTY', exact: true }).first()).toBeVisible()
   await expect(pivot.getByRole('columnheader', { name: 'FQTY', exact: true })).toHaveCount(0)
-  await expect(pivot.getByRole('cell', { name: '100.0', exact: true }).first()).toBeVisible()
+  await expect(pivot.getByRole('cell', { name: '100.00', exact: true }).first()).toBeVisible()
   const editButton = pivot.getByRole('button', { name: 'Edit SQTY · P1 / 2026-10-31', exact: true })
   await expect(editButton).toBeVisible()
   await expect(pivot.getByRole('button', { name: /Edit Error/ })).toHaveCount(0)

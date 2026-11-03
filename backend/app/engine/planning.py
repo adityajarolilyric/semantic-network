@@ -1,5 +1,3 @@
-from collections import Counter
-
 from ..core.errors import MetadataError
 from .contracts import (
     CrossJoin,
@@ -75,6 +73,7 @@ class PlanningLevelPlanner:
                     {
                         **source_column,
                         "columnId": cid,
+                        "name": self.semantic_name(source_column, objects),
                         "role": "key"
                         if cid in definition["grain"]["keyIds"]
                         else "attribute",
@@ -165,17 +164,7 @@ class PlanningLevelPlanner:
             root = join
         if definition.get("filters"):
             root = Filter(root, definition["filters"])
-        # Deterministic collision names do not alter logical grain identity or user metadata.
-        counts = Counter(c["name"] for c in schema)
-        used = set()
-        for column in schema:
-            name = column["name"]
-            if counts[name] > 1:
-                name = column["ownerName"] + "__" + name
-            if name in used:
-                name += "__" + digest(column["columnId"])[:8]
-            used.add(name)
-            column["name"] = name
+        self.assign_output_names(schema)
         if len(schema) > 2000:
             invalid("Planning output exceeds 2000 columns.")
         return PlanningPlan(
@@ -187,3 +176,52 @@ class PlanningLevelPlanner:
             tuple(joins),
             projection,
         )
+
+    @staticmethod
+    def semantic_name(column, objects):
+        """Recover a parent's business name without stripping genuine source names."""
+        if column.get("semanticName"):
+            return column["semanticName"]
+        origin = column.get("lineage", {})
+        if origin.get("kind") == "dimension":
+            dimension = objects.get(origin.get("dimensionId"), {})
+            original = next(
+                (
+                    c
+                    for c in dimension.get("definition", {}).get("columns", [])
+                    if c["columnId"] == origin.get("columnId")
+                ),
+                None,
+            )
+            if original:
+                return original["name"]
+        return column["name"]
+
+    @staticmethod
+    def assign_output_names(schema):
+        # Grain/population columns precede enrichment. The first occurrence keeps
+        # its plain name; reserve all plain names before qualifying later outputs
+        # so generated aliases cannot steal a real selected column's name.
+        reserved = {c["name"] for c in schema}
+        used = set()
+        for column in schema:
+            base = column["name"]
+            column["semanticName"] = base
+            name = base
+            if name in used:
+                candidate = column["ownerName"] + "__" + base
+                name = candidate
+                if name in used or name in reserved:
+                    name = candidate + "__" + digest(column["columnId"])[:8]
+                suffix = 2
+                while name in used or name in reserved:
+                    name = (
+                        candidate
+                        + "__"
+                        + digest(column["columnId"])[:8]
+                        + "_"
+                        + str(suffix)
+                    )
+                    suffix += 1
+            used.add(name)
+            column["name"] = name

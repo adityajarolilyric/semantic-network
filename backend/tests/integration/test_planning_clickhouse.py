@@ -146,7 +146,7 @@ def test_cartesian_collision_and_projection(clickhouse_app):
     assert result["state"] == "succeeded", result
     data = table(client, "pl_main")
     assert data["rowCount"] == 4
-    assert [c["name"] for c in data["columns"]][:2] == ["Products__id", "Time__id"]
+    assert [c["name"] for c in data["columns"]][:2] == ["id", "Time__id"]
     child = {
         "objectId": "pl_product",
         "kind": "planningLevel",
@@ -667,3 +667,185 @@ def test_deleted_planning_resource_is_collected_and_recreated_with_fresh_name(
     )
     assert new["physicalName"] != old["physicalName"]
     assert table(client, created["objectId"])["rows"] == [["P1", "C1"]]
+
+
+@pytest.mark.parametrize("attribute", [False, True])
+def test_source_final_distinct_ignores_unselected_columns(clickhouse_app, attribute):
+    client, _, _, _ = clickhouse_app
+    source = managed(
+        client,
+        "Population",
+        b"product,category,ignored\nP1,C1,A\nP1,C1,B\nP2,,C\nP2,,D\n",
+    )
+    payload = level(source, attribute=attribute)
+    create(client, payload)
+    preview = client.post(BASE + "/planning-levels/preview/population", json=payload)
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["estimatedRows"] == 2
+    run = build(client, "pl_main")
+    assert run["state"] == "succeeded", run
+    result = table(client, "pl_main")
+    assert result["rowCount"] == 2
+    assert result["rows"] == (
+        [["P1", "C1"], ["P2", None]] if attribute else [["P1"], ["P2"]]
+    )
+
+
+def test_cartesian_daily_time_selected_as_week_distinct(clickhouse_app):
+    client, _, _, _ = clickhouse_app
+    population = managed(client, "ProductLocation", b"product,location\nP1,L1\nP2,L2\n")
+    time = managed(
+        client,
+        "Time",
+        b"day,week\n2026-01-01,W1\n2026-01-02,W1\n2026-01-08,W2\n2026-01-09,W2\n",
+    )
+    payload = level(population, attribute=False)
+    payload["definition"]["population"] = {
+        "operation": "cartesian_product",
+        "factors": [
+            {
+                "factorId": "intersection",
+                "sourceId": population,
+                "selectedColumnIds": ["col_1", "col_2"],
+            },
+            {"factorId": "time", "sourceId": time, "selectedColumnIds": ["col_2"]},
+        ],
+    }
+    payload["definition"]["grain"] = {
+        "keyIds": ["product", "location", "week"],
+        "columns": [
+            {
+                "grainColumnId": cid,
+                "name": cid,
+                "populationRef": {"factorId": factor, "columnId": col},
+            }
+            for cid, factor, col in [
+                ("product", "intersection", "col_1"),
+                ("location", "intersection", "col_2"),
+                ("week", "time", "col_2"),
+            ]
+        ],
+    }
+    create(client, payload)
+    # Eight raw Cartesian rows must fit a four-row distinct-output limit.
+    settings = client.app.state.container.planning_builds.executor.settings
+    previous_limit = settings.planning_max_rows
+    settings.planning_max_rows = 4
+    preview = client.post(BASE + "/planning-levels/preview/population", json=payload)
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["estimatedRows"] == 4
+    run = build(client, "pl_main")
+    assert run["state"] == "succeeded", run
+    assert sorted(table(client, "pl_main")["rows"]) == [
+        ["P1", "L1", "W1"],
+        ["P1", "L1", "W2"],
+        ["P2", "L2", "W1"],
+        ["P2", "L2", "W2"],
+    ]
+    settings.planning_max_rows = previous_limit
+    # Keeping Day as a non-key attribute conflicts with the Week grain even
+    # after DISTINCT. Neither Preview nor Build may choose an arbitrary day.
+    payload["definition"]["population"]["factors"][1]["selectedColumnIds"].append(
+        "col_1"
+    )
+    payload["definition"]["populationAttributes"] = [
+        {
+            "columnId": "day",
+            "name": "day",
+            "populationRef": {"factorId": "time", "columnId": "col_1"},
+        }
+    ]
+    preview = client.post(BASE + "/planning-levels/preview/population", json=payload)
+    # Population preview can show the conflicting distinct rows; Build enforces
+    # grain uniqueness before activating a physical planning table.
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["estimatedRows"] == 8
+    response = client.put(
+        BASE + "/planning-levels/pl_main", json=payload, headers={"If-Match": "1"}
+    )
+    assert response.status_code == 200, response.text
+    failed = build(client, "pl_main", version=2)
+    assert failed["error"]["code"] == "duplicate_planning_key", failed
+    assert table(client, "pl_main")["rowCount"] == 4
+
+
+def test_projection_keeps_inherited_name_when_dimension_reselects_attribute(
+    clickhouse_app,
+):
+    client, _, _, _ = clickhouse_app
+    source = managed(client, "Population", b"product\nP1\nP2\n")
+    products = managed(
+        client, "Products", b"product_id,product_name\nP1,Apple\nP2,Pear\n"
+    )
+    dim = {
+        "objectId": "dim_product",
+        "kind": "dimension",
+        "name": "Product",
+        "displayName": "Product",
+        "isTimeDim": False,
+        "definition": {
+            "sourceId": products,
+            "columns": [
+                {
+                    "columnId": "id",
+                    "name": "product_id",
+                    "displayName": "Product ID",
+                    "sourceColumnId": "col_1",
+                },
+                {
+                    "columnId": "name",
+                    "name": "product_name",
+                    "displayName": "Product name",
+                    "sourceColumnId": "col_2",
+                },
+            ],
+            "keyColumnIds": ["id"],
+            "labelColumnId": "name",
+            "attributeColumnIds": ["id", "name"],
+        },
+    }
+    response = client.post(BASE + "/dimensions", json=dim)
+    assert response.status_code == 201, response.text
+    binding = {
+        "dimensionId": "dim_product",
+        "keyMappings": [{"grainColumnId": "product", "dimensionColumnId": "id"}],
+        "selectedAttributeColumnIds": ["name"],
+    }
+    parent = level(source, attribute=False)
+    parent["definition"]["dimensionBindings"] = [binding]
+    create(client, parent)
+    assert build(client, "pl_main")["state"] == "succeeded"
+    inherited = table(client, "pl_main")["columns"][1]["columnId"]
+    child = level(source, oid="pl_child", attribute=False)
+    child["definition"]["population"] = {
+        "operation": "distinct_projection",
+        "sourcePlanningLevelId": "pl_main",
+    }
+    child["definition"]["grain"]["columns"][0]["populationRef"] = {
+        "sourceGrainColumnId": "product"
+    }
+    child["definition"]["populationAttributes"] = [
+        {
+            "columnId": "inherited_name",
+            "name": "product_name",
+            "populationRef": {"sourceOutputColumnId": inherited},
+        }
+    ]
+    child["definition"]["dimensionBindings"] = [binding]
+    create(client, child)
+    run = build(client, "pl_child")
+    assert run["state"] == "succeeded", run
+    result = table(client, "pl_child")
+    assert [c["name"] for c in result["columns"]] == [
+        "product",
+        "product_name",
+        "Product__product_name",
+    ]
+    assert result["rows"] == [["P1", "Apple", "Apple"], ["P2", "Pear", "Pear"]]
+    assert [c["columnId"] for c in result["columns"]][1] == "inherited_name"
+    # Names change only at the alias boundary; rebuilding does not create new IDs
+    # or append prefixes. Explicitly selected duplicate outputs remain addressable.
+    assert build(client, "pl_child")["state"] == "succeeded"
+    again = table(client, "pl_child")
+    assert again["columns"] == result["columns"]
+    assert again["rows"] == result["rows"]

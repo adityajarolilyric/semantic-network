@@ -1,3 +1,4 @@
+import { formatNumericDisplay } from '../lib/numberFormat'
 import { useEffect, useRef, useState } from 'react'
 import { FieldHelp } from '../components/FieldHelp'
 import { PlanningEditCell } from './PlanningEditCell'
@@ -20,6 +21,7 @@ export type PlanningViewResult = {
     writeLevelName?: string
   }[]
   editContext?: { generationId: string; revisionVersion: number }
+  warnings?: { measureId: string; message: string }[]
   rows: (string | null)[][]
   groupCount: number
   plan: { planningLevelName: string; usesBase: boolean; explanation: string; nativeOnly?: boolean }
@@ -218,7 +220,7 @@ export function PlanningPivot({
                       ) : cell[measureIndex] === null ? (
                         '—'
                       ) : (
-                        cell[measureIndex]
+                        formatNumericDisplay(cell[measureIndex]!)
                       )}
                     </td>
                   )
@@ -528,6 +530,11 @@ export function PlanningViewPanel({
               ? ' AggregateFirst formulas are recalculated at this pivot grain.'
               : ''}
           </p>
+          {result.warnings?.map((warning) => (
+            <p key={warning.measureId} className="meta-hint" role="status">
+              {warning.message}
+            </p>
+          ))}
           {columns.length > 0 && (
             <p className="planning-column-label">
               Columns: {columns.map((f) => f.label).join(' / ')}

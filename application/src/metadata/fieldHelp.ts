@@ -1,5 +1,9 @@
 /** Reviewed UI vocabulary; no API/schema dependency or persisted help state. */
 const help: Record<string, string> = {
+  'Record keys for separate attribute rows (optional)':
+    'Choose retained columns identifying one record when its attributes arrive on separate rows, such as Customer ID for Channel and Sold To. Leave empty when each row contains its attribute/value pairs, such as Brand and Zone in a forecast. This is independent of the optional output primary key.',
+  'Retained columns':
+    'Columns to keep beside the generated pivot outputs, such as Week and Forecast quantity. Attribute/value input columns are consumed; choose the generated Brand or Zone columns as keys after discovery.',
   'Time resolution':
     'Exact value uses normal column/attribute matching. Date range expands inclusive Start/End dates through the daily Time dimension before mapping them to the native period key.',
   'Range Time dimension':
@@ -62,7 +66,7 @@ const help: Record<string, string> = {
   'Copy the published definition':
     'Starts the new draft with the published definitions. Its managed views and planning tables must be built again.',
   'Pivot long-format columns':
-    'Turns attribute values stored in rows into separate columns. Example: rows labelled Forecast and Sales become Forecast and Sales columns.',
+    'Turns attribute/value pairs into named columns. Groups pair values with retained columns. Provide record keys to combine attributes from separate rows. Example: product_attribute=brand becomes a Brand column.',
   'Retain / group by columns':
     'Columns that identify each output row after pivoting. Example: Product and Date. Duplicate pivot cells fail the build; values are not summed or deduplicated.',
   'Attribute / value pair':
@@ -145,7 +149,7 @@ const help: Record<string, string> = {
   'All-null result':
     'When Ignore leaves no usable inputs, choose whether the result is NULL or zero. This does not fill an absent transaction group.',
   'Dis-aggregation policy':
-    'How a value spreads to finer rows, including future coarser edits of Base-native measures. None repeats the value; Equal shares it evenly; Weighted uses another measure; Weighted by self uses this measure’s previous proportions at the write level (Base where reachable, otherwise native). During edits, NULL cells are left unchanged and only populated values supply weights. Your configured aggregation still controls how values combine.',
+    'How user edits spread to finer rows. Source materialisation instead splits SUM axes equally and repeats other axes. None repeats the value; Equal shares it evenly; Weighted uses another measure; Weighted by self uses this measure’s previous proportions at the write level (Base where reachable, otherwise native). During edits, NULL cells are left unchanged and only populated values supply weights. Your configured aggregation still controls how values combine.',
   'Dis-aggregation basis measure':
     'The measure supplying proportional weights. Example: weights 30 and 70 split a value of 200 into 60 and 140. Missing weights or a zero total fail the build.',
   'Build Semantic Network':

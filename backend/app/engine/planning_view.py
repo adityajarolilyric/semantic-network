@@ -5,7 +5,7 @@ from dataclasses import dataclass, replace
 from ..core.errors import MetadataError
 from ..warehouse.repository import quote_identifier as q, quote_literal as lit
 from .contracts import ExecutionPlan, RelationSchema
-from .measure_compiler import MeasureCompiler, VALUE
+from .measure_compiler import MeasureCompiler, VALUE, COMPLETE
 from .relationships import Coordinate, LevelRelationshipAnalyzer
 from .table_storage import GENERATION, column_sql, token
 
@@ -312,8 +312,8 @@ class PlanningViewCompiler(MeasureCompiler):
             )
         return super().join_keys(left, right, level)
 
-    def aggregate_view(self, query, measure):
-        source = self.view.level_id
+    def aggregate_view(self, query, measure, source=None):
+        source = source or self.view.level_id
         coordinates = {
             f["id"]: self.relationships.resolve(source, f["coordinate"])
             for f in self.view.fields
@@ -329,9 +329,12 @@ class PlanningViewCompiler(MeasureCompiler):
             "nonTime": any(not c.is_time for c in removed),
         }
         if not any(pending.values()):
-            selected = [*(q(k) for k in self.keys(TARGET)), q(VALUE)]
+            selected = [*(q(k) for k in self.keys(TARGET)), q(VALUE), q(COMPLETE)]
             data = self.enrich(query, source, coordinates)
-            return self.cte(f"SELECT {', '.join(selected)} FROM ({data})")
+            result = self.cte(f"SELECT {', '.join(selected)} FROM ({data})")
+            if query in self.coverage_nodes:
+                self.coverage_nodes[result] = True
+            return result
         policy = measure["definition"]["aggregation"]
         order = (
             self.ordering(source)
@@ -364,14 +367,22 @@ class PlanningViewCompiler(MeasureCompiler):
             value = self.aggregate(
                 q(VALUE), policy[stage], policy, q("__time_order") if order else None
             )
-            selected = [*(q(k) for k in groups), value + " AS " + q(VALUE)]
+            selected = [
+                *(q(k) for k in groups),
+                f"if(min(aggregation_input.{q(COMPLETE)}),{value},NULL) AS {q(VALUE)}",
+                f"min(aggregation_input.{q(COMPLETE)}) AS {q(COMPLETE)}",
+            ]
             if order and stage == "nonTime" and pending["time"]:
                 selected.append("min(__time_order) AS __time_order")
-            data = f"SELECT {', '.join(selected)} FROM ({data})" + (
-                " GROUP BY " + ", ".join(q(k) for k in groups) if groups else ""
+            data = (
+                f"SELECT {', '.join(selected)} FROM ({data}) AS aggregation_input"
+                + (" GROUP BY " + ", ".join(q(k) for k in groups) if groups else "")
             )
-        selected = [*(q(k) for k in self.keys(TARGET)), q(VALUE)]
-        return self.cte(f"SELECT {', '.join(selected)} FROM ({data})")
+        selected = [*(q(k) for k in self.keys(TARGET)), q(VALUE), q(COMPLETE)]
+        result = self.cte(f"SELECT {', '.join(selected)} FROM ({data})")
+        if query in self.coverage_nodes:
+            self.coverage_nodes[result] = True
+        return result
 
     def node(self, measure_id, target):
         if target != TARGET:
@@ -404,22 +415,39 @@ class PlanningViewCompiler(MeasureCompiler):
                         )
                 result = self.calculated(measure, TARGET)
             else:
-                source = self.values[self.view.level_id]
-                column = next(
-                    c for c in source["columns"] if c.get("measureId") == measure_id
-                )
-                keys = [
-                    q(source["keyColumns"][k]) + " AS " + q(k)
-                    for k in self.keys(self.view.level_id)
-                ]
-                query = self.cte(
-                    f"SELECT {', '.join(keys)}, {column_sql(column)} AS {q(VALUE)} FROM {self.table(source['physicalName'])} WHERE {q(GENERATION)}={lit(token(source))}"
-                )
+                query = self.stored_value(measure_id, self.view.level_id)
                 result = self.aggregate_view(query, measure)
+                coverage = self.coverage_nodes.get(result)
+                native = measure["definition"]["nativePlanningLevelId"]
+                if (
+                    coverage
+                    and native != self.view.level_id
+                    and native in self.values
+                    and self.relationships.analyze(native, TARGET)["relationship"]
+                    in ("same", "equivalent", "roll_up")
+                ):
+                    fallback = self.aggregate_view(
+                        self.stored_value(measure_id, native), measure, native
+                    )
+                    result = self.with_coverage(result, coverage, TARGET, fallback)
             self.cache[key] = result
             return result
         finally:
             self.visiting.remove(key)
+
+    def stored_value(self, measure_id, level):
+        source = self.values[level]
+        column = next(c for c in source["columns"] if c.get("measureId") == measure_id)
+        keys = [q(source["keyColumns"][k]) + " AS " + q(k) for k in self.keys(level)]
+        body = f"FROM {self.table(source['physicalName'])} WHERE {q(GENERATION)}={lit(token(source))}"
+        coverage = source.get("coverageColumns", {}).get(measure_id)
+        flag = q(coverage) if coverage else "toUInt8(1)"
+        query = self.cte(
+            f"SELECT {', '.join(keys)}, {column_sql(column)} AS {q(VALUE)}, {flag} AS {q(COMPLETE)} {body}"
+        )
+        if coverage:
+            self.coverage_nodes[query] = True
+        return query
 
     def compile(self, measure_ids):
         joins, selected = [], ["p." + q(k) + " AS " + q(k) for k in self.keys(TARGET)]
@@ -429,7 +457,7 @@ class PlanningViewCompiler(MeasureCompiler):
             joins.append(
                 f"LEFT JOIN {q(node)} {alias} ON " + self.join_keys("p", alias, TARGET)
             )
-            value, _ = self.cast_value(alias + "." + q(VALUE), self.measures[mid])
+            value, _ = self.cast_node_value(alias, node, self.measures[mid])
             selected.append(value + " AS " + q(f"value_{index}"))
         sql = self.with_sql(
             f"SELECT {', '.join(selected)} FROM ({self.population(TARGET)}) p {' '.join(joins)}"

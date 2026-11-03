@@ -19,6 +19,7 @@ class ManagedTablesAPI:
             ("/{source_id}", "PUT", self.update, 202),
             ("/{source_id}/disable", "POST", self.disable, 204),
             ("/{source_id}/attribute-values", "GET", self.values, 200),
+            ("/{source_id}/schema", "POST", self.schema, 200),
             ("/{source_id}/preview", "GET", self.preview, 200),
             ("/{source_id}/preview", "POST", self.proposed_preview, 200),
             ("/{source_id}/ensure-view", "POST", self.repair, 202),
@@ -104,6 +105,15 @@ class ManagedTablesAPI:
         self, model_id: Identifier, revision_id: Identifier, source_id: Identifier
     ):
         return await self.service.preview(model_id, revision_id, source_id)
+
+    async def schema(
+        self,
+        model_id: Identifier,
+        revision_id: Identifier,
+        source_id: Identifier,
+        payload: ManagedDefinition,
+    ):
+        return await self.service.schema(model_id, revision_id, source_id, payload)
 
     async def proposed_preview(
         self,

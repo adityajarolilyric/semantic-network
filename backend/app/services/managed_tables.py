@@ -188,6 +188,15 @@ class ManagedTableService(Service):
                 400,
             )
         request_hash = digest([source_id, payload.model_dump(), expected, repair])
+        previous = await self.store.repository.get(
+            "engine_runs", {**scope(model, revision), "idempotencyKey": key}
+        )
+        if previous:
+            if previous["requestHash"] != request_hash:
+                raise Conflict(
+                    "This idempotency key was already used for another request."
+                )
+            return self.public_run(previous)
 
         async def operation(repo):
             query = scope(model, revision)
@@ -366,6 +375,11 @@ class ManagedTableService(Service):
             )
 
         await self.store.transaction(operation)
+
+    async def schema(self, model, revision, source_id, payload):
+        source = await self.source(self.store.repository, model, revision, source_id)
+        logical = self.planner.plan(source, payload)
+        return {"columns": list(logical.schema.columns)}
 
     async def preview(self, model, revision, source_id, payload=None):
         source = await self.source(self.store.repository, model, revision, source_id)

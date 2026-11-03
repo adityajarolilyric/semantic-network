@@ -12,6 +12,8 @@ from .planning_compiler import PlanningLevelCompiler
 from .relationships import Coordinate, LevelRelationshipAnalyzer
 
 VALUE = "__value"
+COMPLETE = "__complete"
+MATERIALISATION_POLICY = "aggregation-derived-disaggregation-v1-round6"
 
 
 @dataclass(frozen=True)
@@ -50,6 +52,7 @@ class MeasureCompiler(PlanningLevelCompiler):
         self.resolution_max_rows = resolution_max_rows
         self.transaction_relations = {}
         self.ctes, self.cache, self.visiting, self.nodes = {}, {}, set(), []
+        self.coverage_nodes = {}
         self.assertions = []
         self.max_nodes = 1024
         self._lookup_checks = set()
@@ -197,7 +200,10 @@ class MeasureCompiler(PlanningLevelCompiler):
     def enrich(self, query, level, coordinates):
         """Map logical coordinates without requiring dimension attributes to be exposed."""
         selected = ["r." + q(k) + " AS " + q(k) for k in self.keys(level)] + [
-            "r." + q(VALUE) + " AS " + q(VALUE)
+            "r." + q(VALUE) + " AS " + q(VALUE),
+            ("r." + q(COMPLETE) if query in self.coverage_nodes else "toUInt8(1)")
+            + " AS "
+            + q(COMPLETE),
         ]
         joins = []
         dimensions = {}
@@ -362,91 +368,105 @@ class MeasureCompiler(PlanningLevelCompiler):
                 if order_symbol and stage == "nonTime" and pending["time"]
                 else ""
             )
-            data = f"SELECT {', '.join(q(k) for k in groups)}, {value} AS {q(VALUE)}{order_extra} FROM ({data}) GROUP BY {', '.join(q(k) for k in groups)}"
+            data = f"SELECT {', '.join(q(k) for k in groups)}, if(min(aggregation_input.{q(COMPLETE)}),{value},NULL) AS {q(VALUE)}, min(aggregation_input.{q(COMPLETE)}) AS {q(COMPLETE)}{order_extra} FROM ({data}) AS aggregation_input GROUP BY {', '.join(q(k) for k in groups)}"
         mapped = self.cte(
-            f"SELECT {', '.join(q('__target_' + k) + ' AS ' + q(k) for k in self.keys(target))}, {q(VALUE)} FROM ({data})"
+            f"SELECT {', '.join(q('__target_' + k) + ' AS ' + q(k) for k in self.keys(target))}, {q(VALUE)}, {q(COMPLETE)} FROM ({data})"
         )
+        if query in self.coverage_nodes:
+            self.coverage_nodes[mapped] = True
         return self.align(mapped, target)
 
     def align(self, query, level):
-        return self.cte(
-            f"SELECT {', '.join('p.' + q(k) + ' AS ' + q(k) for k in self.keys(level))}, r.{q(VALUE)} AS {q(VALUE)} FROM ({self.population(level)}) p LEFT JOIN {q(query)} r ON {self.join_keys('p', 'r', level)}"
+        flag = (
+            f"coalesce(r.{q(COMPLETE)},1)"
+            if query in self.coverage_nodes
+            else "toUInt8(1)"
         )
+        result = self.cte(
+            f"SELECT {', '.join('p.' + q(k) + ' AS ' + q(k) for k in self.keys(level))}, r.{q(VALUE)} AS {q(VALUE)}, {flag} AS {q(COMPLETE)} FROM ({self.population(level)}) p LEFT JOIN {q(query)} r ON {self.join_keys('p', 'r', level)}"
+        )
+        if query in self.coverage_nodes:
+            self.coverage_nodes[result] = True
+        return result
 
     def disaggregate(self, parent, measure, source, target):
+        """Initialise finer values from aggregation, never from edit allocation."""
         mapping = self.relationships.mapping(target, source)
         child = self.cte(
             "SELECT "
             + ", ".join(q(k) for k in self.keys(target))
             + f", NULL AS {q(VALUE)} FROM ({self.population(target)})"
         )
-        enriched = self.enrich(
-            child, target, {"__parent_" + k: c for k, c in mapping.items()}
+        child = self.cte(
+            self.enrich(child, target, {"__parent_" + k: c for k, c in mapping.items()})
         )
-        child = self.cte(enriched)
+        parent_ids = ["__parent_" + k for k in self.keys(source)]
         on = " AND ".join(
             "c." + q("__parent_" + k) + " = p." + q(k) for k in self.keys(source)
         )
-        partition = ", ".join("c." + q("__parent_" + k) for k in self.keys(source))
-        policy = measure["definition"].get("allocation") or {"mode": "none"}
-        mode = policy["mode"]
-        weight_join = ""
-        weight = None
-        if mode == "weighted":
-            basis = self.node(policy["basisMeasureId"], target)
-            weight_join = f"LEFT JOIN {q(basis)} w ON " + self.join_keys(
-                "c", "w", target
-            )
-            weight = f"w.{q(VALUE)}"
-        elif mode == "weighted_by_self":
-            if not self.previous or measure["objectId"] not in self.previous.get(
-                "measureColumns", {}
-            ):
-                raise MetadataError(
-                    "self_weights_required",
-                    "Weighted by self needs a previous built Base representation of this measure.",
-                )
-            if self.previous["levelId"] != target or set(
-                self.previous["keyColumns"]
-            ) != set(self.keys(target)):
-                raise MetadataError(
-                    "self_weights_required",
-                    "The previous self-weight grain does not match the current Base.",
-                )
-            old = self.previous
-            weight_join = (
-                f"LEFT JOIN (SELECT * FROM {self.table(old['physicalName'])} WHERE {q(GENERATION)}={lit(token(old))}) w ON "
-                + " AND ".join(
-                    "c." + q(k) + " = w." + q(old["keyColumns"][k])
-                    for k in self.keys(target)
-                )
-            )
-            weight = "w." + q(old["measureColumns"][measure["objectId"]])
-        if weight and measure["definition"]["resultType"]["type"] == "number":
-            weight = f"toFloat64({weight})"
-        value = "p." + q(VALUE)
-        if mode == "equal":
-            value = self.divide(
-                value, f"count() OVER (PARTITION BY {partition})", measure
-            )
-        if weight:
-            denominator = f"sum({weight}) OVER (PARTITION BY {partition})"
-            guard = f"throwIf(isNull({weight}) OR {denominator}=0,'SEMANTIC_INVALID_WEIGHTS')"
-            value = f"if(({guard})=0,({value}) * ({self.divide(weight, denominator, measure)}),NULL)"
-        # Do not lose a populated parent value simply because it has no eligible children.
-        grouped = ", ".join(q("__parent_" + k) for k in self.keys(source))
-        cover_on = " AND ".join(
-            "p." + q(k) + " = c." + q("__parent_" + k) for k in self.keys(source)
-        )
+        grouped = ", ".join(q(k) for k in parent_ids)
         self.assertions.append(
             Check(
                 "no_disaggregation_children",
-                f"SELECT p.* FROM {q(parent)} p LEFT JOIN (SELECT {grouped},toUInt8(1) AS __matched FROM {q(child)} GROUP BY {grouped}) c ON {cover_on} WHERE coalesce(c.__matched,0)=0 AND isNotNull(p.{q(VALUE)}) LIMIT 20",
+                f"SELECT p.* FROM {q(parent)} p LEFT JOIN (SELECT {grouped},toUInt8(1) AS __matched FROM {q(child)} GROUP BY {grouped}) c ON {on} WHERE coalesce(c.__matched,0)=0 AND isNotNull(p.{q(VALUE)}) LIMIT 20",
             )
         )
-        return self.cte(
-            f"SELECT {', '.join('c.' + q(k) + ' AS ' + q(k) for k in self.keys(target))}, {value} AS {q(VALUE)} FROM {q(child)} c LEFT JOIN {q(parent)} p ON {on} {weight_join}"
+        outputs = self.relationships.outputs(target)
+        added = [
+            k
+            for k in self.keys(target)
+            if self.relationships.resolve(source, outputs[k]) is None
+        ]
+        policy = measure["definition"]["aggregation"]
+        aggregation_order = (
+            ["nonTime", "time"]
+            if policy.get("order", "nonTimeThenTime") == "nonTimeThenTime"
+            else ["time", "nonTime"]
         )
+        expanded = []
+        value = "p." + q(VALUE)
+        for axis in reversed(aggregation_order):
+            if not any(outputs[k].is_time == (axis == "time") for k in added):
+                continue
+            axis_keys = [
+                k for k in self.keys(target) if outputs[k].is_time == (axis == "time")
+            ]
+            if policy[axis] == "sum":
+                # Distinct intermediate combinations avoid counting one day once
+                # per location, or one location once per day. They reflect the
+                # real (possibly irregular) target population, not a Cartesian size.
+                partition = ", ".join("c." + q(k) for k in [*parent_ids, *expanded])
+                members = ", ".join("c." + q(k) for k in axis_keys)
+                count = f"uniqExact(tuple({members})) OVER (PARTITION BY {partition})"
+                value = self.divide(value, count, measure)
+            expanded.extend(axis_keys)
+        flag = (
+            f"coalesce(p.{q(COMPLETE)},0)"
+            if parent in self.coverage_nodes
+            else "toUInt8(1)"
+        )
+        keys = ", ".join("c." + q(k) + " AS " + q(k) for k in self.keys(target))
+        result = self.cte(
+            f"SELECT {keys}, {value} AS {q(VALUE)}, {flag} AS {q(COMPLETE)} FROM {q(child)} c LEFT JOIN {q(parent)} p ON {on}"
+        )
+        if parent in self.coverage_nodes:
+            self.coverage_nodes[result] = True
+        return result
+
+    def with_coverage(self, query, coverage, level, fallback=None):
+        """Recover incomplete groups from a proven native representation."""
+        if not fallback:
+            return query
+        keys = ", ".join("r." + q(k) + " AS " + q(k) for k in self.keys(level))
+        keys = keys + ", " if keys else ""
+        complete = f"r.{q(COMPLETE)}"
+        fc = f"coalesce(f.{q(COMPLETE)},0)" if fallback in self.coverage_nodes else "1"
+        value = f"if({complete},r.{q(VALUE)},if({fc},f.{q(VALUE)},NULL))"
+        result = self.cte(
+            f"SELECT {keys}{value} AS {q(VALUE)}, toUInt8({complete} OR ({fc})) AS {q(COMPLETE)} FROM {q(query)} r LEFT JOIN {q(fallback)} f ON {self.join_keys('r', 'f', level)}"
+        )
+        self.coverage_nodes[result] = True
+        return result
 
     def formula(self, node, measure, target, refs):
         kind = node["type"]
@@ -516,9 +536,22 @@ class MeasureCompiler(PlanningLevelCompiler):
                 f"LEFT JOIN {q(dep)} {alias} ON " + self.join_keys("p", alias, target)
             )
         value = self.formula(expression, measure, target, refs)
-        return self.cte(
-            f"SELECT {', '.join('p.' + q(k) + ' AS ' + q(k) for k in self.keys(target))}, {value} AS {q(VALUE)} FROM ({self.population(target)}) p {' '.join(joins)}"
+        flags = [
+            f"coalesce({alias}.{q(COMPLETE)},0)"
+            for mid, alias in refs.items()
+            if self.node(mid, target) in self.coverage_nodes
+        ]
+        flag = " AND ".join(flags) if flags else "1"
+        if flags:
+            value = f"if({flag},{value},NULL)"
+        keys = ", ".join("p." + q(k) + " AS " + q(k) for k in self.keys(target))
+        keys = keys + ", " if keys else ""
+        result = self.cte(
+            f"SELECT {keys}{value} AS {q(VALUE)}, toUInt8({flag}) AS {q(COMPLETE)} FROM ({self.population(target)}) p {' '.join(joins)}"
         )
+        if flags:
+            self.coverage_nodes[result] = True
+        return result
 
     def seed(self, measure_id):
         key = (measure_id, "__native_seed")
@@ -601,6 +634,14 @@ class MeasureCompiler(PlanningLevelCompiler):
                 result = self.rollup(
                     self.node(measure_id, self.base_id), measure, self.base_id, target
                 )
+                coverage = self.coverage_nodes.get(result)
+                if coverage:
+                    fallback = None
+                    if relation in ("same", "equivalent", "roll_up"):
+                        fallback = self.seed(measure_id)
+                        if native != target:
+                            fallback = self.rollup(fallback, measure, native, target)
+                    result = self.with_coverage(result, coverage, target, fallback)
                 operation = "via_base"
             elif target == native:
                 result = self.seed(measure_id)
@@ -613,17 +654,40 @@ class MeasureCompiler(PlanningLevelCompiler):
                     "measure_path_unavailable",
                     "Required key lineage or dimension binding is missing.",
                 )
+            result = self.quantize_node(result, measure, target)
             self.cache[key] = result
             self.nodes.append(MeasureNode(measure_id, target, operation))
             return result
         finally:
             self.visiting.remove(key)
 
+    def rounded_value(self, expression, measure):
+        dtype = measure["definition"]["resultType"]
+        if dtype["type"] == "decimal":
+            return f"roundBankers({expression},{min(6, dtype['scale'])})"
+        number = f"toFloat64({expression})"
+        # Large Float64 values already have fewer than six fractional digits;
+        # avoid overflowing a scale-up inside the rounding implementation.
+        return f"if(abs({number})>=1e15,{number},roundBankers({number},6))"
+
+    def quantize_node(self, query, measure, level):
+        """Downstream representations use the same six-place values we store."""
+        selected = ["r." + q(k) + " AS " + q(k) for k in self.keys(level)]
+        selected.append(
+            self.rounded_value("r." + q(VALUE), measure) + " AS " + q(VALUE)
+        )
+        flag = "r." + q(COMPLETE) if query in self.coverage_nodes else "toUInt8(1)"
+        selected.append(flag + " AS " + q(COMPLETE))
+        result = self.cte(f"SELECT {', '.join(selected)} FROM {q(query)} r")
+        if query in self.coverage_nodes:
+            self.coverage_nodes[result] = True
+        return result
+
     def cast_value(self, expression, measure):
         dtype = measure["definition"]["resultType"]
         if dtype["type"] == "decimal":
             typ = f"Decimal({dtype['precision']},{dtype['scale']})"
-            rounded = f"roundBankers({expression},{dtype['scale']})"
+            rounded = self.rounded_value(expression, measure)
             # ClickHouse Int256 -> Decimal accurate casts are unsupported. String
             # conversion handles that input; an explicit bound enforces logical
             # precision (ClickHouse also permits the backing integer's extra digits).
@@ -642,9 +706,7 @@ class MeasureCompiler(PlanningLevelCompiler):
             converted = f"if(({expression})!=trunc({expression}),NULL,{converted})"
         else:
             typ = "Float64"
-            converted = (
-                f"if(isFinite(toFloat64({expression})),toFloat64({expression}),NULL)"
-            )
+            converted = f"if(isFinite(toFloat64({expression})),{self.rounded_value(expression, measure)},NULL)"
         guard = f"throwIf(isNotNull({expression}) AND isNull({converted}),'SEMANTIC_MEASURE_OVERFLOW')"
         if not dtype["nullable"]:
             guard += f" + throwIf(isNull({expression}),'SEMANTIC_MEASURE_NULL')"
@@ -652,6 +714,22 @@ class MeasureCompiler(PlanningLevelCompiler):
         if not dtype["nullable"]:
             expression = f"if(({guard})=0,assumeNotNull({converted}),CAST(0 AS {typ}))"
         return expression, typ
+
+    def cast_node_value(self, alias, node, measure):
+        expression = alias + "." + q(VALUE)
+        if node not in self.coverage_nodes:
+            return self.cast_value(expression, measure)
+        # Unavailable finer cells are separate from the native NULL contract.
+        # Preserve the guard on complete cells; unknown distributions may be NULL.
+        from copy import deepcopy
+
+        nullable = deepcopy(measure)
+        nullable["definition"]["resultType"]["nullable"] = True
+        value, typ = self.cast_value(expression, nullable)
+        if not measure["definition"]["resultType"]["nullable"]:
+            guard = f"throwIf(coalesce({alias}.{q(COMPLETE)},0)=1 AND isNull({expression}),'SEMANTIC_MEASURE_NULL')"
+            value = f"if(({guard})=0,{value},NULL)"
+        return value, typ
 
     def compile_level(self, target):
         available, unavailable = {}, {}
@@ -663,6 +741,7 @@ class MeasureCompiler(PlanningLevelCompiler):
                 list(self.assertions),
                 set(self._lookup_checks),
                 list(self.nodes),
+                dict(self.coverage_nodes),
             )
             try:
                 available[mid] = self.node(mid, target)
@@ -679,6 +758,7 @@ class MeasureCompiler(PlanningLevelCompiler):
                     self.assertions,
                     self._lookup_checks,
                     self.nodes,
+                    self.coverage_nodes,
                 ) = checkpoint
                 unavailable[mid] = {"code": exc.code, "message": exc.message}
                 if measure["definition"]["nativePlanningLevelId"] == target:
@@ -696,7 +776,7 @@ class MeasureCompiler(PlanningLevelCompiler):
                 suffix += 1
             used.add(name)
             alias = "v" + str(index)
-            value, typ = self.cast_value(alias + "." + q(VALUE), measure)
+            value, typ = self.cast_node_value(alias, node, measure)
             selected.append(value + " AS " + q(name))
             joins.append(
                 f"LEFT JOIN {q(node)} {alias} ON " + self.join_keys("p", alias, target)
@@ -707,13 +787,34 @@ class MeasureCompiler(PlanningLevelCompiler):
                     "name": name,
                     "displayName": measure.get("displayName", measure["name"]),
                     "physicalType": typ,
-                    "nullable": measure["definition"]["resultType"]["nullable"],
+                    "nullable": node in self.coverage_nodes
+                    or measure["definition"]["resultType"]["nullable"],
                     "role": "measure",
                     "measureId": mid,
                     "nativePlanningLevelId": measure["definition"][
                         "nativePlanningLevelId"
                     ],
                     "editableAtLevel": self.relationships.can_edit(measure, target),
+                }
+            )
+        for index, (mid, node) in enumerate(available.items()):
+            coverage = self.coverage_nodes.get(node)
+            if not coverage:
+                continue
+            name = "__coverage_" + mid
+            while name in used:
+                name += "_"
+            used.add(name)
+            alias = "v" + str(index)
+            selected.append(f"toUInt8(coalesce({alias}.{q(COMPLETE)},0)) AS {q(name)}")
+            columns.append(
+                {
+                    "columnId": "coverage_" + mid,
+                    "name": name,
+                    "physicalType": "UInt8",
+                    "nullable": False,
+                    "role": "coverage",
+                    "coverageFor": mid,
                 }
             )
         sql = self.with_sql(
@@ -724,5 +825,5 @@ class MeasureCompiler(PlanningLevelCompiler):
             parse_one(sql, read="clickhouse"),
             checks,
             RelationSchema(tuple(columns)),
-            "measure-v2-float64-sqlglot-27.28.1",
+            "measure-v4-aggregation-derived-round6-sqlglot-27.28.1",
         ), unavailable

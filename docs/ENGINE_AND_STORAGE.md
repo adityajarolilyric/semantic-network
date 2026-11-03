@@ -6,6 +6,12 @@ Managed identity/pivot, planning populations, resolved transactions, measures, P
 
 Engine-owned immutable contracts include owner-qualified ColumnRef, RelationSchema (ordered IDs/types/nullability/keys/lineage), logical plans, compiled execution/check steps, captured metadata inputs, durable runs, artifacts and active bindings. Source/stage plus column ID is required; bare `col_1`, names and labels are insufficient.
 
+Managed pivots compile explicit grouping: empty record keys group retained fields plus raw pair discriminators/values; supplied record keys merge entity attribute rows with strict cell/carried-value checks. Layout detection and data profiling are removed. Schema analysis is metadata-only; saved legacy operations remain compatible. See [managed pivot contracts](SOURCES_AND_MANAGED_TABLES.md#pivot-grouping-and-final-output-keys).
+
+Planning compilation always applies DISTINCT to the final public output for source, Cartesian and parent-projection populations. This collapses identical intersections; NULL keys, conflicting attributes per grain and invalid dimension lookups still fail. Preview and Build compile the same output semantics.
+
+Measure source initialisation derives SUM/equal versus repeat from each expansion axis, reversing aggregation order. Edit disaggregation is owned by MeasureEditCompiler and continues to use configured allocation. Representation boundaries round stored values to six places before downstream propagation; the policy participates in network fingerprints. See [measure execution](MEASURES.md).
+
 Typed operators include scans/projects, Pivot, CrossJoin, DistinctProject, filters and lookup enrichment, with measure dependency DAGs/resolution operators composing further queries. Only code-owned allowlisted implementations execute; neither client payloads nor vocabulary documents register arbitrary SQL/functions.
 
 The IR and stored semantic formula AST are independent of SQLGlot. ClickHouse adapters use pinned SQLGlot 27.28.1 for AST construction/parsing/rendering, with quoted identifiers, typed/escaped literals and validated types. No API accepts arbitrary SQL/physical execution plans. SQLGlot does not replace semantic validation or real ClickHouse tests.
@@ -43,7 +49,7 @@ Generic endpoints are revision-scoped `GET /engine/runs/{run}` and `POST /engine
 
 Each managed build has a unique candidate view with a reserved `__semantic_` name, hidden from catalog/raw preview. Verify ownership before recovery/collection or accepting an existing object; never replace an active view in place.
 
-On ClickHouse 25.3, create the view then ALTER TABLE MODIFY COMMENT for its ownership marker. If interrupted between them, parse/verify the engine-owned subquery alias in `system.tables.as_select` with SQLGlot before applying the comment. Unknown ownership is retained for investigation. Identity/pivot semantics and full duplicate checks are in [Sources and Managed Tables](SOURCES_AND_MANAGED_TABLES.md).
+On ClickHouse 25.3, create the view then ALTER TABLE MODIFY COMMENT for its ownership marker. If interrupted between them, parse/verify the engine-owned subquery alias in `system.tables.as_select` with SQLGlot before applying the comment. Unknown ownership is retained for investigation. Pivot row expansion uses direct per-record projection; legacy/explicit merge mode retains full duplicate-cell checks. Identity/pivot semantics are in [Sources and Managed Tables](SOURCES_AND_MANAGED_TABLES.md).
 
 ## Strict two-table storage
 

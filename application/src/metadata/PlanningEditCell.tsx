@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { formatNumericDisplay } from '../lib/numberFormat'
 
 export function PlanningEditCell({
   value,
@@ -42,7 +43,7 @@ export function PlanningEditCell({
           setEditing(true)
         }}
       >
-        {value === null ? '—' : value}
+        {value === null ? '—' : formatNumericDisplay(value)}
         <span aria-hidden="true"> ✎</span>
       </button>
     )

@@ -26,6 +26,9 @@ export type ManagedDefinition = {
     stageId: string
     type: 'pivot'
     enabled: boolean
+    recordKeyColumnIds?: string[] | null
+    mode?: 'auto' | 'merge_rows' | 'expand_rows' | null
+    resolvedMode?: 'merge_rows' | 'expand_rows' | null
     groupByColumnIds: string[]
     pairs: PivotPair[]
   }[]

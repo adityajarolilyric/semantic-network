@@ -78,8 +78,8 @@ def test_edit_coarser_equal_base_first_formulas_rebuild_and_two_tables(clickhous
         "-10.0",
     ]
     assert [r[cols["ErrorCF"]] for r in result["rows"]] == [
-        "20.0",
-        "90.0",
+        "40.0",
+        "30.0",
         "20.0",
         "30.0",
     ]
@@ -665,3 +665,21 @@ def test_edit_weighted_self_uses_populated_cells_and_preserves_null_cells(
         ).json()["editContext"]
         == previous
     )
+
+
+def test_edit_persists_six_places_and_rolls_up_same_values(clickhouse_app):
+    client, _, _, _ = clickhouse_app
+    seed_view(client)
+    editable(client)
+    request = edit(
+        client,
+        value=1.23456789,
+        members=("P1", "L1"),
+        rows=[field("Product", "product"), field("Location", "location")],
+    )
+    run = await_run(client, BASE, request)
+    assert run["state"] == "succeeded", run
+    finer, cols = values(client, "base")
+    assert finer["rows"][0][cols["FQTY"]] == "1.234568"
+    native, cols = values(client, "pt")
+    assert native["rows"][0][cols["FQTY"]] == "31.234568"
