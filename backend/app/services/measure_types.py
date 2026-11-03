@@ -28,7 +28,7 @@ def referenced_result_type(physical_type: str, nullable: bool) -> dict | None:
     return {"type": "number", "nullable": nullable}
 
 
-MEASURE_TYPE_POLICY = "float64-referenced-v2"
+MEASURE_TYPE_POLICY = "float64-referenced-v3-preserve-source-nulls"
 
 
 def normalize_measure(document):
@@ -36,6 +36,26 @@ def normalize_measure(document):
     if document.get("kind") != "measure":
         return document
     definition = document["definition"]
+    # Omitted policies in saved metadata meant Repeat before the authoring default changed.
+    if (
+        definition["measureType"] == "referenced"
+        or definition.get("calculationType") == "CalculateFirst"
+    ):
+        allocation = definition.get("allocation")
+        if allocation is None:
+            allocation = (
+                {"mode": "none"} if definition["measureType"] == "referenced" else None
+            )
+        elif allocation.get("mode") is None:
+            allocation = {**allocation, "mode": "none"}
+        document = {**document, "definition": {**definition, "allocation": allocation}}
+        definition = document["definition"]
+    if definition["measureType"] == "referenced":
+        document = {
+            **document,
+            "definition": {**definition, "sourceNullPolicy": "preserve"},
+        }
+        definition = document["definition"]
     result = definition["resultType"]
     if definition["measureType"] == "referenced" or result["type"] == "integer":
         return {

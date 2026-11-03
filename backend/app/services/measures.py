@@ -38,13 +38,14 @@ class MeasureService(ObjectService):
             ),
             None,
         )
+        columns = source["definition"]["columns"] if source else []
+        if source and transaction["definition"].get("calendarResolution"):
+            from ..engine.calendar_resolution import CalendarResolutionPlanner
+
+            columns = CalendarResolutionPlanner(objects, transaction, columns).schema()
         column = (
             next(
-                (
-                    c
-                    for c in source["definition"]["columns"]
-                    if c["columnId"] == definition["valueColumnId"]
-                ),
+                (c for c in columns if c["columnId"] == definition["valueColumnId"]),
                 None,
             )
             if source

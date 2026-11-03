@@ -1698,3 +1698,34 @@ def test_six_place_storage_and_coarser_values_use_rounded_base(clickhouse_app):
     # six-place Base representation rather than a hidden full-precision version.
     assert native["rows"][0][cols["SQTY"]] == "0.999999"
     assert native["rows"][0][cols["Seventh"]] == "0.428571"
+
+
+@pytest.mark.parametrize(
+    "null_policy,expected", [("ignore", "10.0"), ("propagate", None)]
+)
+def test_source_nulls_are_preserved_for_configured_aggregation(
+    clickhouse_app, null_policy, expected
+):
+    client, _, _, _ = clickhouse_app
+    setup(client, qty=b"P1,L1,10.0\nP1,L1,\nP1,L2,60.0\n")
+    current = client.get(BASE + "/measures/FQTY").json()
+    payload = {
+        k: v
+        for k, v in current.items()
+        if k not in ("modelId", "revisionId", "version", "createdAt", "updatedAt")
+    }
+    payload["definition"]["sourceNullPolicy"] = (
+        "reject"  # Former API choice is ignored.
+    )
+    payload["definition"]["aggregation"]["nullInputPolicy"] = null_policy
+    updated = client.put(
+        BASE + "/measures/FQTY",
+        json=payload,
+        headers={"If-Match": str(current["version"])},
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["definition"]["sourceNullPolicy"] == "preserve"
+    run = build_values(client)
+    assert run["state"] == "succeeded", run
+    data, cols = values(client, "base")
+    assert data["rows"][0][cols["FQTY"]] == expected

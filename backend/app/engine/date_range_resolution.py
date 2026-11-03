@@ -7,11 +7,16 @@ from .contracts import Check, digest
 
 def calendar_source_ids(objects, transaction):
     by_id = {o["objectId"]: o for o in objects}
+    configs = [
+        a["dateRange"]
+        for a in (transaction["definition"].get("resolution") or {}).get("axes", [])
+        if a.get("dateRange")
+    ]
+    if transaction["definition"].get("calendarResolution"):
+        configs.append(transaction["definition"]["calendarResolution"])
     return list(
         dict.fromkeys(
-            by_id[a["dateRange"]["dimensionId"]]["definition"]["sourceId"]
-            for a in (transaction["definition"].get("resolution") or {}).get("axes", [])
-            if a.get("dateRange")
+            by_id[c["dimensionId"]]["definition"]["sourceId"] for c in configs
         )
     )
 
@@ -295,12 +300,84 @@ class RangeMeasureAggregator:
             measure,
         )
 
+    def compile_calendar(self, config):
+        from .measure_compiler import VALUE
+
+        h, d = self.h, self.measure["definition"]
+        keys = h.keys(d["nativePlanningLevelId"])
+        date_id = next(
+            c["columnId"]
+            for c in self.resolved.columns
+            if c.get("role") == "resolvedDate"
+        )
+        order_id = next(
+            c["columnId"]
+            for c in self.resolved.columns
+            if c.get("role") == "resolvedDateOrdering"
+        )
+        direct = self.tx["definition"].get("mappingMode") != "resolve_multi_grain"
+        series = ["__calendar_record"] if direct else config["partitionColumnIds"]
+        selected = [
+            q(m["sourceColumnId"]) + " AS " + q(m["grainColumnId"])
+            for m in self.resolved.mappings
+        ]
+        selected += [q(cid) for cid in series]
+        selected += [
+            q(date_id) + " AS __resolved_date",
+            q(order_id) + " AS __resolved_order",
+            h.widen(q(d["valueColumnId"]), self.measure) + " AS " + q(VALUE),
+        ]
+        node = h.cte(f"SELECT {', '.join(selected)} FROM {q(self.resolved.node)}")
+        policy = d["aggregation"]
+        if policy["time"] in ("first", "last"):
+            group = ", ".join(q(k) for k in keys)
+            h.assertions.append(
+                Check(
+                    "ambiguous_resolution_time_order",
+                    f"SELECT {group}, __resolved_order FROM {q(node)} GROUP BY {group}, __resolved_order HAVING uniqExact(__resolved_date)>1 LIMIT 20",
+                )
+            )
+        pending = {"time": True, "nonTime": bool(series)}
+        for stage in (
+            ["nonTime", "time"]
+            if policy.get("order", "nonTimeThenTime") == "nonTimeThenTime"
+            else ["time", "nonTime"]
+        ):
+            if not pending[stage]:
+                continue
+            pending[stage] = False
+            groups = [
+                *keys,
+                *(["__resolved_date"] if pending["time"] else []),
+                *(series if pending["nonTime"] else []),
+            ]
+            expr = h.aggregate(
+                q(VALUE),
+                policy[stage],
+                policy,
+                q("__resolved_order") if stage == "time" else None,
+            )
+            ordering = (
+                ", min(__resolved_order) AS __resolved_order" if pending["time"] else ""
+            )
+            group = ", ".join(q(k) for k in groups)
+            node = h.cte(
+                f"SELECT {group}, {expr} AS {q(VALUE)}{ordering} FROM {q(node)} GROUP BY {group}"
+            )
+        return h.cte(f"SELECT *, toUInt8(1) AS __present FROM {q(node)}")
+
     def compile(self):
         h, d = self.h, self.measure["definition"]
-        config = self.tx["definition"]["resolution"]
+        calendar = self.tx["definition"].get("calendarResolution")
+        config = self.tx["definition"].get("resolution") or {
+            "axes": [],
+            "partitionColumnIds": [],
+        }
         axis = next((a for a in config["axes"] if a.get("dateRange")), None)
-        if not axis:
+        if not axis and not calendar:
             return None
+        if calendar:
+            return self.compile_calendar(config)
         dim = h.objects[axis["dateRange"]["dimensionId"]]["definition"]
         calendar_key = axis["dateRange"]["calendarKeyColumnId"]
         if calendar_key == dim["time"]["dateColumnId"] or set(dim["keyColumnIds"]) <= {

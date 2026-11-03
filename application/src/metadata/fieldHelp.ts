@@ -40,7 +40,7 @@ const help: Record<string, string> = {
   'Matching value column':
     'Contains the member for the selected level. For example selector brand with member A matches all native products in Brand A.',
   'Apply-order column':
-    'Larger values apply later. Use an explicit integer sequence or timestamp that is unique for overlapping assignments. A later coarse row can overwrite earlier detail; physical row order is ignored.',
+    'Larger values apply later. Choose a source or retained column that uniquely orders overlapping assignments. Numbers/dates use natural order; text is alphabetical (P10 before P2). A later coarse row can overwrite earlier detail; physical row order is ignored.',
   'Order tie-breaker columns':
     'Compared in the displayed order when the primary order ties. Overlapping assignments with equal complete order fail instead of choosing arbitrarily.',
   'Independent assignment series':
@@ -123,13 +123,13 @@ const help: Record<string, string> = {
     'The level where a measure is originally loaded or its calculation is defined. Transactions are first grouped and matched at their native level.',
   'Map every grain key':
     'Match each native planning key to its transaction column. Transactions are aggregated by all these keys before the left join.',
+  'Output Planning Level':
+    'The planning level where this measure is defined. Reference measures inherit it from their transaction; calculated measures use the selected level.',
   'Measure type':
     'Referenced measures read a transaction column. Calculated measures evaluate a formula using other measures.',
   Transaction: 'The transaction definition supplying this measure’s records and native grain.',
   'Missing transaction value':
     'What to show when a planning row has no matching transaction group: NULL or zero.',
-  'Source null policy':
-    'What to do when a transaction row exists but its value is NULL: reject it or preserve the NULL.',
   'Editable measure':
     'Declares that this measure may be edited at its native or a supported coarser level. Planning View permits edits at native or proven coarser grains. Changes go to Base where reachable, otherwise native, and compatible coarser values are recomputed.',
   'Calculation type':

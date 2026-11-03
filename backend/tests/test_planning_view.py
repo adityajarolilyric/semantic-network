@@ -103,3 +103,53 @@ async def test_read_lease_prevents_collection_after_generation_is_unbound():
     await store.repository.delete("engine_read_leases", {"readId": "read_pivot"})
     await collector.collect()
     assert len(service.executor.warehouse.dropped) == 1
+
+
+def test_view_preferences_build_token_changes_only_for_successful_non_edit_builds(
+    populated,
+):
+    from .conftest import ROOT, MODEL, REVISION
+
+    repo = populated.app.state.container.store
+    query = {"modelId": MODEL, "revisionId": REVISION, "resourceKind": "measureSet"}
+    runs = repo.documents.setdefault("engine_runs", [])
+
+    def token():
+        response = populated.get(ROOT + "/planning-view/options")
+        assert response.status_code == 200, response.text
+        return response.json()["buildId"]
+
+    assert token() is None
+    runs.append(
+        {
+            **query,
+            "runId": "built",
+            "createdAt": 1,
+            "state": "succeeded",
+            "isEdit": False,
+        }
+    )
+    assert token() == "built"
+    runs.append(
+        {
+            **query,
+            "runId": "edited",
+            "createdAt": 2,
+            "state": "succeeded",
+            "isEdit": True,
+        }
+    )
+    runs.append(
+        {**query, "runId": "failed", "createdAt": 3, "state": "failed", "isEdit": False}
+    )
+    assert token() == "built"
+    runs.append(
+        {
+            **query,
+            "runId": "rebuilt",
+            "createdAt": 4,
+            "state": "succeeded",
+            "isEdit": False,
+        }
+    )
+    assert token() == "rebuilt"

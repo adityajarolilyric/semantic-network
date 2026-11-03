@@ -226,6 +226,16 @@ class MongoMetadataStore(MetadataStore):
                 [("modelId", 1), ("revisionId", 1), ("idempotencyKey", 1)], unique=True
             ),
             IndexModel([("state", 1), ("leaseUntil", 1), ("runId", 1)]),
+            IndexModel(
+                [
+                    ("modelId", 1),
+                    ("revisionId", 1),
+                    ("resourceKind", 1),
+                    ("state", 1),
+                    ("isEdit", 1),
+                    ("createdAt", -1),
+                ]
+            ),
         ]
         for collection, indexes in definitions.items():
             await self.database[collection].create_indexes(indexes)

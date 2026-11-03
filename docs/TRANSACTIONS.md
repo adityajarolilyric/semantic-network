@@ -17,7 +17,7 @@ Use `mappingMode="resolve_multi_grain"` when rows assign values at native or coa
 - Every native axis needs a constraint unless `allowAll` explicitly permits absence. Missing is not an implicit broadcast. Time must be covered too.
 - A row is one independent assignment. EAV rows that jointly describe one fact must be pivoted/grouped using fact identity first.
 
-**Explicit source application order wins at any grain.** Later coarse rows can overwrite detail; specificity is not priority. ClickHouse row order, SELECT/UNION order and generated row numbers cannot reconstruct application order. Require a meaningful sequence or timestamp. Overlapping rows tied on the complete configured order fail, rather than choosing an arbitrary winner.
+**Explicit source application order wins at any grain.** Later coarse rows can overwrite detail; specificity is not priority. ClickHouse row order, SELECT/UNION order and generated row numbers cannot reconstruct application order. Choose a meaningful order column (sequence, timestamp or explicitly ordered text). Overlapping rows tied on the complete configured order fail, rather than choosing an arbitrary winner.
 
 A winner carries its entire payload, including NULL. No fallback to an earlier non-NULL value occurs. For each selected value column, Copy retains the value; Split divides by that assignment's original full matching-native-key count. Counts are independent of duplicate assignments and later overrides. Overwritten amounts are not redistributed; no residual/conservation rule is inferred. Numeric IDs and other numeric columns are not automatically treated as allocatable values.
 
@@ -90,40 +90,44 @@ Revision-scoped paths:
 
 Preview captures/renews read leases and rejects revision/input changes; materialisation uses build pins. Both use the same compiler/checks. Measures are not needed to configure or preview resolution.
 
+Additional columns to retain appears directly above Application order. Retained columns remain visible/selectable even when used for ordering. Application order accepts text, numeric and date scalar columns; text is ordered alphabetically (for example `P10` before `P2`), numbers/dates naturally. Higher values apply later; NULL and equal-order overlapping assignments fail. Distributed value columns cannot also control order.
+
 ## Date ranges and native periods
 
-A transaction can provide inclusive Start/End instead of an exact Time key. Resolve actual calendar days, distribute/apply source-order overrides at member×day detail, then map surviving contributions to the native Day/Week/Month key. Period identity comes from explicit Time attributes, including fiscal IDs; do not derive ISO weeks or assume seven days.
-
-Replace one native Time axis's rules with:
+Calendar resolution is an optional **transaction stage before native-key/multi-grain mapping**. Raw Source and Managed Table schemas stay unchanged. Select Start/End, a daily Time dimension, and exposed calendar attributes to bring into the transaction's effective input:
 
 ```json
-{
-  "grainColumnId": "week",
-  "rules": [],
-  "allowAll": false,
-  "dateRange": {
-    "dimensionId": "Time",
-    "calendarKeyColumnId": "fiscal_week_id",
-    "startColumnId": "col_start",
-    "endColumnId": "col_end"
-  }
+"calendarResolution": {
+  "dimensionId": "Time",
+  "startColumnId": "col_start",
+  "endColumnId": "col_end",
+  "selectedColumnIds": ["week_id", "month_id"]
 }
 ```
 
-The Time dimension must have daily base grain; reuse its date/ordering columns. Its calendar key matches the existing native key and may be String, integer or Date. Selected values add independent `timeMode`, for example `{"sourceColumnId":"col_qty","mode":"split","timeMode":"copy"}`: mode distributes across non-time members; timeMode across eligible calendar days. All four Split/Copy pairs work. Counts use original complete matches before overrides and filtered calendar membership, not arithmetic end-start+1.
+The daily Time dimension supplies its configured date and ordering columns. Each input record expands to its eligible calendar days, inclusively; original fields and values are copied unchanged. Selected calendar attributes have stable transaction-specific `txcal_...` IDs and retain their types/lineage. A name collision adds `Calendar_`/a suffix. Internal day/order fields retain stable IDs. No physical staging table or managed-source mutation is needed.
 
-Capture the calendar's managed artifact even when it is not otherwise a population dependency. Apply Time filters and build a distinct day→period→order relation. Identical rows deduplicate; conflicting period/order for one day fails. Parse only ISO YYYY-MM-DD, Date/Date32; reject NULL/invalid/reversed endpoints, ranges beyond selected calendar bounds and ranges with no eligible dates. No clipping/timezone guessing. Match actual native intersections and require every eligible day for each selected member to have native coverage.
+Example: a promotion from Jan 30 through Feb 2 maps via four calendar rows. If all days belong to Week W1, the resolved input still distinguishes `(W1, January)` and `(W1, February)`. Both Week and Month can map to native grain keys. Use ordinary direct key mappings or multi-grain Column-equals-attribute rules for calendar fields; Product/Location level-value rules remain independent. Period IDs come from calendar data, including fiscal calendars; never infer ISO weeks from names.
 
-Range bounds participate in identical-assignment reduction. Winners are selected per complete native key **and resolved date**, so a later two-day assignment changes only those days even inside one Week. Expose canonical native keys, Resolved date, Calendar order and Float64 distributed values; repeated weekly keys are intentional daily contributions.
+The calendar stage does not allocate values. In multi-grain resolution, per-value `mode` distributes across matching non-time members and `timeMode` across eligible calendar days: Split divides by the original matching count; Copy repeats. The new UI defaults Across dates to Copy and lets the user change it. Source-order winners are selected per full native key **and day** before folding, so a later partial-period assignment changes only its own days. Overwritten shares are not redistributed. Direct transactions retain every source record and apply ordinary transaction/Time aggregation without assignment overlays.
 
-Fold daily contributions into a coarser native period using the **measure's Time aggregation**, before the native LEFT JOIN. First/Last uses calendar order; ambiguous ordering fails. A proven native daily identity retains ordinary native aggregation; legacy independent series honor configured axis order. Example: 70 split across seven days, three in W1/four in W2, yields 10/day; Time SUM gives 30/40, AVG gives 10/10. NonTime policy does not replace this fold. Subsequent Base/finer propagation uses the measure's disaggregation; it does not automatically reuse original daily distribution as a separate measure.
+Before the native LEFT JOIN, the measure's configured Time policy combines daily contributions; NonTime and Time stages honor aggregation order. First/Last uses calendar order and rejects ambiguous ordering. Example: a copied daily value of 10 over three days in W1/four in W2 gives 30/40 under Time SUM, or 10/10 under AVG. No aggregation is hard-coded. Further source materialisation follows aggregation-derived split/repeat; interactive edits follow measure disaggregation policies.
 
-UI offers Exact value/Date range on the native Time axis, Start/End, daily Time dimension and period attribute. Prefill only uniquely proven mappings. Show the calendar date as explanation, not a redundant selector. Across members/Across dates appear per selected value; saved range choices restore on reopen.
+Readiness/validation: capture and lease the calendar's managed artifact even if it is not a planning population dependency. Apply calendar filters; identical day/attribute rows deduplicate, conflicting day/attribute/order tuples fail. Accept Date/Date32 or ISO YYYY-MM-DD strings; reject missing/invalid/reversed endpoints, out-of-bounds ranges, no eligible dates, unmatched native mappings and expansion beyond configured limits. Sparse calendars define eligible days; missing days are not synthesized. A weekly-only calendar requires a daily calendar first. DateTime needs a future timezone contract.
 
-Both endpoints are required (the same column can mean a single day). Exact/range is configured per transaction, not inferred per row. Support one complete native Time key, such as YearWeek; separate partial Year/Week keys fail. A weekly-only calendar needs a daily calendar first; no separate bridge-source feature exists. DateTime endpoints await a timezone policy. Calendar filters define eligible days; missing dates are not synthesized. Existing limits apply to day expansion. Fingerprints use `transaction-resolution-v2-day-range`; rebuild stale values after compiler changes.
+UI flow: enable **Resolve a date range using a calendar**, select endpoints/calendar/attributes, optionally preview calendar data, then map derived fields. The effective schema is obtained from the backend; configuration persists in MongoDB. Preview uses the shared table component (100 rows), saves nothing, and does not require a built native planning level.
+
+Additional endpoints (under the revision):
+
+- `POST /transactions/calendar/schema`: `{transactionId, sourceId, calendarResolution}` → raw plus derived columns, before native mappings are complete.
+- `POST /transactions/calendar/preview`: same payload → expanded input and row count, independently of native mapping/build.
+- `POST /transactions/resolution/preview`: full transaction → mapped/resolved output; requires a current native planning population. Supports direct calendar transactions too.
+- `GET /transactions/{id}/schema`: saved effective transaction columns for measure selection.
+
+Compatibility: saved axis-level `resolution.axes[].dateRange` remains supported with its original single native Time key and Split/Copy semantics. The UI restores that legacy configuration; new range configurations use the independent stage. Do not mix both contracts. Absent `calendarResolution` is omitted from serialized definitions to preserve old metadata hashes. Engine fingerprints use `transaction-resolution-v3-calendar-stage`; rebuild stale materialisations after compiler changes.
 
 ## Implementation and regression coverage
 
-Owners: `schemas/transactions.py`, `api/transactions.py`, `services/transaction_resolution.py`, `engine/{transaction_resolution,date_range_resolution,measure_compiler}.py`, and TransactionResolutionEditor/TransactionDateRangeEditor. Measure compilation caches the resolved relation without changing downstream policies.
+Owners: `schemas/transactions.py`, `api/transactions.py`, `services/transaction_resolution.py`, `engine/{calendar_resolution,transaction_resolution,date_range_resolution,measure_compiler}.py`, and TransactionCalendarEditor/TransactionResolutionEditor/TransactionDateRangeEditor. Measure compilation caches the resolved relation without changing downstream policies.
 
 Tests cover order reversal/ties, NULL winners, Split/Copy/no redistribution, typed selectors, missing/unmatched/all-member constraints, shadowed rows, legacy partitions, expansion limits, native measure loads, sparse/full date ranges, fiscal weeks, Time AVG/First/Last, partial-period overrides, stale leases, saved UI state and two-table preservation. All data-changing fixtures are disposable.

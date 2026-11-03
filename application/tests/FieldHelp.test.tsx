@@ -9,15 +9,15 @@ it('keeps field names intact and adds no help to Name or Description', () => {
       <Text label="Name" value="Sales" onChange={() => {}} />
       <Text label="Description" value="" onChange={() => {}} />
       <Select
-        label="Source null policy"
-        value="reject"
-        items={['reject', 'preserve']}
+        label="Missing transaction value"
+        value="null"
+        items={['null', 'zero']}
         onChange={() => {}}
       />
     </>,
   )
   expect(screen.getByRole('textbox', { name: 'Name' })).toBeVisible()
-  expect(screen.getByRole('combobox', { name: 'Source null policy' })).toBeVisible()
+  expect(screen.getByRole('combobox', { name: 'Missing transaction value' })).toBeVisible()
   expect(screen.queryByRole('button', { name: 'About Name' })).not.toBeInTheDocument()
   expect(screen.queryByRole('button', { name: 'About Description' })).not.toBeInTheDocument()
 })
@@ -73,10 +73,10 @@ it('uses one help icon for a column group instead of adding icons to individual 
 it('keeps help keyboard accessible in a read-only fieldset', () => {
   render(
     <fieldset disabled>
-      <Select label="Source null policy" value="reject" items={['reject']} onChange={() => {}} />
+      <Select label="Missing transaction value" value="null" items={['null']} onChange={() => {}} />
     </fieldset>,
   )
-  const info = screen.getByRole('button', { name: 'About Source null policy' })
+  const info = screen.getByRole('button', { name: 'About Missing transaction value' })
   // user-event treats every disabled-fieldset descendant as disabled, including
   // non-form controls. Dispatch native focus/keys to verify the help control.
   act(() => info.focus())

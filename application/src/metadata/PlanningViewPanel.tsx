@@ -1,3 +1,8 @@
+import {
+  clearViewPreferences,
+  readViewPreferences,
+  saveViewPreferences,
+} from './planningViewPreferences'
 import { formatNumericDisplay } from '../lib/numberFormat'
 import { useEffect, useRef, useState } from 'react'
 import { FieldHelp } from '../components/FieldHelp'
@@ -7,6 +12,7 @@ import { metadataApi } from './api'
 type Ref = { dimensionId: string; columnId: string }
 type Field = Ref & { key: string; label: string }
 type Options = {
+  buildId?: string | null
   dimensions: { dimensionId: string; name: string; columns: { columnId: string; name: string }[] }[]
   measures: { measureId: string; name: string }[]
 }
@@ -243,6 +249,8 @@ export function PlanningViewPanel({
   revisionVersion: number
   onCommitted?: (version: number) => void
 }) {
+  const [refreshToken, refreshOptions] = useState(0)
+  const [loadedScope, setLoadedScope] = useState<string | null>(null)
   const [options, setOptions] = useState<Options | null>(null)
   const [rows, setRows] = useState<Field[]>([])
   const [columns, setColumns] = useState<Field[]>([])
@@ -255,6 +263,37 @@ export function PlanningViewPanel({
   const acceptedVersion = useRef<number | null>(null)
   const activeScope = useRef(base)
   const query = useRef<AbortController | null>(null)
+  useEffect(() => {
+    if (!options || saving) return
+    let pending: AbortController | null = null
+    const focus = () => {
+      pending?.abort()
+      const controller = new AbortController()
+      pending = controller
+      void metadataApi
+        .request<Options>(
+          base + '/planning-view/options',
+          'GET',
+          undefined,
+          undefined,
+          controller.signal,
+        )
+        .then((fresh) => {
+          if (!controller.signal.aborted && (fresh.buildId ?? null) !== (options.buildId ?? null)) {
+            acceptedVersion.current = null
+            refreshOptions((n) => n + 1)
+          }
+        })
+        .catch(() => {
+          /* Update pivot can report connectivity errors; keep the current layout. */
+        })
+    }
+    window.addEventListener('focus', focus)
+    return () => {
+      pending?.abort()
+      window.removeEventListener('focus', focus)
+    }
+  }, [base, options, saving])
   useEffect(() => () => editRequest.current?.abort(), [base])
   useEffect(() => {
     if (activeScope.current === base && acceptedVersion.current === revisionVersion) return
@@ -262,11 +301,9 @@ export function PlanningViewPanel({
     acceptedVersion.current = null
     const controller = new AbortController()
     setOptions(null)
+    setLoadedScope(null)
     setError('')
     setResult(null)
-    setRows([])
-    setColumns([])
-    setMeasures([])
     setLoading(false)
     setSaving(false)
     void metadataApi
@@ -278,7 +315,33 @@ export function PlanningViewPanel({
         controller.signal,
       )
       .then((data) => {
-        if (!controller.signal.aborted) setOptions(data)
+        if (controller.signal.aborted) return
+        const saved = readViewPreferences(base, data.buildId ?? null)
+        const catalog = fieldsFor(data)
+        const used = new Set<string>()
+        const restore = (refs: Ref[]) =>
+          refs.flatMap((ref) => {
+            const field = catalog.find(
+              (f) => f.dimensionId === ref.dimensionId && f.columnId === ref.columnId,
+            )
+            if (!field || used.has(field.key)) return []
+            used.add(field.key)
+            return [field]
+          })
+        const nextRows = restore(saved?.rows ?? [])
+        const nextColumns = restore(saved?.columns ?? [])
+        const nextMeasures = [...new Set(saved?.measures ?? [])].filter((id) =>
+          data.measures.some((m) => m.measureId === id),
+        )
+        setOptions(data)
+        setRows(nextRows)
+        setColumns(nextColumns)
+        setMeasures(nextMeasures)
+        setLoadedScope(base)
+        if (nextMeasures.length) {
+          query.current = controller
+          void loadPivot(nextRows, nextColumns, nextMeasures, controller)
+        }
       })
       .catch((e) => {
         if (!controller.signal.aborted) setError(e.message)
@@ -287,16 +350,22 @@ export function PlanningViewPanel({
       controller.abort()
       query.current?.abort()
     }
-  }, [base, revisionVersion])
-  const fields: Field[] =
-    options?.dimensions.flatMap((d) =>
+  }, [base, revisionVersion, refreshToken])
+  useEffect(() => {
+    if (!options || loadedScope !== base) return
+    saveViewPreferences(base, { buildId: options.buildId ?? null, rows, columns, measures })
+  }, [base, loadedScope, options, rows, columns, measures])
+  function fieldsFor(data: Options): Field[] {
+    return data.dimensions.flatMap((d) =>
       d.columns.map((c) => ({
         dimensionId: d.dimensionId,
         columnId: c.columnId,
         key: d.dimensionId + ':' + c.columnId,
         label: d.name + ' · ' + c.name,
       })),
-    ) ?? []
+    )
+  }
+  const fields = options ? fieldsFor(options) : []
   const selected = new Set([...rows, ...columns].map((f) => f.key))
   const available = selected.size >= 8 ? [] : fields.filter((f) => !selected.has(f.key))
   function change(action: () => void) {
@@ -310,6 +379,41 @@ export function PlanningViewPanel({
     query.current?.abort()
     const controller = new AbortController()
     query.current = controller
+    setLoading(true)
+    setError('')
+    try {
+      const fresh = await metadataApi.request<Options>(
+        base + '/planning-view/options',
+        'GET',
+        undefined,
+        undefined,
+        controller.signal,
+      )
+      if (controller.signal.aborted) return
+      if ((fresh.buildId ?? null) !== (options?.buildId ?? null)) {
+        clearViewPreferences(base)
+        setOptions(fresh)
+        setRows([])
+        setColumns([])
+        setMeasures([])
+        setResult(null)
+        setError('The Semantic Network was rebuilt. Choose your Planning View selections again.')
+        return
+      }
+      await loadPivot(rows, columns, measures, controller)
+    } catch (e) {
+      if (!controller.signal.aborted)
+        setError(e instanceof Error ? e.message : 'Could not load the planning view.')
+    } finally {
+      if (!controller.signal.aborted) setLoading(false)
+    }
+  }
+  async function loadPivot(
+    rows: Field[],
+    columns: Field[],
+    measures: string[],
+    controller: AbortController,
+  ) {
     setLoading(true)
     setError('')
     setResult(null)
@@ -436,17 +540,37 @@ export function PlanningViewPanel({
           <h2>Explore your planning data</h2>
           <p className="meta-hint">
             Choose row and column attributes, then add measures. Values use the saved semantic
-            policies.
+            policies. Your selections are remembered in this browser until a successful Semantic
+            Network rebuild or Clear selections.
           </p>
         </div>
-        <button
-          type="button"
-          className="primary-button"
-          disabled={!options || !measures.length || loading || saving}
-          onClick={() => void run()}
-        >
-          {loading ? 'Loading pivot…' : 'Update pivot'}
-        </button>
+        <div className="meta-toolbar">
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={saving}
+            onClick={() => {
+              query.current?.abort()
+              setLoading(false)
+              setResult(null)
+              if (options) setError('')
+              clearViewPreferences(base)
+              setRows([])
+              setColumns([])
+              setMeasures([])
+            }}
+          >
+            Clear selections
+          </button>
+          <button
+            type="button"
+            className="primary-button"
+            disabled={!options || !measures.length || loading || saving}
+            onClick={() => void run()}
+          >
+            {loading ? 'Loading pivot…' : 'Update pivot'}
+          </button>
+        </div>
       </div>
       {!options && !error && <p role="status">Loading dimensions and measures…</p>}
       {options && (

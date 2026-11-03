@@ -367,6 +367,28 @@ class SemanticGraphValidator:
             "planningLevel",
             "definition.planningLevelId",
         )
+        if definition.get("calendarResolution") and source:
+            from ..engine.calendar_resolution import CalendarResolutionPlanner
+            from ..core.errors import MetadataError
+
+            try:
+                calendar = CalendarResolutionPlanner(
+                    list(self.objects.values()),
+                    obj,
+                    list(self.columns(source).values()),
+                )
+                source = {
+                    **source,
+                    "definition": {
+                        **source["definition"],
+                        "columns": calendar.schema(),
+                    },
+                }
+            except MetadataError as error:
+                self.error(
+                    obj, error.code, error.message, "definition.calendarResolution"
+                )
+                return
         if definition.get("mappingMode") == "resolve_multi_grain":
             if source and level:
                 from ..engine.transaction_resolution import TransactionResolutionPlanner
@@ -376,7 +398,9 @@ class SemanticGraphValidator:
                     TransactionResolutionPlanner(
                         list(self.objects.values()),
                         obj,
-                        list(self.columns(source).values()),
+                        list(
+                            self.columns(self.objects[definition["sourceId"]]).values()
+                        ),
                     )
                 except MetadataError as error:
                     self.error(obj, error.code, error.message, "definition.resolution")
@@ -483,6 +507,23 @@ class SemanticGraphValidator:
                 source = self.objects.get(tx["sourceId"])
                 if source and source["kind"] == "source":
                     columns = self.columns(source)
+                    if tx.get("calendarResolution"):
+                        from ..engine.calendar_resolution import (
+                            CalendarResolutionPlanner,
+                        )
+                        from ..core.errors import MetadataError
+
+                        try:
+                            columns = {
+                                c["columnId"]: c
+                                for c in CalendarResolutionPlanner(
+                                    list(self.objects.values()),
+                                    transaction,
+                                    list(columns.values()),
+                                ).schema()
+                            }
+                        except MetadataError:
+                            pass  # The transaction reports its calendar contract error.
                     self.require_columns(
                         obj,
                         [definition["valueColumnId"]],

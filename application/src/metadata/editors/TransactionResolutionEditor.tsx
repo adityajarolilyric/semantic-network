@@ -81,6 +81,7 @@ export function TransactionResolutionEditor({
   level,
   base,
   sourceId,
+  calendarResolved = false,
 }: {
   value: GrainResolution
   onChange: (value: GrainResolution) => void
@@ -88,6 +89,7 @@ export function TransactionResolutionEditor({
   level: PlanningLevel
   base?: string
   sourceId: string
+  calendarResolved?: boolean
 }) {
   const [targets, setTargets] = useState<TargetOption[]>([])
   const [error, setError] = useState('')
@@ -129,11 +131,11 @@ export function TransactionResolutionEditor({
   const targetOptions = targets.map((t) => ({ value: targetKey(t.target), label: t.label }))
   const selectTarget = (key: string) =>
     targets.find((t) => targetKey(t.target) === key)?.target ?? null
-  const hasRange = value.axes.some((a) => !!a.dateRange)
+  const hasRange = calendarResolved || value.axes.some((a) => !!a.dateRange)
   const values = new Set(value.values.map((v) => v.sourceColumnId))
   const numeric = columns.filter((c) => /^(?:U?Int|Float|Decimal)/i.test(c.physicalType))
   const orderOptions = columns
-    .filter((c) => /^(?:U?Int\d+|Date)/i.test(c.physicalType) && !values.has(c.columnId))
+    .filter((c) => !values.has(c.columnId))
     .map((c) => ({ value: c.columnId, label: c.name }))
   return (
     <div className="transaction-resolution">
@@ -163,40 +165,42 @@ export function TransactionResolutionEditor({
               aria-label={'Resolve ' + name}
             >
               <legend>{name}</legend>
-              {(axis.dateRange ||
-                timeGrainIds.includes(axis.grainColumnId) ||
-                (calendars.length > 0 && timeGrainIds.length === 0)) && (
-                <Select
-                  label={'Time resolution for ' + name}
-                  value={axis.dateRange ? 'range' : 'exact'}
-                  items={[
-                    { value: 'exact', label: 'Exact value' },
-                    { value: 'range', label: 'Date range' },
-                  ]}
-                  disabled={hasRange && !axis.dateRange}
-                  onChange={(mode) => {
-                    const axes = value.axes.map((a, i) =>
-                      i === index
-                        ? {
-                            ...a,
-                            rules: [],
-                            allowAll: false,
-                            dateRange:
-                              mode === 'range' ? newDateRange(calendars, a.grainColumnId) : null,
-                          }
-                        : a,
-                    )
-                    const range = axes.some((a) => !!a.dateRange)
-                    update({
-                      axes,
-                      values: value.values.map((v) => ({
-                        ...v,
-                        timeMode: range ? (v.timeMode ?? 'split') : null,
-                      })),
-                    })
-                  }}
-                />
-              )}
+              {!calendarResolved &&
+                value.axes.some((a) => a.dateRange) &&
+                (axis.dateRange ||
+                  timeGrainIds.includes(axis.grainColumnId) ||
+                  (calendars.length > 0 && timeGrainIds.length === 0)) && (
+                  <Select
+                    label={'Time resolution for ' + name}
+                    value={axis.dateRange ? 'range' : 'exact'}
+                    items={[
+                      { value: 'exact', label: 'Exact value' },
+                      { value: 'range', label: 'Date range' },
+                    ]}
+                    disabled={hasRange && !axis.dateRange}
+                    onChange={(mode) => {
+                      const axes = value.axes.map((a, i) =>
+                        i === index
+                          ? {
+                              ...a,
+                              rules: [],
+                              allowAll: false,
+                              dateRange:
+                                mode === 'range' ? newDateRange(calendars, a.grainColumnId) : null,
+                            }
+                          : a,
+                      )
+                      const range = axes.some((a) => !!a.dateRange)
+                      update({
+                        axes,
+                        values: value.values.map((v) => ({
+                          ...v,
+                          timeMode: range ? (v.timeMode ?? 'split') : null,
+                        })),
+                      })
+                    }}
+                  />
+                )}
               {axis.dateRange ? (
                 <TransactionDateRangeEditor
                   value={axis.dateRange}
@@ -304,11 +308,20 @@ export function TransactionResolutionEditor({
           )
         })}
       </div>
+      <Checks
+        label="Additional columns to retain"
+        selected={value.passthroughColumnIds}
+        items={sourceOptions.filter(
+          (c) => !values.has(c.value) && !value.partitionColumnIds.includes(c.value),
+        )}
+        onChange={(passthroughColumnIds) => update({ passthroughColumnIds })}
+      />
       <div className="meta-grid meta-subsection">
         <div>
           <h3>Application order</h3>
           <p className="meta-hint">
-            Higher values apply later. ClickHouse row order is never used.
+            Higher values apply later. Text is ordered alphabetically; numbers and dates use their
+            natural order. ClickHouse row order is never used.
           </p>
           <Select
             label="Apply-order column"
@@ -321,7 +334,8 @@ export function TransactionResolutionEditor({
             }
           />
           <p className="meta-hint">
-            Use a unique sequence for overlapping assignments. Equal order values fail resolution.
+            Choose values that uniquely order overlapping assignments. Equal order values fail
+            resolution.
           </p>
         </div>
         <div>
@@ -363,7 +377,12 @@ export function TransactionResolutionEditor({
                                     {
                                       sourceColumnId: c.columnId,
                                       mode: 'split',
-                                      ...(hasRange ? { timeMode: 'split' as const } : {}),
+                                      ...(hasRange
+                                        ? {
+                                            timeMode: (calendarResolved ? 'copy' : 'split') as
+                                              'split' | 'copy',
+                                          }
+                                        : {}),
                                     },
                                   ]
                                 : value.values.filter((v) => v.sourceColumnId !== c.columnId),
@@ -426,20 +445,6 @@ export function TransactionResolutionEditor({
           </div>
         </div>
       </div>
-      <details className="meta-subsection">
-        <summary>More resolution settings</summary>
-        <Checks
-          label="Additional columns to retain"
-          selected={value.passthroughColumnIds}
-          items={sourceOptions.filter(
-            (c) =>
-              !values.has(c.value) &&
-              !value.orderColumnIds.includes(c.value) &&
-              !value.partitionColumnIds.includes(c.value),
-          )}
-          onChange={(passthroughColumnIds) => update({ passthroughColumnIds })}
-        />
-      </details>
     </div>
   )
 }

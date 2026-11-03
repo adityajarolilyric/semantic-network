@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, model_validator, model_serializer
 
 from .common import DocumentMetadata, Identifier, Schema, SemanticInput, unique
 
@@ -64,6 +64,24 @@ class ResolutionDateRange(Schema):
     endColumnId: Identifier
 
 
+class CalendarResolution(Schema):
+    dimensionId: Identifier
+    startColumnId: Identifier
+    endColumnId: Identifier
+    selectedColumnIds: list[Identifier] = Field(min_length=1, max_length=32)
+
+    @model_validator(mode="after")
+    def distinct(self):
+        unique(self.selectedColumnIds, "calendar attributes")
+        return self
+
+
+class CalendarSchemaInput(Schema):
+    transactionId: Identifier
+    sourceId: Identifier
+    calendarResolution: CalendarResolution
+
+
 class ResolutionAxis(Schema):
     grainColumnId: Identifier
     allowAll: bool = False
@@ -125,6 +143,7 @@ class TransactionDefinition(Schema):
     planningLevelId: Identifier
     mappingMode: Literal["direct", "resolve_multi_grain"] = "direct"
     resolution: GrainResolution | None = None
+    calendarResolution: CalendarResolution | None = None
     keyMappings: list[TransactionKeyMapping] = Field(
         default_factory=list, max_length=32
     )
@@ -145,9 +164,25 @@ class TransactionDefinition(Schema):
             raise ValueError(
                 "Multi-grain transactions require resolution metadata; native keys are generated"
             )
+        if self.calendarResolution and self.resolution:
+            if any(a.dateRange for a in self.resolution.axes):
+                raise ValueError(
+                    "Use calendar resolution or legacy date-range axes, not both"
+                )
+            if any(v.timeMode is None for v in self.resolution.values):
+                raise ValueError(
+                    "Select Across dates Split/Copy for every resolved value"
+                )
         unique([m.sourceColumnId for m in self.keyMappings], "transaction source keys")
         unique([m.grainColumnId for m in self.keyMappings], "transaction grain keys")
         return self
+
+    @model_serializer(mode="wrap")
+    def serialize(self, handler):
+        value = handler(self)
+        if value.get("calendarResolution") is None:
+            value.pop("calendarResolution", None)
+        return value
 
 
 class TransactionInput(SemanticInput):

@@ -265,12 +265,19 @@ def test_resolution_string_tie_breaker_and_independent_partitions(clickhouse_app
 
 
 def setup_date_range(
-    client, rows=b"140,2026-01-01,2026-01-07,10\n", *, day=False, population=None
+    client,
+    rows=b"140,2026-01-01,2026-01-07,10\n",
+    *,
+    day=False,
+    population=None,
+    calendar_rows=None,
+    month=False,
 ):
     calendar = managed(
         client,
         "DailyCalendar",
-        b"day,week\n2026-01-01,FISCAL_A\n2026-01-02,FISCAL_A\n2026-01-03,FISCAL_A\n2026-01-04,FISCAL_B\n2026-01-05,FISCAL_B\n2026-01-06,FISCAL_B\n2026-01-07,FISCAL_B\n",
+        calendar_rows
+        or b"day,week\n2026-01-01,FISCAL_A\n2026-01-02,FISCAL_A\n2026-01-03,FISCAL_A\n2026-01-04,FISCAL_B\n2026-01-05,FISCAL_B\n2026-01-06,FISCAL_B\n2026-01-07,FISCAL_B\n",
     )
     assert_post(
         client,
@@ -308,6 +315,28 @@ def setup_date_range(
             },
         },
     )
+    if month:
+        current = client.get(BASE + "/dimensions/Time").json()
+        current["definition"]["columns"].append(
+            {
+                "columnId": "month",
+                "name": "month",
+                "displayName": "Month",
+                "sourceColumnId": "col_3",
+            }
+        )
+        current["definition"]["attributeColumnIds"].append("month")
+        payload = {
+            k: v
+            for k, v in current.items()
+            if k not in ("modelId", "revisionId", "version", "createdAt", "updatedAt")
+        }
+        response = client.put(
+            BASE + "/dimensions/Time",
+            json=payload,
+            headers={"If-Match": str(current["version"])},
+        )
+        assert response.status_code == 200, response.text
     if population is None:
         periods = (
             [f"2026-01-0{i}" for i in range(1, 8)] if day else ["FISCAL_A", "FISCAL_B"]
@@ -356,6 +385,30 @@ def setup_date_range(
             },
         },
     )
+    if month:
+        current = client.get(BASE + "/planning-levels/period_native").json()
+        current["definition"]["grain"]["keyIds"].append("month")
+        current["definition"]["grain"]["columns"].append(
+            {
+                "grainColumnId": "month",
+                "name": "Month",
+                "populationRef": {"columnId": "col_3"},
+            }
+        )
+        current["definition"]["dimensionBindings"][0]["keyMappings"].append(
+            {"grainColumnId": "month", "dimensionColumnId": "month"}
+        )
+        payload = {
+            k: v
+            for k, v in current.items()
+            if k not in ("modelId", "revisionId", "version", "createdAt", "updatedAt")
+        }
+        response = client.put(
+            BASE + "/planning-levels/period_native",
+            json=payload,
+            headers={"If-Match": str(current["version"])},
+        )
+        assert response.status_code == 200, response.text
     rev = client.get(BASE).json()
     response = client.put(
         BASE,
@@ -363,7 +416,10 @@ def setup_date_range(
         headers={"If-Match": str(rev["version"])},
     )
     assert response.status_code == 200, response.text
-    assert build(client, "period_native")["state"] == "succeeded"
+    assert (
+        build(client, "period_native", version=2 if month else 1)["state"]
+        == "succeeded"
+    )
     source = managed(
         client, "DateAssignments", b"quantity,start_date,end_date,sequence\n" + rows
     )
@@ -566,4 +622,269 @@ def test_resolution_range_first_last_uses_daily_calendar_order(clickhouse_app):
         "10.0",
         "15.0",
         "10.0",
+    ]
+
+
+def calendar_stage(client, tx):
+    cfg = {
+        "dimensionId": "Time",
+        "startColumnId": "col_2",
+        "endColumnId": "col_3",
+        "selectedColumnIds": ["week"],
+    }
+    payload = {
+        "transactionId": tx["objectId"],
+        "sourceId": tx["definition"]["sourceId"],
+        "calendarResolution": cfg,
+    }
+    schema = client.post(BASE + "/transactions/calendar/schema", json=payload)
+    assert schema.status_code == 200, schema.text
+    week = next(
+        c["columnId"]
+        for c in schema.json()["columns"]
+        if c.get("dimensionColumnId") == "week"
+    )
+    tx["definition"]["calendarResolution"] = cfg
+    tx["definition"]["resolution"]["axes"][1] = {
+        "grainColumnId": "period",
+        "rules": [
+            {
+                "ruleId": "calendar_week",
+                "kind": "column",
+                "sourceColumnId": week,
+                "target": {"columnId": "period"},
+            }
+        ],
+    }
+    return payload
+
+
+def test_calendar_stage_previews_before_native_mapping_and_materialises(clickhouse_app):
+    client, _, _, _ = clickhouse_app
+    tx = setup_date_range(client)
+    payload = calendar_stage(client, tx)
+    result = client.post(BASE + "/transactions/calendar/preview", json=payload)
+    assert result.status_code == 200, result.text
+    assert result.json()["rowCount"] == 7
+    assert len(result.json()["rows"][0]) == len(result.json()["columns"])
+    # The independent stage copies values; distribution happens only downstream.
+    assert {r[0] for r in result.json()["rows"]} == {"140"}
+    result = preview(client, tx)
+    assert result.status_code == 200, result.text
+    assert result.json()["rowCount"] == 14
+    assert len(result.json()["rows"][0]) == len(result.json()["columns"])
+    assert_post(client, "/transactions", tx)
+    measure(client, "Total", "date_tx", "period_native", "col_1")
+    run = build_values(client)
+    assert run["state"] == "succeeded", run
+    result, cols = values(client, "period_native")
+    assert [r[cols["Total"]] for r in result["rows"]] == [
+        "30.0",
+        "40.0",
+        "30.0",
+        "40.0",
+    ]
+
+
+def test_calendar_stage_overlaps_preserve_daily_last_assignment(clickhouse_app):
+    client, _, _, _ = clickhouse_app
+    tx = setup_date_range(
+        client, b"140,2026-01-01,2026-01-07,10\n30,2026-01-02,2026-01-03,20\n"
+    )
+    calendar_stage(client, tx)
+    result = preview(client, tx)
+    assert result.status_code == 200, result.text
+    rows = result.json()
+    day = next(
+        i for i, c in enumerate(rows["columns"]) if c.get("role") == "resolvedDate"
+    )
+    qty = next(i for i, c in enumerate(rows["columns"]) if c["columnId"] == "col_1")
+    assert {(r[day], r[qty]) for r in rows["rows"]} == {
+        (f"2026-01-0{i}", "7.5" if i in (2, 3) else "10.0") for i in range(1, 8)
+    }
+
+
+@pytest.mark.parametrize("direct", [False, True])
+def test_calendar_stage_week_month_cross_boundary(clickhouse_app, direct):
+    client, _, _, _ = clickhouse_app
+    tx = setup_date_range(
+        client,
+        b"100,2026-01-30,2026-02-02,10\n",
+        month=True,
+        calendar_rows=b"day,week,month\n2026-01-29,W1,JAN\n2026-01-30,W1,JAN\n2026-01-31,W1,JAN\n2026-02-01,W1,FEB\n2026-02-02,W1,FEB\n2026-02-03,W2,FEB\n",
+        population=b"product,period,month\nP1,W1,JAN\nP1,W1,FEB\nP1,W2,FEB\nP2,W1,JAN\nP2,W1,FEB\nP2,W2,FEB\n",
+    )
+    cfg = {
+        "dimensionId": "Time",
+        "startColumnId": "col_2",
+        "endColumnId": "col_3",
+        "selectedColumnIds": ["week", "month"],
+    }
+    tx["definition"]["calendarResolution"] = cfg
+    result = client.post(
+        BASE + "/transactions/calendar/schema",
+        json={
+            "transactionId": tx["objectId"],
+            "sourceId": tx["definition"]["sourceId"],
+            "calendarResolution": cfg,
+        },
+    )
+    assert result.status_code == 200, result.text
+    cols = {c.get("dimensionColumnId"): c["columnId"] for c in result.json()["columns"]}
+    rules = [
+        {
+            "grainColumnId": k,
+            "rules": [
+                {
+                    "ruleId": "map_" + k,
+                    "sourceColumnId": cols[c],
+                    "target": {"columnId": k},
+                }
+            ],
+        }
+        for k, c in [("period", "week"), ("month", "month")]
+    ]
+    tx["definition"]["resolution"]["axes"] = [
+        tx["definition"]["resolution"]["axes"][0],
+        *rules,
+    ]
+    tx["definition"]["resolution"]["values"][0].update(mode="copy", timeMode="copy")
+    if direct:
+        tx["definition"]["mappingMode"] = "direct"
+        tx["definition"]["resolution"] = None
+        new_source = managed(
+            client,
+            "DirectDates",
+            b"product,start_date,end_date,quantity\nP1,2026-01-30,2026-02-02,100\n",
+        )
+        tx["definition"]["sourceId"] = new_source
+        tx["definition"]["keyMappings"] = [
+            {"sourceColumnId": "col_1", "grainColumnId": "product"},
+            *[
+                {"sourceColumnId": cols[c], "grainColumnId": k}
+                for k, c in [("period", "week"), ("month", "month")]
+            ],
+        ]
+        value_col = "col_4"
+    else:
+        value_col = "col_1"
+    result = preview(client, tx)
+    assert result.status_code == 200, result.text
+    assert_post(client, "/transactions", tx)
+    measure(client, "Total", "date_tx", "period_native", value_col)
+    measure(
+        client,
+        "Average",
+        "date_tx",
+        "period_native",
+        value_col,
+        agg={
+            "nonTime": "sum",
+            "time": "avg",
+            "nullInputPolicy": "ignore",
+            "allNullResult": "null",
+        },
+    )
+    run = build_values(client)
+    assert run["state"] == "succeeded", run
+    result, cols = values(client, "period_native")
+    actual = [(r[cols["Total"]], r[cols["Average"]]) for r in result["rows"]]
+    assert actual.count(("200.0", "100.0")) == (2 if direct else 4)
+
+
+@pytest.mark.parametrize(
+    "rows,code",
+    [
+        (b"10,2026-01-05,2026-01-03,10\n", "invalid_resolution_range"),
+        (b"10,not-a-date,2026-01-03,10\n", "invalid_resolution_range"),
+        (b"10,2025-12-31,2026-01-03,10\n", "resolution_calendar_coverage"),
+    ],
+)
+def test_calendar_stage_rejects_bad_ranges_before_mapping(clickhouse_app, rows, code):
+    client, _, _, _ = clickhouse_app
+    tx = setup_date_range(client, rows)
+    payload = calendar_stage(client, tx)
+    result = client.post(BASE + "/transactions/calendar/preview", json=payload)
+    assert result.status_code == 422, result.text
+    assert result.json()["error"]["code"] == code
+
+
+def test_calendar_stage_sparse_calendar_counts_only_eligible_days(clickhouse_app):
+    client, _, _, _ = clickhouse_app
+    tx = setup_date_range(
+        client,
+        calendar_rows=b"day,week\n2026-01-01,FISCAL_A\n2026-01-03,FISCAL_A\n2026-01-05,FISCAL_B\n2026-01-07,FISCAL_B\n",
+    )
+    calendar_stage(client, tx)
+    result = preview(client, tx)
+    assert result.status_code == 200, result.text
+    data = result.json()
+    qty = next(i for i, c in enumerate(data["columns"]) if c["columnId"] == "col_1")
+    assert data["rowCount"] == 8
+    assert {r[qty] for r in data["rows"]} == {"17.5"}
+
+
+def test_calendar_stage_direct_preserves_duplicate_records_and_aggregation_order(
+    clickhouse_app,
+):
+    client, _, _, _ = clickhouse_app
+    tx = setup_date_range(client)
+    calendar_stage(client, tx)
+    week = tx["definition"]["resolution"]["axes"][1]["rules"][0]["sourceColumnId"]
+    source = managed(
+        client,
+        "DirectSeries",
+        b"product,start_date,end_date,quantity\nP1,2026-01-01,2026-01-03,100\nP1,2026-01-02,2026-01-03,20\nP1,2026-01-02,2026-01-03,20\n",
+    )
+    tx["definition"].update(
+        sourceId=source,
+        mappingMode="direct",
+        resolution=None,
+        keyMappings=[
+            {"sourceColumnId": "col_1", "grainColumnId": "product"},
+            {"sourceColumnId": week, "grainColumnId": "period"},
+        ],
+    )
+    assert_post(client, "/transactions", tx)
+    for name, order in [
+        ("NonTimeFirst", "nonTimeThenTime"),
+        ("TimeFirst", "timeThenNonTime"),
+    ]:
+        measure(
+            client,
+            name,
+            "date_tx",
+            "period_native",
+            "col_4",
+            agg={
+                "nonTime": "avg",
+                "time": "sum",
+                "order": order,
+                "nullInputPolicy": "ignore",
+                "allNullResult": "null",
+            },
+        )
+    run = build_values(client)
+    assert run["state"] == "succeeded", run
+    result, cols = values(client, "period_native")
+    assert result["rows"][0][cols["NonTimeFirst"]] == "193.333333"
+    assert result["rows"][0][cols["TimeFirst"]] == "126.666667"
+
+
+def test_resolution_retained_text_can_control_application_order(clickhouse_app):
+    client, _, _, _ = clickhouse_app
+    tx = setup_resolution(client, rows=b"brand,A,zone,N,100,10\nid,P1,id,L1,30,20\n")
+    d = tx["definition"]["resolution"]
+    # Level selector is retained text: 'id' sorts after 'brand', even though
+    # the selected source sequence is no longer used for precedence.
+    d["passthroughColumnIds"] = ["col_1"]
+    d["orderColumnIds"] = ["col_1"]
+    result = preview(client, tx)
+    assert result.status_code == 200, result.text
+    data = result.json()
+    qty = next(i for i, c in enumerate(data["columns"]) if c["columnId"] == "col_5")
+    text = next(i for i, c in enumerate(data["columns"]) if c["columnId"] == "col_1")
+    assert sorted((r[qty], r[text]) for r in data["rows"]) == [
+        ("30.0", "id"),
+        ("50.0", "brand"),
     ]

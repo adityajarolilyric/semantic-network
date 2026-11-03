@@ -104,8 +104,8 @@ function newObject(kind: Exclude<Kind, 'source'>): ObjectInput {
       resultType: { type: 'number', nullable: true },
       aggregation: defaultAggregation,
       missingTransactionValue: 'null',
-      sourceNullPolicy: 'reject',
-      allocation: { mode: 'none' },
+      sourceNullPolicy: 'preserve',
+      allocation: { mode: 'weighted_by_self' },
       editable: false,
     },
   }
@@ -834,6 +834,8 @@ export function MetadataWorkspace({
                 {editor.input.kind === 'measure' && (
                   <MeasureEditor
                     key={editor.input.objectId}
+                    base={metadataApi.scope(model!.modelId, revision!.revisionId)}
+                    baseLevelId={revision!.basePlanningLevelId}
                     {...common}
                     initial={editor.input as Measure}
                     onSave={save}

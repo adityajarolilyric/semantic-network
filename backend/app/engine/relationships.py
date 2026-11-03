@@ -217,6 +217,20 @@ class LevelRelationshipAnalyzer:
             ),
         }
 
+    def expansion_axes(self, source, target):
+        """Axes whose finer target keys cannot be supplied by the source grain."""
+        outputs = self.outputs(target)
+        added = [
+            k
+            for k in self.levels[target]["definition"]["grain"]["keyIds"]
+            if self.resolve(source, outputs[k]) is None
+        ]
+        return [
+            axis
+            for axis in ("nonTime", "time")
+            if any(outputs[k].is_time == (axis == "time") for k in added)
+        ]
+
     def can_edit(self, measure, target):
         relation = self.analyze(measure["definition"]["nativePlanningLevelId"], target)
         return bool(

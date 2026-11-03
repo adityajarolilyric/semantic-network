@@ -2344,3 +2344,77 @@ fieldset:disabled textarea {
   display: block;
   white-space: normal;
 }
+
+/* Measure identity and native output stay prominent while authoring policies. */
+.meta-card form > fieldset.measure-type-control {
+  padding: 0;
+  border: 0;
+  margin: 0 0 20px;
+}
+.measure-type-control legend {
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.measure-type-switch {
+  display: inline-flex;
+  max-width: 100%;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid #d6dce8;
+  border-radius: 9px;
+  background: #f4f6fa;
+}
+.measure-type-option {
+  position: relative;
+  cursor: pointer;
+  min-width: 0;
+}
+.measure-type-option input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+.measure-type-option span {
+  display: block;
+  padding: 9px 22px;
+  border-radius: 6px;
+  color: #596880;
+  font-size: 13px;
+  font-weight: 600;
+}
+.measure-type-option input:checked + span {
+  background: #6c5ce7;
+  color: #fff;
+  box-shadow: 0 1px 3px #24344d1a;
+}
+.measure-type-option input:focus-visible + span {
+  outline: 2px solid #4533ba;
+  outline-offset: 2px;
+}
+.measure-type-option input:disabled + span {
+  opacity: 0.6;
+  cursor: default;
+}
+.measure-output-level {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 16px;
+  margin-bottom: 16px;
+  border: 1px solid #d8d1fb;
+  border-left: 4px solid #6c5ce7;
+  border-radius: 8px;
+  background: #f5f3ff;
+  font-size: 13px;
+  color: #4533ba;
+}
+.measure-output-level strong {
+  font-size: 18px;
+  overflow-wrap: anywhere;
+}
+.measure-output-level .meta-field {
+  margin-bottom: 0;
+}

@@ -8,8 +8,9 @@ import {
 } from './TransactionResolutionEditor'
 import { FieldHelp } from '../../components/FieldHelp'
 import { useState } from 'react'
-import type { Transaction } from '../types'
-import { Actions, IdentityFields, options, Select, type EditorProps } from './Fields'
+import { TransactionCalendarEditor } from './TransactionCalendarEditor'
+import type { SourceColumn, Transaction } from '../types'
+import { Actions, IdentityFields, options, Select, Check, type EditorProps } from './Fields'
 export function TransactionEditor({
   initial,
   data,
@@ -34,6 +35,7 @@ export function TransactionEditor({
         }
       : initial,
   )
+  const [calendarColumns, setCalendarColumns] = useState<SourceColumn[]>([])
   const form = useRef<HTMLFormElement>(null)
   const [preview, setPreview] = useState<
     (PlanningTableStatus & { diagnostics: Record<string, number> }) | null
@@ -66,6 +68,7 @@ export function TransactionEditor({
             onChange={(sourceId) =>
               update({
                 sourceId,
+                calendarResolution: null,
                 mappingMode: 'direct',
                 resolution: null,
                 keyMappings: d.keyMappings.map((m) => ({ ...m, sourceColumnId: '' })),
@@ -93,6 +96,43 @@ export function TransactionEditor({
           />
         </div>
 
+        {!d.resolution?.axes.some((a) => a.dateRange) && (
+          <>
+            <Check
+              label="Resolve a date range using a calendar"
+              value={!!d.calendarResolution}
+              onChange={(enabled) => {
+                setCalendarColumns([])
+                update({
+                  calendarResolution: enabled
+                    ? { dimensionId: '', startColumnId: '', endColumnId: '', selectedColumnIds: [] }
+                    : null,
+                  resolution: d.resolution
+                    ? {
+                        ...d.resolution,
+                        values: d.resolution.values.map((v) => ({
+                          ...v,
+                          timeMode: enabled ? 'copy' : null,
+                        })),
+                      }
+                    : d.resolution,
+                })
+              }}
+            />
+            {d.calendarResolution && source && (
+              <TransactionCalendarEditor
+                value={d.calendarResolution}
+                onChange={(calendarResolution) => update({ calendarResolution })}
+                columns={source.definition.columns}
+                onColumns={setCalendarColumns}
+                base={base}
+                sourceId={source.objectId}
+                transactionId={value.objectId}
+                levelId={d.planningLevelId}
+              />
+            )}
+          </>
+        )}
         <Select
           label="Transaction mapping"
           value={d.mappingMode}
@@ -120,7 +160,8 @@ export function TransactionEditor({
             <TransactionResolutionEditor
               value={d.resolution}
               onChange={(resolution) => update({ resolution })}
-              columns={source.definition.columns}
+              columns={d.calendarResolution ? calendarColumns : source.definition.columns}
+              calendarResolved={!!d.calendarResolution}
               level={level}
               base={base}
               sourceId={source.objectId}
@@ -193,7 +234,10 @@ export function TransactionEditor({
                     )?.name ?? m.grainColumnId)
                   }
                   value={m.sourceColumnId}
-                  items={(source?.definition.columns ?? []).map((c) => ({
+                  items={(d.calendarResolution
+                    ? calendarColumns
+                    : (source?.definition.columns ?? [])
+                  ).map((c) => ({
                     value: c.columnId,
                     label: c.name,
                   }))}
@@ -216,7 +260,10 @@ export function TransactionEditor({
       </fieldset>
       <Actions
         busy={busy || previewBusy}
-        canSave={d.mappingMode === 'direct' || resolutionComplete(d.resolution)}
+        canSave={
+          (!d.calendarResolution || calendarColumns.length > 0) &&
+          (d.mappingMode === 'direct' || resolutionComplete(d.resolution))
+        }
         onCancel={onCancel}
       />
     </form>

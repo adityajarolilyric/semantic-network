@@ -12,6 +12,9 @@ class MeasureAPI(RevisionResourceAPI):
         super().__init__(service, "measures", MeasureDocument)
         self.builds = builds
         self.router.add_api_route(
+            "/execution/base-visibility", self.base_visibility, methods=["GET"]
+        )
+        self.router.add_api_route(
             "/execution/build", self.build_values, methods=["POST"], status_code=202
         )
         self.router.add_api_route(
@@ -19,6 +22,16 @@ class MeasureAPI(RevisionResourceAPI):
         )
         self.router.add_api_route(
             "/{resource_id}/capabilities", self.capabilities, methods=["GET"]
+        )
+
+    async def base_visibility(
+        self,
+        model_id: Identifier,
+        revision_id: Identifier,
+        nativePlanningLevelId: Identifier,
+    ):
+        return await self.builds.base_visibility(
+            model_id, revision_id, nativePlanningLevelId
         )
 
     async def build_values(

@@ -1,8 +1,8 @@
 # Planning View: pivot reads and edits
 
-Planning View sits below Materialise. Choose exposed dimension attributes for Rows/Columns and measures under Values. **Measures render as rows** inside each row-dimension group, never as the column axis. Reorder/remove axis fields; Update pivot sends the layout to the backend. The browser arranges returned cells but performs no aggregation/disaggregation/formula evaluation. Layout/results are transient experience state, not persisted semantic definitions.
+Planning View sits below Materialise. Choose exposed dimension attributes for Rows/Columns and measures under Values. **Measures render as rows** inside each row-dimension group, never as the column axis. Reorder/remove axis fields; Update pivot sends the layout to the backend. The browser arranges returned cells but performs no aggregation/disaggregation/formula evaluation. Layout selections are browser experience preferences; results remain transient and are always read fresh from the server. Neither is a persisted semantic definition.
 
-Use current saved populations and Build Semantic Network first. Results explain the selected planning level and reuse/recalculation; hide internal IDs, SQL, physical names and generation tokens. Distinguish NULL values, absent intersections and empty members. Scrolling/responsive selectors support large layouts. Empty dimension axes request a global group; automatic subtotals/grand totals, filters and saved layouts remain unimplemented.
+Use current saved populations and Build Semantic Network first. Results explain the selected planning level and reuse/recalculation; hide internal IDs, SQL, physical names and generation tokens. Distinguish NULL values, absent intersections and empty members. Scrolling/responsive selectors support large layouts. Empty dimension axes request a global group; automatic subtotals/grand totals, filters and server-saved/shared layouts remain unimplemented.
 
 ## Source selection and calculation
 
@@ -93,3 +93,9 @@ Coverage includes exact/coarser reuse, AVG/NULL fallback, formulas at ad hoc gra
 Numeric measure cells display two decimal places. Inputs retain the six-place stored value for editing; only the displayed text is rounded to two places. Edit writes are rounded to six places before coarser propagation, using the same values stored at the write grain.
 
 Legacy/edit-derived incomplete distributions carry coverage flags in the same values table and generation. Planning View suppresses partial totals/formulas and can recover compatible native values. Warnings identify affected measures. Ordinary source NULL policies are separate. Initial source materialisation now derives distribution from aggregation and does not require edit weights. Native artifacts used for recovery are pinned during reads.
+
+## Browser layout memory
+
+Row/column order and selected measure IDs persist in localStorage, scoped by model/revision, across navigation and refresh. Labels are resolved from current metadata; unavailable fields/measures are pruned. Reopening automatically queries fresh values. No results, cell edits, edit-generation tokens or semantic definitions are cached. If browser storage is blocked, an in-memory fallback preserves selections during navigation.
+
+`GET /planning-view/options` also returns `buildId`: the latest successful non-edit Semantic Network run, or null before any build. A changed build clears saved selections; failed/in-progress builds, metadata reloads and cell edits do not. Check the token on re-entry, browser focus and before Update pivot. The engine-runs index supports the scoped latest-build lookup. **Clear selections** removes this layout and current results without changing metadata or data. Clearing browser storage also removes the preferences.

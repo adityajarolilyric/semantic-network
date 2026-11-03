@@ -44,7 +44,20 @@ class PlanningViewService(Service):
                     ],
                 }
             )
+        builds = await self.store.repository.list(
+            "engine_runs",
+            {
+                **scope(model, revision),
+                "resourceKind": "measureSet",
+                "state": "succeeded",
+                "isEdit": {"$in": [False, None]},
+            },
+            key="createdAt",
+            descending=True,
+            limit=1,
+        )
         return {
+            "buildId": builds[0]["runId"] if builds else None,
             "dimensions": dimensions,
             "measures": [
                 {"measureId": o["objectId"], "name": o["name"]}

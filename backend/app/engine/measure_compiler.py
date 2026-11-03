@@ -130,6 +130,21 @@ class MeasureCompiler(PlanningLevelCompiler):
 
         if transaction_id not in self.transaction_relations:
             tx = self.objects[transaction_id]
+            if (
+                tx["definition"].get("calendarResolution")
+                and tx["definition"].get("mappingMode") != "resolve_multi_grain"
+            ):
+                from .calendar_resolution import CalendarResolutionCompiler
+                from .transaction_resolution import ResolvedTransaction
+
+                c = CalendarResolutionCompiler(self, tx)
+                node = c.compile()
+                cols = [{**col, "storageName": col["columnId"]} for col in c.p.schema()]
+                result = ResolvedTransaction(
+                    node, cols, tx["definition"]["keyMappings"], node, [node], node
+                )
+                self.transaction_relations[transaction_id] = result
+                return result
             if transaction_id not in self.resolution_profiles:
                 raise MetadataError(
                     "resolution_not_prepared",
@@ -147,7 +162,9 @@ class MeasureCompiler(PlanningLevelCompiler):
         d = measure["definition"]
         level = d["nativePlanningLevelId"]
         tx = self.objects[d["transactionId"]]["definition"]
-        if tx.get("mappingMode") == "resolve_multi_grain":
+        if tx.get("mappingMode") == "resolve_multi_grain" or tx.get(
+            "calendarResolution"
+        ):
             resolved = self.resolve_transaction(d["transactionId"])
             table = q(resolved.node)
             columns = {
@@ -160,13 +177,6 @@ class MeasureCompiler(PlanningLevelCompiler):
             columns = self.source_columns(tx["sourceId"])
             mappings = tx["keyMappings"]
         value = q(columns[d["valueColumnId"]]["name"])
-        if d["sourceNullPolicy"] == "reject":
-            self.assertions.append(
-                Check(
-                    "source_null_rejected",
-                    f"SELECT {value} FROM {table} WHERE isNull({value}) LIMIT 20",
-                )
-            )
         group = ", ".join(q(columns[m["sourceColumnId"]]["name"]) for m in mappings)
         selected = ", ".join(
             q(columns[m["sourceColumnId"]]["name"]) + " AS " + q(m["grainColumnId"])
@@ -176,7 +186,9 @@ class MeasureCompiler(PlanningLevelCompiler):
             self.widen(value, measure), d["aggregation"]["nonTime"], d["aggregation"]
         )
         grouped = None
-        if tx.get("mappingMode") == "resolve_multi_grain":
+        if tx.get("mappingMode") == "resolve_multi_grain" or tx.get(
+            "calendarResolution"
+        ):
             from .date_range_resolution import RangeMeasureAggregator
 
             grouped = RangeMeasureAggregator(
@@ -412,11 +424,7 @@ class MeasureCompiler(PlanningLevelCompiler):
             )
         )
         outputs = self.relationships.outputs(target)
-        added = [
-            k
-            for k in self.keys(target)
-            if self.relationships.resolve(source, outputs[k]) is None
-        ]
+        expansion_axes = self.relationships.expansion_axes(source, target)
         policy = measure["definition"]["aggregation"]
         aggregation_order = (
             ["nonTime", "time"]
@@ -426,7 +434,7 @@ class MeasureCompiler(PlanningLevelCompiler):
         expanded = []
         value = "p." + q(VALUE)
         for axis in reversed(aggregation_order):
-            if not any(outputs[k].is_time == (axis == "time") for k in added):
+            if axis not in expansion_axes:
                 continue
             axis_keys = [
                 k for k in self.keys(target) if outputs[k].is_time == (axis == "time")

@@ -136,6 +136,12 @@ export type ResolutionDateRange = {
   startColumnId: string
   endColumnId: string
 }
+export type CalendarResolution = {
+  dimensionId: string
+  startColumnId: string
+  endColumnId: string
+  selectedColumnIds: string[]
+}
 export type GrainResolution = {
   axes: {
     grainColumnId: string
@@ -156,6 +162,7 @@ export type Transaction = Semantic & {
     planningLevelId: string
     mappingMode: 'direct' | 'resolve_multi_grain'
     resolution?: GrainResolution | null
+    calendarResolution?: CalendarResolution | null
     keyMappings: { sourceColumnId: string; grainColumnId: string }[]
     expectedRowsPerGrain: 'zero_or_one' | 'many'
     unmatchedGrainPolicy: 'reject'
@@ -200,7 +207,7 @@ export type RefDefinition = MeasureCommon & {
   valueColumnId: string
   aggregation: Aggregation
   missingTransactionValue: 'null' | 'zero'
-  sourceNullPolicy: 'reject' | 'preserve'
+  sourceNullPolicy: 'preserve'
   allocation: {
     mode: 'none' | 'equal' | 'weighted' | 'weighted_by_self'
     basisMeasureId?: string | null

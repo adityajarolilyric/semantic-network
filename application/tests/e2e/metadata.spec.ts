@@ -224,8 +224,8 @@ test('manage from the source grid and capture PLT/PT metadata without visible in
   }
   await page.getByRole('button', { name: 'Create measure', exact: true }).click()
   await page.getByLabel('Name', { exact: true }).fill('Error')
-  await page.getByLabel('Measure type', { exact: true }).selectOption('calculated')
-  await page.getByLabel('Native planning level', { exact: true }).selectOption({ label: 'PT' })
+  await page.getByRole('radio', { name: 'Calculated', exact: true }).check()
+  await page.getByLabel('Output Planning Level', { exact: true }).selectOption({ label: 'PT' })
   await page.getByLabel('Formula', { exact: true }).fill('ABS(FQTY-SQTY)')
   await save(page)
   await page.reload()
@@ -352,6 +352,23 @@ test('manage from the source grid and capture PLT/PT metadata without visible in
   ).toBeTruthy()
   await page.screenshot({ path: 'test-results/planning-view-mobile.png', fullPage: true })
   await page.setViewportSize({ width: 1440, height: 1000 })
+  await nav(page, 'Measures')
+  await nav(page, 'Planning View')
+  await expect(page.getByLabel('FQTY', { exact: true })).toBeChecked()
+  await expect(
+    page.getByRole('button', { name: 'Remove Product · product_code from rows', exact: true }),
+  ).toBeVisible()
+  await expect(
+    page.getByRole('button', { name: 'Edit SQTY · P1 / 2026-10-31', exact: true }),
+  ).toContainText('150')
+  await page.reload()
+  await expect(page.getByLabel('FQTY', { exact: true })).toBeChecked()
+  await expect(
+    page.getByRole('button', { name: 'Edit SQTY · P1 / 2026-10-31', exact: true }),
+  ).toContainText('150')
+  await page.getByRole('button', { name: 'Clear selections', exact: true }).click()
+  await expect(page.getByLabel('FQTY', { exact: true })).not.toBeChecked()
+  expect(await page.evaluate(() => Object.keys(localStorage))).toEqual([])
   await nav(page, 'Sources')
   await page.getByRole('checkbox', { name: 'Manage UI_Product', exact: true }).uncheck()
   await expect(page.getByRole('alert')).toBeVisible()

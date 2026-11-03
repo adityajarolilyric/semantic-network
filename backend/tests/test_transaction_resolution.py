@@ -102,15 +102,14 @@ def test_resolution_contract_rejects_incomplete_or_ambiguous_configuration(mutat
         TransactionDefinition.model_validate(d)
 
 
-def test_resolution_requires_every_native_axis_and_explicit_sequence():
+def test_resolution_requires_every_native_axis_and_accepts_explicit_text_order():
     p = planner()
     p.config["axes"][0]["grainColumnId"] = "wrong"
     with pytest.raises(MetadataError, match="every native grain axis"):
         p.validate()
     d = config()
     d["resolution"]["orderColumnIds"] = ["member"]
-    with pytest.raises(MetadataError, match="integer or date"):
-        planner(d)
+    assert planner(d).config["orderColumnIds"] == ["member"]
 
 
 def test_resolution_profile_validation_and_stable_schema():

@@ -115,7 +115,7 @@ def test_attribute_hierarchy_requires_binding_and_uses_dimension_identity():
 
 def test_null_disaggregation_is_canonical_repeat():
     assert Allocation(mode=None).mode == "none"
-    assert Allocation().mode == "none"
+    assert Allocation().mode == "weighted_by_self"
     payload = {
         "measureType": "referenced",
         "transactionId": "tx",
@@ -129,4 +129,36 @@ def test_null_disaggregation_is_canonical_repeat():
     assert definition.allocation.mode == "none"
     assert (
         definition.aggregation.nonTime == "avg" and definition.aggregation.time == "max"
+    )
+
+
+def test_base_visibility_endpoint_reuses_proven_level_relationships(populated):
+    from .conftest import ROOT
+    from backend.app.engine.relationships import LevelRelationshipAnalyzer
+    from .conftest import EXAMPLE
+
+    levels = [o for o in EXAMPLE["semantic_objects"] if o["kind"] == "planningLevel"]
+    analyzer = LevelRelationshipAnalyzer(EXAMPLE["semantic_objects"])
+    for level in levels:
+        result = populated.get(
+            ROOT + "/measures/execution/base-visibility",
+            params={"nativePlanningLevelId": level["objectId"]},
+        )
+        assert result.status_code == 200, result.text
+        data = result.json()
+        assert data["baseLevelId"] == "pl_plt"
+        assert (
+            data["relationship"]
+            == analyzer.analyze(level["objectId"], "pl_plt")["relationship"]
+        )
+        if data["relationship"] == "roll_down":
+            assert data["expansionAxes"] == analyzer.expansion_axes(
+                level["objectId"], "pl_plt"
+            )
+    assert (
+        populated.get(
+            ROOT + "/measures/execution/base-visibility",
+            params={"nativePlanningLevelId": "missing"},
+        ).status_code
+        == 404
     )

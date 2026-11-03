@@ -1,4 +1,6 @@
-import { useState } from 'react'
+import { MeasureBaseVisibility } from './MeasureBaseVisibility'
+import { FieldHelp } from '../../components/FieldHelp'
+import { useId, useState } from 'react'
 import { formatFormula, parseFormula, formulaUnit } from '../formula'
 import { referencedResultType } from '../measureTypes'
 import type { Aggregation, CalcDefinition, Measure, RefDefinition } from '../types'
@@ -16,7 +18,9 @@ export function MeasureEditor({
   onSave,
   onCancel,
   busy,
-}: EditorProps<Measure>) {
+  base,
+  baseLevelId,
+}: EditorProps<Measure> & { base?: string; baseLevelId?: string | null }) {
   const [value, set] = useState(initial)
   const [text, setText] = useState(
     initial.definition.measureType === 'calculated'
@@ -59,6 +63,34 @@ export function MeasureEditor({
             aggregation.allNullResult === 'null',
         )
       : null
+  const typeGroupId = useId()
+  const changeMeasureType = (type: 'referenced' | 'calculated') => {
+    const common = {
+      nativePlanningLevelId: '',
+      resultType: { type: 'number' as const, nullable: true },
+      editable: false,
+    }
+    const definition: RefDefinition | CalcDefinition =
+      type === 'referenced'
+        ? {
+            ...common,
+            measureType: 'referenced',
+            transactionId: '',
+            valueColumnId: '',
+            aggregation: defaultAggregation,
+            missingTransactionValue: 'null',
+            sourceNullPolicy: 'preserve',
+            allocation: { mode: 'weighted_by_self' },
+          }
+        : {
+            ...common,
+            measureType: 'calculated',
+            calculationType: 'AggregateFirst',
+            formula: { displayText: '', expression: { type: 'literal', value: 0 } },
+          }
+    set({ ...value, definition })
+    setError('')
+  }
   return (
     <form
       onSubmit={(e) => {
@@ -111,37 +143,30 @@ export function MeasureEditor({
       }}
     >
       <IdentityFields value={value} editing={editing} onChange={(v) => set({ ...value, ...v })} />
-      <Select
-        label="Measure type"
-        value={d.measureType}
-        items={['referenced', 'calculated']}
-        onChange={(type) => {
-          const common = {
-            nativePlanningLevelId: '',
-            resultType: { type: 'number' as const, nullable: true },
-            editable: false,
-          }
-          const definition: RefDefinition | CalcDefinition =
-            type === 'referenced'
-              ? {
-                  ...common,
-                  measureType: 'referenced',
-                  transactionId: '',
-                  valueColumnId: '',
-                  aggregation: defaultAggregation,
-                  missingTransactionValue: 'null',
-                  sourceNullPolicy: 'reject',
-                  allocation: { mode: 'none' },
-                }
-              : {
-                  ...common,
-                  measureType: 'calculated',
-                  calculationType: 'AggregateFirst',
-                  formula: { displayText: '', expression: { type: 'literal', value: 0 } },
-                }
-          set({ ...value, definition })
-        }}
-      />
+      <fieldset className="measure-type-control" disabled={busy}>
+        <legend>
+          Measure type <FieldHelp label="Measure type" />
+        </legend>
+        <div className="measure-type-switch">
+          {(
+            [
+              ['referenced', 'Reference'],
+              ['calculated', 'Calculated'],
+            ] as const
+          ).map(([type, label]) => (
+            <label key={type} className="measure-type-option">
+              <input
+                type="radio"
+                name={typeGroupId}
+                value={type}
+                checked={d.measureType === type}
+                onChange={() => changeMeasureType(type)}
+              />
+              <span>{label}</span>
+            </label>
+          ))}
+        </div>
+      </fieldset>
       {d.measureType === 'referenced' && (
         <>
           <div className="meta-grid">
@@ -169,15 +194,24 @@ export function MeasureEditor({
               onChange={(valueColumnId) => update({ valueColumnId })}
             />
           </div>
-          <p className="meta-hint">
-            Native level:{' '}
-            {data.planningLevels.find((l) => l.objectId === d.nativePlanningLevelId)?.name ??
-              'Choose a transaction'}
-          </p>
+          <div className="measure-output-level" role="group" aria-label="Output Planning Level">
+            <span className="field-label-with-help">
+              Output Planning Level <FieldHelp label="Output Planning Level" />
+            </span>
+            <strong>
+              {data.planningLevels.find((l) => l.objectId === d.nativePlanningLevelId)?.name ??
+                'Choose a transaction'}
+            </strong>
+          </div>
         </>
       )}
       {d.measureType === 'referenced' ? (
         <>
+          <Check
+            label="Editable measure"
+            value={d.editable}
+            onChange={(editable) => update({ editable })}
+          />
           <div className="meta-grid">
             <Select
               label="Missing transaction value"
@@ -185,28 +219,19 @@ export function MeasureEditor({
               items={['null', 'zero']}
               onChange={(v) => update({ missingTransactionValue: v as 'null' | 'zero' })}
             />
-            <Select
-              label="Source null policy"
-              value={d.sourceNullPolicy}
-              items={['reject', 'preserve']}
-              onChange={(v) => update({ sourceNullPolicy: v as 'reject' | 'preserve' })}
-            />
           </div>
-          <Check
-            label="Editable measure"
-            value={d.editable}
-            onChange={(editable) => update({ editable })}
-          />
         </>
       ) : (
         <>
           <div className="meta-grid">
-            <Select
-              label="Native planning level"
-              value={d.nativePlanningLevelId}
-              items={options(data.planningLevels)}
-              onChange={(nativePlanningLevelId) => update({ nativePlanningLevelId })}
-            />
+            <div className="measure-output-level">
+              <Select
+                label="Output Planning Level"
+                value={d.nativePlanningLevelId}
+                items={options(data.planningLevels)}
+                onChange={(nativePlanningLevelId) => update({ nativePlanningLevelId })}
+              />
+            </div>
             <Select
               label="Calculation type"
               value={d.calculationType}
@@ -218,6 +243,7 @@ export function MeasureEditor({
                     ...d,
                     calculationType: v as 'AggregateFirst' | 'CalculateFirst',
                     aggregation: v === 'CalculateFirst' ? defaultAggregation : null,
+                    allocation: v === 'CalculateFirst' ? { mode: 'weighted_by_self' } : null,
                   },
                 })
               }
@@ -315,7 +341,9 @@ export function MeasureEditor({
           </div>
         </>
       )}
-      {(d.measureType === 'referenced' || d.calculationType === 'CalculateFirst') && (
+      {(d.measureType === 'referenced' ||
+        (d.calculationType === 'CalculateFirst' &&
+          !(baseLevelId && d.nativePlanningLevelId === baseLevelId))) && (
         <>
           <h3>Dis-Aggregation policies</h3>
           <p className="meta-hint">
@@ -358,11 +386,18 @@ export function MeasureEditor({
           </p>
           {d.allocation?.mode === 'weighted_by_self' && (
             <p className="meta-hint">
-              Uses this measure’s existing base-level values as proportional weights.
+              Uses this measure’s populated values at the edit write level (Base when reachable,
+              otherwise its output level) as proportional weights.
             </p>
           )}
         </>
       )}
+      <MeasureBaseVisibility
+        definition={d}
+        levels={data.planningLevels}
+        base={base}
+        baseLevelId={baseLevelId}
+      />
       {error && (
         <p className="meta-error" role="alert">
           {error}

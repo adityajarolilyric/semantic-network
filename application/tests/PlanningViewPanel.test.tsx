@@ -1,6 +1,6 @@
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import {
   PlanningPivot,
   PlanningViewPanel,
@@ -52,6 +52,16 @@ const result: PlanningViewResult = {
     explanation: 'Uses a compatible materialised grain.',
   },
 }
+const storedPreferences = new Map<string, string>()
+beforeEach(() => {
+  storedPreferences.clear()
+  vi.stubGlobal('localStorage', {
+    getItem: (key: string) => storedPreferences.get(key) ?? null,
+    setItem: (key: string, value: string) => storedPreferences.set(key, value),
+    removeItem: (key: string) => storedPreferences.delete(key),
+    clear: () => storedPreferences.clear(),
+  })
+})
 afterEach(() => vi.restoreAllMocks())
 
 it('submits explicit axes and measure IDs, and renders a multi-measure pivot without client aggregation', async () => {
@@ -202,4 +212,68 @@ it('edits only eligible existing cells and sends generation-bound member coordin
   expect(await screen.findByRole('button', { name: 'Edit FQTY · A / North' })).toHaveTextContent(
     '50',
   )
+})
+
+it('restores selections and loads fresh results after navigation, then supports manual cleanup', async () => {
+  const user = userEvent.setup()
+  let calls = 0
+  vi.spyOn(metadataApi, 'request').mockImplementation(async (path) => {
+    if (path.endsWith('/options')) return { ...options, buildId: 'build_one' } as never
+    calls++
+    return { ...result, rows: [['A', 'North', String(calls), '3']] } as never
+  })
+  const first = render(<PlanningViewPanel base="/models/m/revisions/r" revisionVersion={1} />)
+  await user.selectOptions(await screen.findByLabelText('Add rows attribute'), 'product:brand')
+  await user.selectOptions(screen.getByLabelText('Add columns attribute'), 'location:zone')
+  await user.click(screen.getByLabelText('FQTY'))
+  await user.click(screen.getByRole('button', { name: 'Update pivot' }))
+  await screen.findByText('Data from BrandZone')
+  const cached = JSON.parse([...storedPreferences.values()][0])
+  expect(cached.rows).toEqual([{ dimensionId: 'product', columnId: 'brand' }])
+  expect(cached.columns).toEqual([{ dimensionId: 'location', columnId: 'zone' }])
+  expect(cached.measures).toEqual(['f'])
+  expect(cached).not.toHaveProperty('result')
+  first.unmount()
+  render(<PlanningViewPanel base="/models/m/revisions/r" revisionVersion={2} />)
+  await screen.findByText('Data from BrandZone')
+  expect(screen.getByLabelText('FQTY')).toBeChecked()
+  expect(screen.getByRole('button', { name: 'Remove Product · Brand from rows' })).toBeVisible()
+  expect(calls).toBe(2)
+  await user.click(screen.getByRole('button', { name: 'Clear selections' }))
+  expect(screen.getByLabelText('FQTY')).not.toBeChecked()
+  expect(screen.queryByRole('table')).not.toBeInTheDocument()
+  expect(storedPreferences.size).toBe(0)
+})
+it('resets selections after a successful new build and isolates other revisions', async () => {
+  const user = userEvent.setup()
+  let buildId = 'one'
+  vi.spyOn(metadataApi, 'request').mockImplementation(async (path) =>
+    path.endsWith('/options') ? ({ ...options, buildId } as never) : (result as never),
+  )
+  const first = render(<PlanningViewPanel base="/models/m/revisions/r" revisionVersion={1} />)
+  await user.click(await screen.findByLabelText('FQTY'))
+  first.unmount()
+  const other = render(<PlanningViewPanel base="/models/m/revisions/other" revisionVersion={1} />)
+  expect(await screen.findByLabelText('FQTY')).not.toBeChecked()
+  other.unmount()
+  buildId = 'two'
+  render(<PlanningViewPanel base="/models/m/revisions/r" revisionVersion={2} />)
+  expect(await screen.findByLabelText('FQTY')).not.toBeChecked()
+  expect(storedPreferences.size).toBe(0)
+})
+it('detects rebuilds before querying a layout that is still open', async () => {
+  const user = userEvent.setup()
+  let buildId = 'one'
+  const request = vi
+    .spyOn(metadataApi, 'request')
+    .mockImplementation(async (path) =>
+      path.endsWith('/options') ? ({ ...options, buildId } as never) : (result as never),
+    )
+  render(<PlanningViewPanel base="/models/m/revisions/r" revisionVersion={1} />)
+  await user.click(await screen.findByLabelText('FQTY'))
+  buildId = 'two'
+  await user.click(screen.getByRole('button', { name: 'Update pivot' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent('Semantic Network was rebuilt')
+  expect(screen.getByLabelText('FQTY')).not.toBeChecked()
+  expect(request.mock.calls.some(([path]) => path.endsWith('/query'))).toBe(false)
 })

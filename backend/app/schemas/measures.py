@@ -39,7 +39,7 @@ class Aggregation(Schema):
 
 
 class Allocation(Schema):
-    mode: Literal["none", "equal", "weighted", "weighted_by_self"] = "none"
+    mode: Literal["none", "equal", "weighted", "weighted_by_self"] = "weighted_by_self"
 
     @field_validator("mode", mode="before")
     @classmethod
@@ -65,14 +65,21 @@ class ReferencedMeasureDefinition(Schema):
     resultType: ResultType = Field(default_factory=ResultType)
     aggregation: Aggregation
     missingTransactionValue: Literal["null", "zero"] = "null"
-    sourceNullPolicy: Literal["reject", "preserve"] = "reject"
+    sourceNullPolicy: Literal["preserve"] = "preserve"
+
+    @field_validator("sourceNullPolicy", mode="before")
+    @classmethod
+    def preserve_source_nulls(cls, value):
+        # Accept the former choice when reading/updating existing metadata.
+        return "preserve" if value == "reject" else value
+
     overflowPolicy: Literal["error"] = "error"
     allocation: Allocation = Field(default_factory=Allocation)
 
     @field_validator("allocation", mode="before")
     @classmethod
     def default_repeat(cls, value):
-        return {} if value is None else value
+        return {"mode": "none"} if value is None else value
 
     editable: bool = False
 
@@ -91,6 +98,11 @@ class CalculatedMeasureDefinition(Schema):
 
     @model_validator(mode="after")
     def validate_aggregation(self):
+        if (
+            self.calculationType == "CalculateFirst"
+            and "allocation" not in self.model_fields_set
+        ):
+            self.allocation = Allocation()
         if self.calculationType == "CalculateFirst" and self.aggregation is None:
             raise ValueError(
                 "CalculateFirst requires aggregation rules for its stored result"

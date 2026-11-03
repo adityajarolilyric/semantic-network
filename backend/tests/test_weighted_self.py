@@ -79,3 +79,44 @@ def test_hidden_business_fields_default_without_inventing_units(populated):
     response = populated.post(ROOT + "/measures", json=payload)
     assert response.status_code == 201, response.text
     assert response.json()["business"] == {"unit": None, "aliases": []}
+
+
+def test_new_referenced_measure_defaults_to_weighted_by_self(populated):
+    payload = definition("measure_sqty")
+    payload["objectId"] = "default_self"
+    payload["definition"].pop("allocation", None)
+    response = populated.post(ROOT + "/measures", json=payload)
+    assert response.status_code == 201, response.text
+    assert response.json()["definition"]["allocation"]["mode"] == "weighted_by_self"
+
+
+def test_calculate_first_defaults_to_self_but_aggregate_first_does_not():
+    from backend.app.schemas.measures import CalculatedMeasureDefinition
+
+    d = {
+        "measureType": "calculated",
+        "nativePlanningLevelId": "native",
+        "calculationType": "CalculateFirst",
+        "formula": {"displayText": "1", "expression": {"type": "literal", "value": 1}},
+        "aggregation": {"nonTime": "sum", "time": "sum"},
+    }
+    assert (
+        CalculatedMeasureDefinition.model_validate(d).allocation.mode
+        == "weighted_by_self"
+    )
+    d.update(calculationType="AggregateFirst", aggregation=None)
+    assert CalculatedMeasureDefinition.model_validate(d).allocation is None
+
+
+@pytest.mark.parametrize("allocation", [None, {}, {"mode": "none"}, {"mode": "equal"}])
+def test_saved_measure_policies_keep_their_previous_meaning(allocation):
+    from backend.app.services.measure_types import normalize_measure
+
+    payload = definition("measure_sqty")
+    payload["definition"]["allocation"] = allocation
+    normalized = normalize_measure(payload)["definition"]["allocation"]
+    assert normalized["mode"] == (
+        "equal" if allocation == {"mode": "equal"} else "none"
+    )
+    payload["definition"].pop("allocation")
+    assert normalize_measure(payload)["definition"]["allocation"]["mode"] == "none"

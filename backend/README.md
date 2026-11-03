@@ -75,7 +75,7 @@ Referenced measures store:
 
 ```json
 {
-  "sourceNullPolicy": "reject",
+  "sourceNullPolicy": "preserve",
   "missingTransactionValue": "null",
   "aggregation": {
     "nonTime": "sum",
@@ -86,7 +86,7 @@ Referenced measures store:
 }
 ```
 
-- `definition.sourceNullPolicy`: `reject` (default) reports an error for NULL in an existing source row's selected value column; `preserve` passes that NULL to aggregation. This is independent of physical column nullability and of missing joined rows.
+- `definition.sourceNullPolicy` is fixed to `preserve`: existing source NULL values pass through to aggregation. Legacy `reject` inputs are normalized to `preserve`. There is no UI selector. Aggregation null policies, missing joined rows and result nullability remain separate.
 - `definition.aggregation.nullInputPolicy`: `ignore` (default) excludes NULL values from the aggregate inputs; `propagate` makes any group containing NULL return NULL. With Preserve and SUM over `[10, null, 20]`, Ignore returns `30` and Propagate returns `null`. AVG with Ignore returns `15`, not `10`.
 - `definition.aggregation.allNullResult`: under Ignore, an all-null group returns `null` (default) or `zero`. With Preserve, Ignore, and `[null, null]`, the chosen output is NULL or 0. Inputs `[0, 0]` are actual values and SUM to zero regardless of this setting.
 - `definition.missingTransactionValue`: determines `null` (default) versus `zero` when an aggregated transaction has no row for a native planning-level key after the LEFT JOIN. It does not replace NULLs in existing source rows.

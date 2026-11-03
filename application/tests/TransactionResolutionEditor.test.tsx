@@ -151,3 +151,50 @@ it('requires complete date-range metadata and an explicit time distribution poli
   config.values[0].timeMode = 'copy'
   expect(resolutionComplete(config)).toBe(true)
 })
+
+it('shows retained columns above order and allows retained text as application order', async () => {
+  const config: GrainResolution = {
+    axes: [],
+    values: [{ sourceColumnId: 'quantity', mode: 'split' }],
+    orderColumnIds: [],
+    partitionColumnIds: [],
+    passthroughColumnIds: [],
+    overlapPolicy: 'last_applied_wins',
+  }
+  function Harness() {
+    const [value, set] = useState(config)
+    return (
+      <TransactionResolutionEditor
+        value={value}
+        onChange={set}
+        sourceId="s"
+        level={{
+          objectId: 'pl',
+          kind: 'planningLevel',
+          name: 'P',
+          displayName: 'P',
+          description: '',
+          definition: {
+            population: { operation: 'source', sourceId: 's' },
+            grain: { keyIds: [], columns: [] },
+            dimensionBindings: [],
+          },
+        }}
+        columns={[
+          { columnId: 'promo', name: 'promo_id', physicalType: 'String', nullable: false },
+          { columnId: 'quantity', name: 'quantity', physicalType: 'Float64', nullable: false },
+        ]}
+      />
+    )
+  }
+  render(<Harness />)
+  expect(screen.queryByText('More resolution settings')).not.toBeInTheDocument()
+  const retained = screen.getByRole('group', { name: 'Additional columns to retain' })
+  const order = screen.getByRole('combobox', { name: 'Apply-order column' })
+  expect(retained.compareDocumentPosition(order) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  await userEvent.click(screen.getByRole('checkbox', { name: 'promo_id' }))
+  await userEvent.selectOptions(order, 'promo')
+  expect(order).toHaveValue('promo')
+  expect(screen.getByRole('checkbox', { name: 'promo_id' })).toBeChecked()
+  expect(order.querySelector('option[value="quantity"]')).toBeNull()
+})

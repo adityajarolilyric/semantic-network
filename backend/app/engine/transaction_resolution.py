@@ -7,7 +7,7 @@ from ..warehouse.repository import quote_identifier as q, quote_literal as lit
 from .contracts import Check, digest
 from .relationships import Coordinate, LevelRelationshipAnalyzer
 
-RESOLUTION_POLICY = "transaction-resolution-v2-day-range"
+RESOLUTION_POLICY = "transaction-resolution-v3-calendar-stage"
 
 
 def key_id(transaction_id, grain_id):
@@ -25,7 +25,10 @@ class TransactionResolutionPlanner:
         self.d = transaction["definition"]
         self.config = self.d["resolution"]
         self.level = self.objects[self.d["planningLevelId"]]
-        self.columns = {c["columnId"]: c for c in source_columns}
+        from .calendar_resolution import CalendarResolutionPlanner
+
+        self.calendar = CalendarResolutionPlanner(objects, transaction, source_columns)
+        self.columns = {c["columnId"]: c for c in self.calendar.schema()}
         self.relationships = LevelRelationshipAnalyzer(objects)
         self.rules = [r for a in self.config["axes"] for r in a["rules"]]
         from .date_range_resolution import DateRangePlanner
@@ -112,14 +115,19 @@ class TransactionResolutionPlanner:
                 "invalid_resolution_column",
                 "A configured matching, order or value column is missing from the managed schema.",
             )
-        for index, cid in enumerate(self.config["orderColumnIds"]):
+        for cid in self.config["orderColumnIds"]:
             typ = self.columns[cid]["physicalType"]
+            while typ.startswith(("Nullable(", "LowCardinality(")) and typ.endswith(
+                ")"
+            ):
+                typ = typ[typ.index("(") + 1 : -1]
             if not re.match(
-                r"^(?:U?Int\d+|Date(?:Time(?:64)?)?(?:\(|$))", typ
-            ) and not (index > 0 and "String" in typ):
+                r"^(?:U?Int\d+|Float\d+|Decimal(?:\d+)?\(|String$|FixedString\(|Date|Bool$|UUID$|Enum\d+\()",
+                typ,
+            ):
                 raise MetadataError(
                     "invalid_resolution_order",
-                    "Application order must start with an integer or date/timestamp column. Tie-breakers may also use strings. Add an explicit sequence if the source has no stable order.",
+                    "Application order requires a sortable scalar column, such as text, a number or a date. Text uses alphabetical order.",
                 )
         self.date_range.validate()
         for value in self.config["values"]:
@@ -212,6 +220,9 @@ class TransactionResolutionPlanner:
                 }
             )
             used.add(col["name"])
+        if self.calendar.config:
+            columns.extend(self.calendar.added_columns()[-2:])
+            used.update(c["name"] for c in columns)
         if self.date_range.config:
             name = "Resolved date"
             while name in used:
@@ -270,6 +281,11 @@ class TransactionResolutionPlanner:
             )
         )
         for cid in cids:
+            if self.calendar.config and cid in (
+                self.calendar.date_id,
+                self.calendar.order_id,
+            ):
+                continue
             col = dict(self.columns[cid])
             base_name, name, suffix = col["name"], col["name"], 2
             while name in used:
@@ -293,6 +309,7 @@ class ResolvedTransaction:
     mappings: list
     matches: str
     latest_nodes: list
+    input_node: str | None = None
 
 
 class TransactionResolutionCompiler:
@@ -305,17 +322,37 @@ class TransactionResolutionCompiler:
         )
         self.d = transaction["definition"]
         self.source = host.managed[self.d["sourceId"]]
+        from .calendar_resolution import effective_calendar_objects
+
         self.planner = TransactionResolutionPlanner(
-            list(host.objects.values()), transaction, self.source["columns"]
+            effective_calendar_objects(list(host.objects.values()), host.managed),
+            transaction,
+            self.source["columns"],
         )
         self.config, self.level = self.planner.config, self.d["planningLevelId"]
 
     def compile(self):
         h, p, config = self.host, self.planner, self.config
         source_table = h.table(self.source["physicalName"])
+        calendar_enabled = bool(p.calendar.config)
+        if calendar_enabled:
+            from .calendar_resolution import CalendarResolutionCompiler
+
+            expanded = CalendarResolutionCompiler(h, self.tx).compile()
+            source_table = (
+                "("
+                + "SELECT "
+                + ", ".join(
+                    q(cid) + " AS " + q(c["name"]) for cid, c in p.columns.items()
+                )
+                + ", __calendar_days FROM "
+                + q(expanded)
+                + ")"
+            )
         raw = h.cte(
             "SELECT "
             + ", ".join(q(c["name"]) + " AS " + q(cid) for cid, c in p.columns.items())
+            + (", __calendar_days" if calendar_enabled else "")
             + " FROM "
             + source_table
         )
@@ -331,6 +368,17 @@ class TransactionResolutionCompiler:
                 ]
             )
         )
+        if calendar_enabled:
+            payload_ids = list(
+                dict.fromkeys(
+                    [
+                        *payload_ids,
+                        p.calendar.date_id,
+                        p.calendar.order_id,
+                        "__calendar_days",
+                    ]
+                )
+            )
         payload = "tuple(" + ", ".join(q(cid) for cid in payload_ids) + ")"
         order = "tuple(" + ", ".join(q(cid) for cid in order_ids) + ")"
         h.assertions.append(
@@ -347,7 +395,7 @@ class TransactionResolutionCompiler:
             else "tuple(0)"
         )
         flagged = h.cte(
-            f"SELECT {', '.join(q(c['name']) + ' AS ' + q(cid) for cid, c in p.columns.items())}, {flag_sql} AS __profile FROM {source_table}"
+            f"SELECT {', '.join(q(c['name']) + ' AS ' + q(cid) for cid, c in p.columns.items())}{', __calendar_days' if calendar_enabled else ''}, {flag_sql} AS __profile FROM {source_table}"
         )
         known_profiles = ", ".join(
             "tuple(" + ", ".join(str(v) for v in profile) + ")"
@@ -439,6 +487,8 @@ class TransactionResolutionCompiler:
                     )
                 )
             group = [*criteria, *date_range.bound_names, *partitions]
+            if calendar_enabled:
+                group.append(p.calendar.date_id)
             group_sql = ", ".join(q(c) for c in group)
             prefix = group_sql + ", " if group else ""
             h.assertions.append(
@@ -461,9 +511,27 @@ class TransactionResolutionCompiler:
             ]
             scope = [f"e.{q(c)} AS {q(c)}" for c in partitions]
             partition = ", ".join("e." + q(c) for c in group) or "1"
-            branch = date_range.match_branch(
-                latest, native, joins, native_keys, scope, partition
-            )
+            if not calendar_enabled:
+                branch = date_range.match_branch(
+                    latest, native, joins, native_keys, scope, partition
+                )
+            else:
+                join = (
+                    f"INNER JOIN {q(native)} n ON {joins}"
+                    if joins
+                    else f"CROSS JOIN {q(native)} n"
+                )
+                fields = [
+                    *native_keys,
+                    *scope,
+                    "e.__payload AS __payload",
+                    "e.__order AS __order",
+                    f"count() OVER (PARTITION BY {partition}) AS __children",
+                    f"tupleElement(e.__payload,{payload_ids.index('__calendar_days') + 1}) AS __periods",
+                    f"e.{q(p.calendar.date_id)} AS __resolved_day",
+                    f"tupleElement(e.__payload,{payload_ids.index(p.calendar.order_id) + 1}) AS __resolved_order",
+                ]
+                branch = h.cte(f"SELECT {', '.join(fields)} FROM {q(latest)} e {join}")
             date_range.coverage(latest, original_native, criteria, joins)
             # Initial coverage, before overwrites: no source assignment may disappear.
             # Explicit membership is checked by reusing the same selective conditions.
@@ -508,11 +576,15 @@ class TransactionResolutionCompiler:
                 (
                     f"(SELECT any(__resolved_order) FROM {q(date_range.calendar)}) AS __resolved_order"
                     if date_range.enabled
-                    else "toUInt8(0) AS __resolved_order"
+                    else (
+                        f"CAST(NULL AS Nullable({next(c['physicalType'] for c in p.calendar.added_columns() if c['columnId'] == p.calendar.order_id)})) AS __resolved_order"
+                        if calendar_enabled
+                        else "toUInt8(0) AS __resolved_order"
+                    )
                 ),
                 *(
                     ["toDate32('1970-01-01') AS __resolved_day"]
-                    if date_range.enabled
+                    if date_range.enabled or calendar_enabled
                     else []
                 ),
             ]
@@ -521,7 +593,7 @@ class TransactionResolutionCompiler:
             )
         group = [
             *native_ids,
-            *(["__resolved_day"] if date_range.enabled else []),
+            *(["__resolved_day"] if date_range.enabled or calendar_enabled else []),
             *partitions,
         ]
         grouped = ", ".join(q(c) for c in group)
@@ -550,12 +622,23 @@ class TransactionResolutionCompiler:
             q(native_ids[i]) + " AS " + q(key_id(self.tx["objectId"], k))
             for i, k in enumerate(keys)
         ]
+        if calendar_enabled:
+            selected += [
+                q("__resolved_day") + " AS " + q(p.calendar.date_id),
+                "tupleElement(__winner,4) AS " + q(p.calendar.order_id),
+            ]
         if date_range.enabled:
             selected.append(q("__resolved_day") + " AS " + q(p.date_range.date_id))
             selected.append("tupleElement(__winner,4) AS " + q(p.date_range.order_id))
         modes = {v["sourceColumnId"]: v["mode"] for v in config["values"]}
         time_modes = {v["sourceColumnId"]: v.get("timeMode") for v in config["values"]}
         for cid in payload_ids:
+            if calendar_enabled and cid in (
+                p.calendar.date_id,
+                p.calendar.order_id,
+                "__calendar_days",
+            ):
+                continue
             value = (
                 f"tupleElement(tupleElement(__winner,1),{payload_ids.index(cid) + 1})"
             )
@@ -563,7 +646,9 @@ class TransactionResolutionCompiler:
                 value = f"toFloat64({value})"
                 if modes[cid] == "split":
                     value += "/tupleElement(__winner,2)"
-                if date_range.enabled and time_modes[cid] == "split":
+                if (date_range.enabled or calendar_enabled) and time_modes[
+                    cid
+                ] == "split":
                     value += "/tupleElement(__winner,3)"
             selected.append(value + " AS " + q(cid))
         node = h.cte(f"SELECT {', '.join(selected)} FROM {q(winner)}")
@@ -571,7 +656,7 @@ class TransactionResolutionCompiler:
             {"sourceColumnId": key_id(self.tx["objectId"], k), "grainColumnId": k}
             for k in keys
         ]
-        return ResolvedTransaction(node, columns, mappings, matches, latest_nodes)
+        return ResolvedTransaction(node, columns, mappings, matches, latest_nodes, raw)
 
 
 VALUE_NAME = "__value"
@@ -586,8 +671,34 @@ async def prepare_resolution_profiles(warehouse, objects, managed, limit, settin
         ):
             continue
         source = managed[tx["definition"]["sourceId"]]
-        planner = TransactionResolutionPlanner(objects, tx, source["columns"])
-        sql = planner.profile_sql(warehouse.qualify(source["physicalName"]), limit)
+        from .calendar_resolution import effective_calendar_objects
+
+        planner = TransactionResolutionPlanner(
+            effective_calendar_objects(objects, managed), tx, source["columns"]
+        )
+        table = warehouse.qualify(source["physicalName"])
+        compiler = None
+        if planner.calendar.config:
+            from .measure_compiler import MeasureCompiler
+            from .calendar_resolution import CalendarResolutionCompiler
+
+            compiler = MeasureCompiler(
+                warehouse.settings.clickhouse_database, objects, {}, managed, None
+            )
+            compiler.resolution_max_rows = warehouse.settings.resolution_max_rows
+            node = CalendarResolutionCompiler(compiler, tx).compile()
+            table = (
+                "(SELECT "
+                + ", ".join(
+                    q(cid) + " AS " + q(c["name"]) for cid, c in planner.columns.items()
+                )
+                + " FROM "
+                + q(node)
+                + ")"
+            )
+        sql = planner.profile_sql(table, limit)
+        if compiler:
+            sql = compiler.with_sql(sql)
 
         def discover(connect):
             return [

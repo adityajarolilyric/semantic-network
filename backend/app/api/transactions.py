@@ -2,7 +2,11 @@ from fastapi import Depends, Response
 
 from ..core.http import expected_version
 from ..schemas.common import Identifier
-from ..schemas.transactions import TransactionDocument, TransactionInput
+from ..schemas.transactions import (
+    TransactionDocument,
+    TransactionInput,
+    CalendarSchemaInput,
+)
 from ..services.transactions import TransactionService
 from .base import RevisionResourceAPI
 
@@ -11,9 +15,33 @@ class TransactionAPI(RevisionResourceAPI):
     def __init__(self, service: TransactionService, resolution=None):
         super().__init__(service, "transactions", TransactionDocument)
         self.resolution = resolution
+        self.router.add_api_route(
+            "/calendar/schema", self.calendar_schema, methods=["POST"]
+        )
+        self.router.add_api_route(
+            "/calendar/preview", self.calendar_preview, methods=["POST"]
+        )
         self.router.add_api_route("/resolution/options", self.options, methods=["GET"])
         self.router.add_api_route("/resolution/preview", self.preview, methods=["POST"])
         self.router.add_api_route("/{resource_id}/schema", self.schema, methods=["GET"])
+
+    async def calendar_schema(
+        self,
+        model_id: Identifier,
+        revision_id: Identifier,
+        payload: CalendarSchemaInput,
+    ):
+        return await self.resolution.calendar_schema(model_id, revision_id, payload)
+
+    async def calendar_preview(
+        self,
+        model_id: Identifier,
+        revision_id: Identifier,
+        payload: CalendarSchemaInput,
+    ):
+        return await self.resolution.preview(
+            model_id, revision_id, payload, calendar_only=True
+        )
 
     async def options(
         self, model_id: Identifier, revision_id: Identifier, planningLevelId: Identifier

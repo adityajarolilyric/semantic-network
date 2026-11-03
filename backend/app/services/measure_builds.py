@@ -739,6 +739,30 @@ class MeasureBuildService(Service):
                 result["state"] = "failed"
         return result
 
+    async def base_visibility(self, model, revision, native_id):
+        repo = self.store.repository
+        rev = await self.require(
+            repo, "semantic_revisions", scope(model, revision), "Revision"
+        )
+        objects = await self.effective(
+            repo, model, revision, await self.objects(repo, model, revision)
+        )
+        analyzer = LevelRelationshipAnalyzer(objects)
+        if native_id not in analyzer.levels:
+            raise MetadataError(
+                "not_found", "Output planning level was not found.", 404
+            )
+        base = rev["basePlanningLevelId"]
+        relation = analyzer.analyze(native_id, base)
+        return {
+            "baseLevelId": base,
+            "relationship": relation["relationship"],
+            "reason": relation.get("reason"),
+            "expansionAxes": analyzer.expansion_axes(native_id, base)
+            if relation["relationship"] == "roll_down"
+            else [],
+        }
+
     async def capabilities(self, model, revision, measure_id):
         repo = self.store.repository
         objects = await self.objects(repo, model, revision)

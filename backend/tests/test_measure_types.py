@@ -76,3 +76,33 @@ def test_legacy_definitions_are_interpreted_without_rewriting_stored_records():
         "nullable": True,
     }
     assert original["definition"]["resultType"]["type"] == "integer"
+
+
+@pytest.mark.parametrize("policy", [None, "reject", "preserve"])
+def test_source_null_handling_is_always_preserve_on_create_and_update(
+    populated, policy
+):
+    payload = definition("measure_fqty")
+    payload["objectId"] = "null_handling"
+    if policy is None:
+        payload["definition"].pop("sourceNullPolicy", None)
+    else:
+        payload["definition"]["sourceNullPolicy"] = policy
+    created = populated.post(ROOT + "/measures", json=payload)
+    assert created.status_code == 201, created.text
+    assert created.json()["definition"]["sourceNullPolicy"] == "preserve"
+    payload["definition"]["sourceNullPolicy"] = "reject"
+    updated = populated.put(
+        ROOT + "/measures/null_handling", json=payload, headers={"If-Match": "1"}
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["definition"]["sourceNullPolicy"] == "preserve"
+
+
+def test_existing_reject_metadata_is_read_as_preserve_without_mutation():
+    from backend.app.services.measure_types import normalize_measure
+
+    original = definition("measure_fqty")
+    original["definition"]["sourceNullPolicy"] = "reject"
+    assert normalize_measure(original)["definition"]["sourceNullPolicy"] == "preserve"
+    assert original["definition"]["sourceNullPolicy"] == "reject"

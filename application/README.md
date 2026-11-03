@@ -40,7 +40,7 @@ Run only this UI with `npm run dev:application`. Its Vite server proxies `/api` 
 
 On an empty installation, a default Planning Model and its first draft are created automatically. Model/revision selectors and new-version actions appear only on Sources. Mark a table as **Managed** in the source catalog grid, next to its preview shortcut. This captures the warehouse schema and saves its registration in MongoDB in one action. Business keys are chosen later in dimensions or transactions.
 
-Continue through **Managed Tables → Dimensions → Planning Levels → Transactions → Measures**. Managed Tables use the existing `inScope` availability flag plus a saved transformation definition and revision-owned view. Set the revision's base planning level on Planning Levels. Dimensions use a single column grid for source names, editable display names, keys, and exposure; all columns start exposed and users can deselect non-key attributes. Key columns are always exposed. Planning levels offer Select all/Deselect all for dimension attributes; distinct projections inherit complete parent lookup mappings from retained columns. Binding rows separately select a planning-level column and any column from the chosen dimension, including non-primary attributes. Grain names are inherited and cannot be edited in the UI. Technical IDs are internal. Dimensions also support time configuration; measures support referenced values and calculated formulas such as `ABS(FQTY-SQTY)` with AggregateFirst. Referenced measures select their Transaction and Value column directly below Measure type and use Float64 internally, with no data-type controls in the form. Precision/Scale controls are hidden; Dis-Aggregation policies appear below Aggregation policies and include Weighted by self, using existing base-level proportions during semantic-network builds. Unit and Aliases are hidden; existing metadata is preserved and undeclared units remain unspecified. Transaction creation does not ask for expected rows per grain. Execution aggregates each transaction by its mapped native keys, then LEFT JOINs it to the native planning population. Managed views, planning populations and measure materialisation are implemented.
+Continue through **Managed Tables → Dimensions → Planning Levels → Transactions → Measures**. Managed Tables use the existing `inScope` availability flag plus a saved transformation definition and revision-owned view. Set the revision's base planning level on Planning Levels. Dimensions use a single column grid for source names, editable display names, keys, and exposure; all columns start exposed and users can deselect non-key attributes. Key columns are always exposed. Planning levels offer Select all/Deselect all for dimension attributes; distinct projections inherit complete parent lookup mappings from retained columns. Binding rows separately select a planning-level column and any column from the chosen dimension, including non-primary attributes. Grain names are inherited and cannot be edited in the UI. Technical IDs are internal. Dimensions also support time configuration; measures support referenced values and calculated formulas such as `ABS(FQTY-SQTY)` with AggregateFirst. Referenced measures select their Transaction and Value column directly below Measure type and use Float64 internally, with no data-type controls in the form. Precision/Scale controls are hidden; Dis-Aggregation policies appear below Aggregation policies; new Reference and CalculateFirst measures default to Weighted by self for edits. Existing saved policies are preserved. Source materialisation follows aggregation-derived split/repeat. Unit and Aliases are hidden; existing metadata is preserved and undeclared units remain unspecified. Transaction creation does not ask for expected rows per grain. Execution aggregates each transaction by its mapped native keys, then LEFT JOINs it to the native planning population. Managed views, planning populations and measure materialisation are implemented.
 
 Each definition has create/edit/delete controls. Saved definitions are reloaded from MongoDB; the browser stores navigation and unsaved forms only. Validate and publish a completed revision, then use New Draft on Sources to clone it for later changes. A stale edit returns a conflict instead of overwriting another user's work; reload metadata and reopen the object to reconcile it. See [metadata authoring design](../docs/METADATA.md#shared-ui-and-field-help) and the [simplified UI decisions](../docs/METADATA.md#shared-ui-and-field-help) for the complete flow.
 
@@ -48,14 +48,9 @@ Each definition has create/edit/delete controls. Saved definitions are reloaded 
 
 These settings control missing values during semantic-network materialisation. The UI/API save the policies and the engine applies them to transaction aggregation, joins and measure calculations. **NULL means missing/unknown, not zero.**
 
-### Source null policy
+### Source NULL handling (fixed)
 
-Applies to the selected Value column in an **existing transaction row**, before aggregation:
-
-- **Reject** (`reject`, default): report a data-quality error if that source value is NULL. Do not silently drop the row or replace its value with zero.
-- **Preserve** (`preserve`): keep the NULL and let the aggregation policies decide its effect on the result.
-
-For example, a Sales row exists for Product P1 and a particular date, but its quantity cell is empty/NULL. Reject treats that as invalid input for the measure; Preserve passes the missing value through to aggregation. Saving the metadata declaration does not inspect the live transaction data for NULLs. A nullable source-column schema alone does not prove that its rows contain NULLs.
+The backend always preserves NULL values in existing transaction rows and passes them to the configured aggregation policies. There is no Source null policy control in the UI. Older `reject` definitions are interpreted as `preserve` without rewriting stored revisions. For example, an empty Sales quantity stays NULL until aggregation decides its effect.
 
 ### Null input policy (under Aggregation policies)
 
@@ -64,7 +59,7 @@ Controls an aggregation group that contains NULL inputs:
 - **Ignore** (`ignore`, default): aggregate the non-null values. For SUM of `[10, NULL, 20]`, the result is `30`; for AVG, it is `15`. Ignore does not convert NULL to zero.
 - **Propagate** (`propagate`): any NULL input makes that group's result NULL. SUM of `[10, NULL, 20]` therefore returns NULL.
 
-Source NULLs reach this step only when Source null policy is Preserve. At later rollups, NULL measure values can also come from missing transaction matches or previous calculations.
+Source NULLs always reach this step. At later rollups, NULL measure values can also come from missing transaction matches or previous calculations.
 
 ### All-null result policy (under Aggregation policies)
 
@@ -79,7 +74,7 @@ When Null input policy is Ignore and a group has **no non-null values**, this de
 
 A NULL quantity in a row is different from **no transaction row for a planning-level key**. After aggregating each transaction by its native keys, the engine will LEFT JOIN it to the native planning-level population. If no aggregate row matches, Missing transaction value determines `null` (default) versus `zero`.
 
-Consequently, Source null policy Reject does not reject an absent transaction row, and All-null result Zero does not by itself fill an absent native transaction group. An all-null group contains rows; an absent group has no row to join. Null input and All-null result policies also apply when subsequently rolling measure values up to a coarser grain.
+All-null result Zero does not by itself fill an absent native transaction group. An all-null group contains rows; an absent group has no row to join. Null input and All-null result policies also apply when subsequently rolling measure values up to a coarser grain.
 
 The calculated-measure definition also has a formula-level `nullInputPolicy`, currently fixed to `propagate`. This is separate from aggregation: for a formula such as `ABS(FQTY-SQTY)`, a NULL input produces a NULL result unless the expression explicitly handles it, for example with COALESCE.
 
@@ -166,3 +161,7 @@ Planning View now edits eligible referenced measures at native or proven coarser
 Managed pivots group pair discriminators/values with retained columns automatically, collapsing identical records. For attributes on separate rows, choose optional Record keys from retained fields, such as Customer ID. No Pivot Mode or interpretation control is shown. Existing saved behavior remains compatible. Raw pair inputs are consumed; generated outputs are available as optional primary keys before Save. See [pivot grouping and output keys](../docs/SOURCES_AND_MANAGED_TABLES.md#pivot-grouping-and-final-output-keys).
 
 Materialisation initialises finer measures from their aggregation policies: SUM axes split equally; other axes repeat, in reverse aggregation order. Dis-Aggregation policies configure edits only. Measures are stored to six decimal places and displayed to two; edit inputs retain the stored precision. Rebuild an older network through Materialise after this policy change.
+
+Transactions support an independent Date range resolution section: select Start/End, daily Time calendar and columns (for example Week and Month), preview the expanded input, then map those columns alongside Product/Location. Configuration is server-owned; previews show up to 100 rows. Existing axis-level date ranges reopen unchanged. See [transaction design](../docs/TRANSACTIONS.md#date-ranges-and-native-periods).
+
+Planning View remembers row/column attributes and measures in browser storage per model/revision. Returning or refreshing reloads fresh values with that layout. A successful Semantic Network rebuild or **Clear selections** resets the preferences; ordinary edits do not. No result values or semantic definitions are stored in the browser.

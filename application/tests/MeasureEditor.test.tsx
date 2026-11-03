@@ -4,7 +4,7 @@ import { expect, it, vi } from 'vitest'
 import { MeasureEditor, defaultAggregation } from '../src/metadata/editors/MeasureEditor'
 import { referencedResultType } from '../src/metadata/measureTypes'
 import { emptySnapshot, type Measure } from '../src/metadata/types'
-function setup(resolved = false) {
+function setup(resolved = false, baseLevelId?: string) {
   const data = emptySnapshot()
   const envelope = { modelId: 'm', revisionId: 'r', version: 1, createdAt: '', updatedAt: '' }
   data.sources = [
@@ -61,6 +61,24 @@ function setup(resolved = false) {
       overlapPolicy: 'last_applied_wins',
     }
   }
+  if (baseLevelId) {
+    data.planningLevels = ['pt', 'other'].map((objectId) => ({
+      ...envelope,
+      objectId,
+      kind: 'planningLevel',
+      name: objectId,
+      displayName: objectId,
+      description: '',
+      definition: {
+        population: { operation: 'source', sourceId: 'source' },
+        grain: {
+          keyIds: ['key'],
+          columns: [{ grainColumnId: 'key', name: 'key', populationRef: { columnId: 'integer' } }],
+        },
+        dimensionBindings: [],
+      },
+    }))
+  }
   const initial: Measure = {
     objectId: 'measure',
     kind: 'measure',
@@ -77,7 +95,7 @@ function setup(resolved = false) {
       aggregation: defaultAggregation,
       allocation: { mode: 'none' },
       missingTransactionValue: 'null',
-      sourceNullPolicy: 'reject',
+      sourceNullPolicy: 'preserve',
       editable: false,
     },
   }
@@ -85,6 +103,7 @@ function setup(resolved = false) {
   render(
     <MeasureEditor
       initial={initial}
+      baseLevelId={baseLevelId}
       data={data}
       editing={true}
       busy={false}
@@ -96,14 +115,25 @@ function setup(resolved = false) {
 }
 it('places transaction/value below measure type, hides numeric types and moves disaggregation last', async () => {
   const { save, user } = setup()
-  const type = screen.getByLabelText('Measure type'),
+  const type = screen.getByRole('group', { name: 'Measure type' }),
     tx = screen.getByLabelText('Transaction'),
     column = screen.getByLabelText('Value column')
   expect(type.compareDocumentPosition(tx) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   expect(tx.compareDocumentPosition(column) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  expect(screen.queryByLabelText('Source null policy')).not.toBeInTheDocument()
+  expect(screen.getByRole('radio', { name: 'Reference' })).toBeChecked()
+  expect(screen.getByRole('radio', { name: 'Calculated' })).not.toBeChecked()
+  expect(screen.getByRole('group', { name: 'Output Planning Level' })).toBeVisible()
+  expect(
+    screen
+      .getByLabelText('Editable measure')
+      .compareDocumentPosition(screen.getByLabelText('Missing transaction value')) &
+      Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy()
   expect(screen.queryByLabelText('Unit')).not.toBeInTheDocument()
   expect(screen.queryByLabelText('Aliases (comma separated)')).not.toBeInTheDocument()
   expect(screen.queryByLabelText('Data type')).not.toBeInTheDocument()
+  expect(screen.getByLabelText('Output Planning Level')).toBeVisible()
   expect(screen.queryByLabelText('Numeric type')).not.toBeInTheDocument()
   expect(screen.queryByLabelText('Precision')).not.toBeInTheDocument()
   expect(screen.queryByLabelText('Scale')).not.toBeInTheDocument()
@@ -144,7 +174,7 @@ it('uses Float64 for integer and float source columns without displaying a type'
 })
 it('hides decimal precision/scale for calculated measures too', async () => {
   const { user } = setup()
-  await user.selectOptions(screen.getByLabelText('Measure type'), 'calculated')
+  await user.click(screen.getByRole('radio', { name: 'Calculated' }))
   expect(screen.queryByLabelText('Numeric type')).not.toBeInTheDocument()
   expect(screen.queryByLabelText('Precision')).not.toBeInTheDocument()
   expect(screen.queryByLabelText('Scale')).not.toBeInTheDocument()
@@ -189,4 +219,32 @@ it('offers only explicitly distributed values from a resolved transaction', asyn
       definition: expect.objectContaining({ resultType: { type: 'number', nullable: true } }),
     }),
   )
+})
+
+it('defaults new reference and CalculateFirst definitions to Weighted by self', async () => {
+  const { user } = setup()
+  // Existing saved choices remain visible until a new definition is selected.
+  expect(screen.getByLabelText('Dis-aggregation policy')).toHaveValue('none')
+  await user.click(screen.getByRole('radio', { name: 'Calculated' }))
+  await user.selectOptions(screen.getByLabelText('Calculation type'), 'CalculateFirst')
+  expect(screen.getByLabelText('Dis-aggregation policy')).toHaveValue('weighted_by_self')
+  await user.selectOptions(screen.getByLabelText('Calculation type'), 'AggregateFirst')
+  expect(screen.queryByLabelText('Dis-aggregation policy')).not.toBeInTheDocument()
+  await user.click(screen.getByRole('radio', { name: 'Reference' }))
+  expect(screen.getByLabelText('Dis-aggregation policy')).toHaveValue('weighted_by_self')
+})
+
+it('hides disaggregation for Base-native calculated measures and restores it at another output level', async () => {
+  const { user } = setup(false, 'pt')
+  expect(screen.getByLabelText('Dis-aggregation policy')).toBeVisible()
+  await user.click(screen.getByRole('radio', { name: 'Calculated' }))
+  await user.selectOptions(screen.getByLabelText('Calculation type'), 'CalculateFirst')
+  await user.selectOptions(screen.getByLabelText('Output Planning Level'), 'pt')
+  expect(
+    screen.queryByRole('heading', { name: 'Dis-Aggregation policies' }),
+  ).not.toBeInTheDocument()
+  expect(screen.queryByLabelText('Dis-aggregation policy')).not.toBeInTheDocument()
+  expect(screen.getByRole('heading', { name: 'Aggregation policies' })).toBeVisible()
+  await user.selectOptions(screen.getByLabelText('Output Planning Level'), 'other')
+  expect(screen.getByLabelText('Dis-aggregation policy')).toHaveValue('weighted_by_self')
 })
