@@ -28,7 +28,15 @@ class TransactionAPI(RevisionResourceAPI):
         )
         self.router.add_api_route("/resolution/options", self.options, methods=["GET"])
         self.router.add_api_route("/resolution/preview", self.preview, methods=["POST"])
+        self.router.add_api_route(
+            "/resolution/schema", self.output_schema, methods=["POST"]
+        )
         self.router.add_api_route("/{resource_id}/schema", self.schema, methods=["GET"])
+
+    async def output_schema(
+        self, model_id: Identifier, revision_id: Identifier, payload: TransactionInput
+    ):
+        return await self.resolution.schema(model_id, revision_id, payload=payload)
 
     async def input_schema(
         self,

@@ -8,6 +8,10 @@ from ..schemas.common import Diagnostic, ValidationReport
 class SemanticGraphValidator:
     """Validate a revision snapshot without querying or mutating the warehouse."""
 
+    def __init__(self, objects=()):
+        self.objects = {obj["objectId"]: obj for obj in objects}
+        self.errors = []
+
     def validate(
         self,
         objects: list[dict],
@@ -123,20 +127,14 @@ class SemanticGraphValidator:
             )
 
     def validate_filters(self, owner: dict, filters: dict | None, columns: set | dict):
-        def visit(node: dict, depth: int = 0):
-            if depth > 16:
-                self.error(owner, "filter_depth", "Filter nesting exceeds 16 levels.")
-                return
-            if node["type"] == "condition":
-                self.require_columns(
-                    owner, [node["columnId"]], columns, "definition.filters"
-                )
-            else:
-                for child in node["children"]:
-                    visit(child, depth + 1)
+        from ..engine.filters import FilterCompiler
+        from ..core.errors import MetadataError
 
         if filters:
-            visit(filters["root"])
+            try:
+                FilterCompiler().compile(filters, columns)
+            except MetadataError as error:
+                self.error(owner, error.code, error.message, "definition.filters")
 
     def validate_source(self, obj: dict):
         # Expected source schemas are declarations. Data-level checks belong in evidence.
@@ -264,7 +262,10 @@ class SemanticGraphValidator:
         self.validate_filters(
             obj,
             definition.get("filters"),
-            {c["columnId"] for c in definition["columns"]},
+            {
+                c["columnId"]: self.dimension_type(obj, c["columnId"])
+                for c in definition["columns"]
+            },
         )
 
     def validate_planningLevel(self, obj: dict):
@@ -371,7 +372,12 @@ class SemanticGraphValidator:
                 "da_" + digest([obj["objectId"], binding["dimensionId"], cid])[:28]
                 for cid in binding["selectedAttributeColumnIds"]
             }
-        self.validate_filters(obj, definition.get("filters"), filter_columns)
+        if definition.get("filters"):
+            self.validate_filters(
+                obj,
+                definition["filters"],
+                {cid: self.grain_type(obj, cid) for cid in filter_columns},
+            )
 
     def validate_transaction(self, obj: dict):
         definition = obj["definition"]
@@ -410,18 +416,26 @@ class SemanticGraphValidator:
                 from ..core.errors import MetadataError
 
                 try:
-                    TransactionResolutionPlanner(
+                    planner = TransactionResolutionPlanner(
                         list(self.objects.values()),
                         obj,
                         list(
                             self.columns(self.objects[definition["sourceId"]]).values()
                         ),
                     )
+                    population = [
+                        {"columnId": cid, "physicalType": self.grain_type(level, cid)}
+                        for cid in level["definition"]["grain"]["keyIds"]
+                    ]
+                    self.validate_filters(
+                        obj, definition.get("filters"), planner.schema(population)
+                    )
                 except MetadataError as error:
                     self.error(obj, error.code, error.message, "definition.resolution")
             return
         mappings = definition["keyMappings"]
         if source:
+            self.validate_filters(obj, definition.get("filters"), self.columns(source))
             self.require_columns(
                 obj,
                 [m["sourceColumnId"] for m in mappings],

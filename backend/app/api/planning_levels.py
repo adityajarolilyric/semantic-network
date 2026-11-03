@@ -16,6 +16,7 @@ class PlanningLevelAPI(RevisionResourceAPI):
     def __init__(self, service: PlanningLevelService, builds=None):
         super().__init__(service, "planning-levels", PlanningLevelDocument)
         self.builds = builds
+        self.router.add_api_route("/schema", self.output_schema, methods=["POST"])
         self.router.add_api_route(
             "/{resource_id}/build", self.build_table, methods=["POST"], status_code=202
         )
@@ -35,6 +36,11 @@ class PlanningLevelAPI(RevisionResourceAPI):
         self.router.add_api_route(
             "/preview/population", self.preview_population, methods=["POST"]
         )
+
+    async def output_schema(
+        self, model_id: Identifier, revision_id: Identifier, payload: PlanningLevelInput
+    ):
+        return await self.builds.schema(model_id, revision_id, payload)
 
     async def build_draft(
         self,

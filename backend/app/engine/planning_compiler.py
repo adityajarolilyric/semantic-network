@@ -18,41 +18,9 @@ from .contracts import (
 
 class PlanningLevelCompiler(ClickHouseCompiler):
     def filter_sql(self, definition, available):
-        def visit(node):
-            if node["type"] == "group":
-                return (
-                    "("
-                    + (" AND " if node["combinator"] == "and" else " OR ").join(
-                        visit(c) for c in node["children"]
-                    )
-                    + ")"
-                )
-            cid = node["columnId"]
-            if cid not in available:
-                raise MetadataError(
-                    "invalid_filter", "Filter references an unavailable output column."
-                )
-            column, operator = q(cid), node["operator"]
-            values = [self.literal(v) for v in node.get("values", [])]
-            if operator in ("is_null", "is_not_null"):
-                return f"{column} IS {'NOT ' if operator == 'is_not_null' else ''}NULL"
-            if operator in ("in", "not_in"):
-                return f"{column} {'NOT ' if operator == 'not_in' else ''}IN ({', '.join(values)})"
-            if operator == "between":
-                return f"{column} BETWEEN {values[0]} AND {values[1]}"
-            if operator == "contains":
-                return f"position(toString({column}), {values[0]}) > 0"
-            op = {
-                "eq": "=",
-                "ne": "!=",
-                "gt": ">",
-                "gte": ">=",
-                "lt": "<",
-                "lte": "<=",
-            }[operator]
-            return f"{column} {op} {values[0]}"
+        from .filters import FilterCompiler
 
-        return visit(definition["root"])
+        return FilterCompiler().compile(definition, available)
 
     def reduced_lookup(self, sql, keys, attributes):
         """Membership or functional enrichment, independent of raw member count."""
@@ -79,9 +47,7 @@ class PlanningLevelCompiler(ClickHouseCompiler):
                 sql += f" WHERE {q(GENERATION)}={lit(node.generation)}"
             ids = [cid for cid, _ in node.columns]
             if node.filters:
-                sql = (
-                    f"SELECT * FROM ({sql}) WHERE {self.filter_sql(node.filters, ids)}"
-                )
+                sql = f"SELECT * FROM ({sql}) WHERE {self.filter_sql(node.filters, node.filter_columns or ids)}"
             return sql, ids
         if isinstance(node, CrossJoin):
             queries = [self.render(f) for f in node.factors]
@@ -113,7 +79,7 @@ class PlanningLevelCompiler(ClickHouseCompiler):
         if isinstance(node, Filter):
             query, ids = self.render(node.source)
             return (
-                f"SELECT * FROM ({query}) WHERE {self.filter_sql(node.definition, ids)}",
+                f"SELECT * FROM ({query}) WHERE {self.filter_sql(node.definition, node.columns or ids)}",
                 ids,
             )
         raise MetadataError(

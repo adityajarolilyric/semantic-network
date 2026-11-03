@@ -1,3 +1,4 @@
+import { FilterEditor } from './FilterEditor'
 import { TransformationSection } from './TransformationSection'
 import { ObjectPivotEditor } from './ObjectPivotEditor'
 import { PlanningResult, type PlanningTableStatus } from '../PlanningTablePanel'
@@ -17,6 +18,7 @@ export function DimensionEditor({
   base,
 }: EditorProps<Dimension> & { base?: string }) {
   const [value, set] = useState(initial)
+  const form = useRef<HTMLFormElement>(null)
   const d = value.definition
   const update = (patch: Partial<typeof d>) =>
     set((current) => ({ ...current, definition: { ...current.definition, ...patch } }))
@@ -74,6 +76,7 @@ export function DimensionEditor({
   const exposed = new Set([...d.keyColumnIds, ...d.attributeColumnIds])
   return (
     <form
+      ref={form}
       onSubmit={(e) => {
         e.preventDefault()
         void onSave({
@@ -134,6 +137,17 @@ export function DimensionEditor({
           disabled={busy || previewBusy}
         />
       </TransformationSection>
+      <FilterEditor
+        value={d.filters}
+        onChange={(filters) => update({ filters })}
+        columns={d.columns.map((c) => ({
+          columnId: c.columnId,
+          name: c.displayName,
+          physicalType: (inputColumns ?? source?.definition.columns ?? []).find(
+            (s) => s.columnId === c.sourceColumnId,
+          )?.physicalType,
+        }))}
+      />
       {d.columns.length > 0 && (
         <div className="dimension-columns-wrap">
           <table className="dimension-columns">
@@ -319,6 +333,7 @@ export function DimensionEditor({
                 busy
               }
               onClick={async () => {
+                if (!form.current?.reportValidity()) return
                 const controller = new AbortController()
                 previewRequest.current?.abort()
                 previewRequest.current = controller

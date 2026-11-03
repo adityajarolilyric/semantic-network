@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from ..core.errors import Conflict, MetadataError
 from ..engine.date_range_resolution import calendar_source_ids
+from ..engine.filters import dimension_filter_columns
 from ..engine.contracts import Check, ExecutionPlan, RelationSchema
 from ..engine.measure_compiler import MeasureCompiler
 from ..engine.relationships import Coordinate, LevelRelationshipAnalyzer
@@ -138,7 +139,7 @@ class TransactionResolutionService(Service):
             ],
         }
 
-    async def schema(self, model, revision, transaction_id):
+    async def schema(self, model, revision, transaction_id=None, payload=None):
         repo = self.store.repository
         objects = await self.effective(
             repo, model, revision, await self.objects(repo, model, revision)
@@ -151,11 +152,25 @@ class TransactionResolutionService(Service):
             ),
             None,
         )
+        if payload is not None:
+            tx = payload.model_dump()
+            objects = [o for o in objects if o["objectId"] != tx["objectId"]] + [tx]
         if not tx:
             raise MetadataError("not_found", "Transaction was not found.", 404)
         source = next(
-            o for o in objects if o["objectId"] == tx["definition"]["sourceId"]
+            (
+                o
+                for o in objects
+                if o["objectId"] == tx["definition"]["sourceId"]
+                and o["kind"] == "source"
+                and o["definition"]["inScope"]
+            ),
+            None,
         )
+        if not source:
+            raise MetadataError(
+                "invalid_resolution_source", "Choose an available managed table."
+            )
         if tx["definition"].get("mappingMode") != "resolve_multi_grain":
             from ..engine.calendar_resolution import CalendarResolutionPlanner
 
@@ -167,8 +182,16 @@ class TransactionResolutionService(Service):
         planner = TransactionResolutionPlanner(
             objects, tx, source["definition"]["columns"]
         )
+        from ..validation.graph import SemanticGraphValidator
+
+        types = SemanticGraphValidator(objects)
+        level = types.objects[tx["definition"]["planningLevelId"]]
+        population = [
+            {"columnId": cid, "physicalType": types.grain_type(level, cid)}
+            for cid in level["definition"]["grain"]["keyIds"]
+        ]
         return {
-            "columns": planner.schema(),
+            "columns": planner.schema(population),
             "valueColumnIds": [
                 v["sourceColumnId"] for v in tx["definition"]["resolution"]["values"]
             ],
@@ -497,7 +520,9 @@ class TransactionResolutionService(Service):
                             + " WHERE "
                             + compiler.filter_sql(
                                 tx["definition"]["filters"],
-                                [c["columnId"] for c in cols],
+                                dimension_filter_columns(
+                                    tx["definition"], input_columns
+                                ),
                             )
                         )
                     allowed = set(tx["definition"]["keyColumnIds"]) | set(
@@ -586,6 +611,11 @@ class TransactionResolutionService(Service):
                 )
                 matched = count(resolved.matches)
                 total = count(resolved.node)
+                winners = (
+                    count(resolved.unfiltered_node)
+                    if resolved.unfiltered_node
+                    else total
+                )
                 latest = sum(count(node) for node in resolved.latest_nodes)
                 return [[self.warehouse.cell(v) for v in row] for row in rows], {
                     "inputRows": input_rows,
@@ -593,7 +623,8 @@ class TransactionResolutionService(Service):
                     "profiles": len(profiles.get(tx["objectId"], [])),
                     "matchedIntersections": matched,
                     "resolvedRows": total,
-                    "overwrittenMatches": matched - total,
+                    "overwrittenMatches": matched - winners,
+                    "filteredOutRows": winners - total,
                     "shadowedAssignments": max(0, expanded_inputs - latest),
                 }
 

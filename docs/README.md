@@ -5,6 +5,7 @@ These guides describe the current implementation in `backend/` and `application/
 ## Read by topic
 
 - [Metadata](METADATA.md): MongoDB collections, stable identities, dimensions, revision lifecycle, CRUD conventions and shared UI rules.
+- [Filters](FILTERS.md): typed final-output predicates, nested groups, placement and schema APIs.
 - [Sources and Managed Tables](SOURCES_AND_MANAGED_TABLES.md): CSV ingestion, identity views, pivot, discovery and saved-view editing.
 - [Planning levels](PLANNING_LEVELS.md): populations, attribute grains, optional dimension bindings, relationship analysis and Preview/Save.
 - [Transactions](TRANSACTIONS.md): direct mappings, mixed-grain assignments, source-order precedence and daily date-range resolution.

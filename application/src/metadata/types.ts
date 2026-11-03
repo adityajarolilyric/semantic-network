@@ -75,7 +75,7 @@ export type Dimension = Semantic & {
       dateColumnId: string
       orderingColumnId: string
     } | null
-    filters?: unknown
+    filters?: FilterDefinition | null
   }
 }
 export type GrainColumn = {
@@ -116,7 +116,7 @@ export type PlanningLevel = Semantic & {
     grain: { keyIds: string[]; columns: GrainColumn[] }
     populationAttributes?: PopulationAttribute[]
     dimensionBindings: Binding[]
-    filters?: unknown
+    filters?: FilterDefinition | null
     duplicateKeyPolicy?: 'reject'
     nullKeyPolicy?: 'reject'
   }
@@ -160,6 +160,7 @@ export type GrainResolution = {
 export type Transaction = Semantic & {
   kind: 'transaction'
   definition: {
+    filters?: FilterDefinition | null
     sourceId: string
     planningLevelId: string
     mappingMode: 'direct' | 'resolve_multi_grain'
@@ -320,3 +321,33 @@ export function effectiveSnapshot(data: Snapshot): Snapshot {
     ),
   }
 }
+
+export type FilterCondition = {
+  type: 'condition'
+  columnId: string
+  operator:
+    | 'eq'
+    | 'ne'
+    | 'gt'
+    | 'gte'
+    | 'lt'
+    | 'lte'
+    | 'in'
+    | 'not_in'
+    | 'between'
+    | 'not_between'
+    | 'contains'
+    | 'not_contains'
+    | 'starts_with'
+    | 'not_starts_with'
+    | 'ends_with'
+    | 'not_ends_with'
+    | 'is_empty'
+    | 'is_not_empty'
+    | 'is_null'
+    | 'is_not_null'
+  values: (string | number | boolean)[]
+}
+export type FilterGroup = { type: 'group'; combinator: 'and' | 'or'; children: FilterNode[] }
+export type FilterNode = FilterCondition | FilterGroup
+export type FilterDefinition = { root: FilterGroup }

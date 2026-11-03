@@ -167,3 +167,5 @@ Transactions support an independent Date range resolution section: select Start/
 Planning View remembers row/column attributes and measures in browser storage per model/revision. Returning or refreshing reloads fresh values with that layout. A successful Semantic Network rebuild or **Clear selections** resets the preferences; ordinary edits do not. No result values or semantic definitions are stored in the browser.
 
 Dimensions and Transactions now offer Raw Data Preview plus independent Pivot configuration. Normal Preview shows transformed data. Transaction authoring runs optional Pivot → Date resolution → Multi-grain resolution; new matching rules use Column equals attribute only. Raw inputs/shared Managed Tables remain unchanged. Pivot schema feeds dimension attribute capture and referenced-measure value choices, including generated numeric columns.
+
+Dimensions, Planning Levels and Transactions include a final Filters section with typed conditions and nested AND/OR groups. Normal Preview includes these rules; raw/intermediate previews do not. See [filter design](../docs/FILTERS.md).

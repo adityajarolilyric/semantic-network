@@ -1,5 +1,6 @@
 """Resolve inclusive source ranges against an explicit daily calendar before mapping."""
 
+from .filters import dimension_filter_columns
 from ..core.errors import MetadataError
 from ..warehouse.repository import quote_identifier as q
 from .contracts import Check, digest
@@ -176,7 +177,7 @@ class CalendarResolutionCompiler:
         )
         sql = f"SELECT {fields} FROM {calendar_table}"
         if dim.get("filters"):
-            sql = f"SELECT * FROM ({sql}) WHERE {h.filter_sql(dim['filters'], [c['columnId'] for c in dim['columns']])}"
+            sql = f"SELECT * FROM ({sql}) WHERE {h.filter_sql(dim['filters'], dimension_filter_columns(dim, calendar_columns))}"
         selected = [
             strict_date(q(dim["time"]["dateColumnId"])) + " AS " + q(p.date_id),
             q(dim["time"]["orderingColumnId"]) + " AS " + q(p.order_id),

@@ -133,6 +133,10 @@ class PlanningLevelPlanner:
                 ),
                 dim_def.get("filters"),
                 transform=transform,
+                filter_columns=tuple(
+                    {**source_columns[c["sourceColumnId"]], "columnId": c["columnId"]}
+                    for c in dim_def["columns"]
+                ),
             )
             mappings = tuple(
                 (
@@ -174,7 +178,7 @@ class PlanningLevelPlanner:
             lookups.append(scan)
             root = join
         if definition.get("filters"):
-            root = Filter(root, definition["filters"])
+            root = Filter(root, definition["filters"], tuple(schema))
         self.assign_output_names(schema)
         if len(schema) > 2000:
             invalid("Planning output exceeds 2000 columns.")

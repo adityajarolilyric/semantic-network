@@ -73,6 +73,7 @@ class RelationScan:
     generation: str | None = None
     nonnullable_ids: tuple[str, ...] = ()
     transform: LogicalPlan | None = None
+    filter_columns: tuple[dict, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -98,6 +99,7 @@ class LookupJoin:
 class Filter:
     source: Any
     definition: dict
+    columns: tuple[dict, ...] = ()
 
 
 @dataclass(frozen=True)

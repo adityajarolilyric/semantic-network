@@ -1,3 +1,5 @@
+import { FilterEditor } from './FilterEditor'
+import { useFilterColumns } from './useFilterColumns'
 import { projectionAttributes } from '../projectionColumns'
 import { FieldHelp } from '../../components/FieldHelp'
 import { useEffect, useRef, useState } from 'react'
@@ -34,6 +36,7 @@ export function PlanningLevelEditor({
   readOnly?: boolean
 }) {
   const [value, set] = useState(initial)
+  const form = useRef<HTMLFormElement>(null)
   const baseline = useRef(initial)
   const currentVersion = useRef(savedVersion)
   const [tableStatus, setTableStatus] = useState<PlanningTableStatus | null>(null)
@@ -83,6 +86,11 @@ export function PlanningLevelEditor({
       active = false
     }
   }, [base, parent?.objectId])
+  const filterColumns = useFilterColumns(
+    base ? base + '/planning-levels/schema' : undefined,
+    { ...value, definition: { ...d, filters: null } },
+    !!d.filters,
+  )
   const parentAttributes = projectionAttributes(parent, parentSchema, data.dimensions)
   function populationAttributes(sourceId: string, factorId?: string) {
     const selected = attrs.filter((a) => (a.populationRef.factorId ?? undefined) === factorId)
@@ -180,7 +188,7 @@ export function PlanningLevelEditor({
     setPreview(null)
   }, [value])
   async function persist(previewRequested: boolean) {
-    if (actionInFlight.current) return
+    if (actionInFlight.current || !form.current?.reportValidity()) return
     if (!base) {
       if (!previewRequested) await onSave(value)
       return
@@ -264,6 +272,7 @@ export function PlanningLevelEditor({
   }
   return (
     <form
+      ref={form}
       onSubmit={(e) => {
         e.preventDefault()
         void persist(false)
@@ -764,6 +773,11 @@ export function PlanningLevelEditor({
               })}
           </>
         )}
+        <FilterEditor
+          value={d.filters}
+          onChange={(filters) => update({ filters })}
+          {...filterColumns}
+        />
       </fieldset>
       {base && (
         <div className="meta-subsection" aria-label={'Planning table ' + value.name}>
@@ -788,7 +802,7 @@ export function PlanningLevelEditor({
         <>
           <p className="meta-hint">
             {preview.state === 'preview' ? 'Built preview (metadata not saved)' : 'Built table'}:{' '}
-            {preview.rowCount?.toLocaleString()} rows. Showing up to 100 records.
+            {preview.rowCount?.toLocaleString()} rows. Showing up to 50 records.
           </p>
           <PlanningResult
             data={preview}

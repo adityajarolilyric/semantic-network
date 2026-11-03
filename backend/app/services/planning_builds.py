@@ -517,6 +517,25 @@ class PlanningBuildService(Service):
                 result["state"] = "failed"
         return result
 
+    async def schema(self, model, revision, payload):
+        """Analyze the proposed public output without building or saving it."""
+
+        async def snapshot(repo):
+            await self.require(
+                repo, "semantic_revisions", scope(model, revision), "Revision"
+            )
+            objects = await self.objects(repo, model, revision)
+            candidate = {**payload.model_dump(), "version": 0}
+            objects = [o for o in objects if o["objectId"] != candidate["objectId"]] + [
+                candidate
+            ]
+            captured = await self.capture(repo, model, revision, candidate, objects)
+            return candidate, objects, captured
+
+        candidate, objects, captured = await self.store.transaction(snapshot)
+        plan = self.planner.plan(candidate, objects, captured["relations"])
+        return {"columns": list(plan.schema.columns)}
+
     async def preview(self, model, revision, payload):
         async def snapshot(repo):
             rev = await self.require(

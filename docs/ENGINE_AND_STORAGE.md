@@ -85,3 +85,5 @@ Storage/compiler policy versions enter fingerprints; incompatible queued work mu
 Regression tests inspect table counts/names during INSERT, schema add/remove/readd, recovered-token isolation, failed multi-level activation, retained/pinned generations, generation deletion/column retirement, legacy adoption, stale metadata and ownership refusal. See [Operations](OPERATIONS.md#verification) for runners.
 
 Object-owned input pivots reuse ManagedTablePlanner/ClickHouseCompiler through `engine/object_inputs.py`. Planning RelationScan may carry an optional logical transform for dimension lookups. Measure compilation caches each owner/artifact/pivot input as a CTE and carries its full-input assertions into the execution plan. This supports independent Dimension/Transaction transforms without shared-source mutation or extra physical tables; calendar and multi-grain stages consume the resulting schema.
+
+Final-output filters use the shared typed engine module and nested AND/OR editor. See [Filters](FILTERS.md) for stage placement, scalar operators, NULL semantics, schema APIs and compatibility.

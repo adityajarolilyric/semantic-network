@@ -2441,3 +2441,72 @@ fieldset:disabled textarea {
 .object-preview-footer { min-width: 0; }
 .object-preview-footer > div > .secondary-button { margin: 10px 0; }
 .object-preview-footer .data-preview { margin-top: 16px; }
+
+/* Final-output filter builder: compact conditions, explicit logic, and grouped nesting. */
+.filter-empty, .filter-empty > div, .filter-editor-heading { display: flex; align-items: center; gap: 12px; }
+.filter-empty { justify-content: space-between; padding: 4px 0; flex-wrap: wrap; }
+.filter-empty > div { min-width: 0; }
+.filter-empty-icon { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 10px; background: #f0edff; color: #6c5ce7; flex-shrink: 0; }
+.filter-empty strong, .filter-empty small { display: block; }
+.filter-empty strong { color: #293a56; font-size: 13px; font-weight: 600; }
+.filter-empty small { color: #78879e; font-size: 12px; margin-top: 4px; }
+.filter-empty .secondary-button { display: inline-flex; align-items: center; gap: 6px; }
+.filter-editor-heading { justify-content: space-between; color: #718098; font-size: 12px; margin: 0 0 12px; }
+.filter-clear { color: #7b6370; font-size: 12px; padding: 5px 0 5px 10px; white-space: nowrap; }
+.filter-clear:hover { color: #b83250; text-decoration: underline; }
+.filter-group { border: 1px solid #e1e5ef; border-radius: 10px; padding: 12px; margin: 0; min-width: 0; background: #f8f9fc; }
+.filter-group-nested { border-left: 3px solid #b9acf6; background: #fcfbff; }
+.filter-group-heading { display: flex; align-items: center; gap: 10px; min-width: 0; flex-wrap: wrap; margin-bottom: 12px; }
+.filter-logic { display: inline-flex; padding: 3px; gap: 3px; border: 1px solid #dce0ec; border-radius: 7px; background: white; }
+.filter-logic button { padding: 5px 11px; font-size: 11px; font-weight: 700; letter-spacing: .03em; border-radius: 4px; color: #78879e; }
+.filter-logic button[aria-pressed='true'] { color: white; background: #6c5ce7; box-shadow: 0 1px 2px #4533ba22; }
+.filter-match-help { color: #718098; font-size: 12px; flex: 1; }
+.filter-group label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; min-width: 0; }
+.filter-input-label { color: #718098; font-size: 11px; display: flex; align-items: center; justify-content: space-between; min-height: 14px; }
+.filter-input-label small { font-size: 10px; color: #8b97ad; font-weight: 400; }
+.filter-group select, .filter-group input, .filter-group textarea { width: 100%; min-width: 0; border: 1px solid #d6dce8; border-radius: 7px; padding: 9px 10px; background: white; color: #293a56; font: inherit; }
+.filter-group textarea { resize: vertical; line-height: 1.6; }
+.filter-group input::placeholder, .filter-group textarea::placeholder { color: #99a3b4; }
+.filter-group select:focus, .filter-group input:focus, .filter-group textarea:focus { outline: 2px solid #d1c8fb; outline-offset: 1px; border-color: #9885ef; }
+.filter-node { min-width: 0; }
+.filter-condition { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1.3fr) 28px; align-items: start; gap: 10px; padding: 10px; border: 1px solid #e5e8f1; border-radius: 8px; background: white; min-width: 0; }
+.filter-values { display: flex; gap: 8px; min-width: 0; }
+.filter-values > label { flex: 1; }
+.filter-remove { display: grid; place-items: center; width: 28px; height: 28px; color: #8c98aa; border-radius: 6px; flex-shrink: 0; }
+.filter-condition > .filter-remove { margin-top: 23px; }
+.filter-remove:hover { background: #fff0f2; color: #b83250; }
+.filter-no-value { align-self: center; color: #8b97ad; font-size: 11px; font-style: italic; margin-top: 18px; }
+.filter-connector { display: flex; align-items: center; gap: 8px; color: #8c80be; font-size: 10px; font-weight: 700; letter-spacing: .06em; margin: 7px 10px; }
+.filter-connector::before, .filter-connector::after { content: ''; height: 1px; background: #e2ddef; }
+.filter-connector::before { width: 14px; }
+.filter-connector::after { flex: 1; }
+.filter-connector-or { color: #92721e; }
+.filter-connector-or::before, .filter-connector-or::after { background: #eee6ce; }
+.filter-add-actions { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; padding: 12px 2px 0; }
+.filter-add { display: inline-flex; align-items: center; gap: 4px; color: #6c5ce7; padding: 3px 0; font-size: 12px; }
+.filter-add:hover { color: #4533ba; text-decoration: underline; }
+.filter-expression { margin-top: 12px; padding: 10px 12px; border-radius: 7px; background: #f5f3fd; color: #635485; }
+.filter-expression > span { font-size: 9px; letter-spacing: .08em; font-weight: 700; color: #9184ac; }
+.filter-expression p { margin: 5px 0 0; line-height: 1.6; font-size: 12px; overflow-wrap: anywhere; white-space: pre-wrap; }
+.filter-matching-notes { font-size: 11px; color: #8591a6; margin-top: 10px; }
+.filter-matching-notes summary { cursor: pointer; width: fit-content; }
+.filter-matching-notes p { line-height: 1.7; max-width: 700px; margin-bottom: 0; }
+@media (max-width: 1050px) {
+  .filter-condition { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 28px; }
+  .filter-condition > label:nth-child(3), .filter-condition > .filter-values, .filter-condition > .filter-no-value { grid-column: 1 / 3; }
+  .filter-condition > .filter-remove { grid-column: 3; grid-row: 1 / 3; margin-top: 22px; }
+  .filter-no-value { margin: 0; }
+}
+@media (max-width: 600px) {
+  .filter-empty > div { align-items: flex-start; }
+  .filter-empty .secondary-button { margin-left: 48px; }
+  .filter-group { padding: 9px; }
+  .filter-group-nested { border-left-width: 2px; }
+  .filter-condition { grid-template-columns: minmax(0, 1fr) 26px; padding: 9px; }
+  .filter-condition > label, .filter-condition > label:nth-child(3), .filter-condition > .filter-values, .filter-condition > .filter-no-value { grid-column: 1; }
+  .filter-condition > .filter-remove { grid-column: 2; grid-row: 1; margin-top: 22px; }
+  .filter-group-heading { gap: 7px; }
+  .filter-match-help { font-size: 11px; }
+  .filter-values { flex-wrap: wrap; }
+  .filter-values > label { flex-basis: 100%; }
+}

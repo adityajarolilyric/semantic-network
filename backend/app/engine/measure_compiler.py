@@ -1,3 +1,4 @@
+from .filters import dimension_filter_columns
 from .table_storage import GENERATION, column_sql, token
 from ..warehouse.repository import quote_literal as lit
 from ..services.measure_types import normalize_measure
@@ -174,27 +175,44 @@ class MeasureCompiler(PlanningLevelCompiler):
                 result = ResolvedTransaction(
                     node, cols, tx["definition"]["keyMappings"], node, [node], node
                 )
-                self.transaction_relations[transaction_id] = result
-                return result
+                self.transaction_relations[transaction_id] = self.filter_transaction(
+                    tx, result
+                )
+                return self.transaction_relations[transaction_id]
             if transaction_id not in self.resolution_profiles:
                 raise MetadataError(
                     "resolution_not_prepared",
                     "Prepare the transaction matching profiles before compiling measures.",
                 )
-            self.transaction_relations[transaction_id] = TransactionResolutionCompiler(
+            result = TransactionResolutionCompiler(
                 self,
                 tx,
                 self.resolution_profiles[transaction_id],
                 self.resolution_max_rows,
             ).compile()
+            self.transaction_relations[transaction_id] = self.filter_transaction(
+                tx, result
+            )
         return self.transaction_relations[transaction_id]
+
+    def filter_transaction(self, transaction, resolved):
+        from dataclasses import replace
+        from .filters import FilterCompiler
+
+        filters = transaction["definition"].get("filters")
+        if not filters:
+            return resolved
+        sql = FilterCompiler().apply(
+            "SELECT * FROM " + q(resolved.node), filters, resolved.columns
+        )
+        return replace(resolved, node=self.cte(sql), unfiltered_node=resolved.node)
 
     def native(self, measure):
         d = measure["definition"]
         level = d["nativePlanningLevelId"]
         tx = self.objects[d["transactionId"]]["definition"]
         if tx.get("mappingMode") == "resolve_multi_grain" or (
-            tx.get("calendarResolution") or tx.get("pivot")
+            tx.get("calendarResolution") or tx.get("pivot") or tx.get("filters")
         ):
             resolved = self.resolve_transaction(d["transactionId"])
             table = q(resolved.node)
@@ -218,7 +236,7 @@ class MeasureCompiler(PlanningLevelCompiler):
         )
         grouped = None
         if tx.get("mappingMode") == "resolve_multi_grain" or (
-            tx.get("calendarResolution") or tx.get("pivot")
+            tx.get("calendarResolution") or tx.get("pivot") or tx.get("filters")
         ):
             from .date_range_resolution import RangeMeasureAggregator
 
@@ -285,7 +303,7 @@ class MeasureCompiler(PlanningLevelCompiler):
                         + input_table
                     )
                     if definition.get("filters"):
-                        dim_sql = f"SELECT * FROM ({dim_sql}) WHERE {self.filter_sql(definition['filters'], [c['columnId'] for c in definition['columns']])}"
+                        dim_sql = f"SELECT * FROM ({dim_sql}) WHERE {self.filter_sql(definition['filters'], dimension_filter_columns(definition, input_cols))}"
                     dim_sql = self.reduced_lookup(
                         dim_sql,
                         [m["dimensionColumnId"] for m in binding["keyMappings"]],

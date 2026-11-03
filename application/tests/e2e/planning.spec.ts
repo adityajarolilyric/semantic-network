@@ -113,6 +113,26 @@ test('create a planning table with population and dimension attributes, preview 
     .getByRole('group', { name: 'Attributes from Product', exact: true })
     .getByLabel('Category', { exact: true })
     .check()
+  await page.getByRole('button', { name: 'Add filter', exact: true }).click()
+  await page.getByLabel('Filter column', { exact: true }).selectOption({ label: 'category' })
+  await page.getByLabel('Filter operator', { exact: true }).selectOption('contains')
+  await page.getByLabel('Filter value', { exact: true }).fill('C')
+  await page.getByRole('button', { name: 'Add group', exact: true }).click()
+  const nestedFilters = page.getByRole('group', { name: 'Nested group', exact: true })
+  await nestedFilters
+    .getByLabel('Filter column', { exact: true })
+    .selectOption({ label: 'priority' })
+  await nestedFilters.getByLabel('Filter value', { exact: true }).fill('High')
+  await nestedFilters.getByRole('button', { name: 'Add condition', exact: true }).click()
+  await nestedFilters
+    .getByLabel('Filter column', { exact: true })
+    .nth(1)
+    .selectOption({ label: 'priority' })
+  await nestedFilters.getByLabel('Filter value', { exact: true }).nth(1).fill('Low')
+  await expect(nestedFilters.getByRole('button', { name: 'OR', exact: true })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  )
   let builds = 0
   page.on('request', (request) => {
     if (request.url().endsWith('/planning-levels/editor/draft/build')) builds++
@@ -144,6 +164,13 @@ test('create a planning table with population and dimension attributes, preview 
   await expect(page.getByText('2/2 rows', { exact: true })).toBeVisible()
   await expect(page.getByLabel('Rows per page')).toHaveCount(0)
   await page.screenshot({ path: 'test-results/planning-level-editor.png', fullPage: true })
+  await page.setViewportSize({ width: 390, height: 844 })
+  const filterPanel = page
+    .locator('.transformation-section')
+    .filter({ has: page.getByText('Filters', { exact: true }) })
+  expect(await filterPanel.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true)
+  await filterPanel.screenshot({ path: 'test-results/filters-nested-mobile.png' })
+  await page.setViewportSize({ width: 1440, height: 960 })
   await page.reload()
   await page
     .locator('.meta-object-card')

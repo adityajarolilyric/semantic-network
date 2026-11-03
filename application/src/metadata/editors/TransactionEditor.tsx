@@ -1,3 +1,5 @@
+import { FilterEditor } from './FilterEditor'
+import { useFilterColumns } from './useFilterColumns'
 import { TransformationSection } from './TransformationSection'
 import { ObjectPivotEditor } from './ObjectPivotEditor'
 import { RawDataPreview } from './RawDataPreview'
@@ -57,6 +59,11 @@ export function TransactionEditor({
   const source = data.sources.find((s) => s.objectId === d.sourceId)
   const pivotReady = !d.pivot?.enabled || pivotColumns !== null
   const inputColumns = d.pivot?.enabled ? (pivotColumns ?? []) : (source?.definition.columns ?? [])
+  const filterColumns = useFilterColumns(
+    base ? base + '/transactions/resolution/schema' : undefined,
+    { ...value, definition: { ...d, filters: null } },
+    !!d.filters,
+  )
   return (
     <form
       ref={form}
@@ -76,6 +83,7 @@ export function TransactionEditor({
               update({
                 sourceId,
                 pivot: null,
+                filters: null,
                 calendarResolution: null,
                 mappingMode: 'direct',
                 resolution: null,
@@ -241,6 +249,11 @@ export function TransactionEditor({
             </>
           )}
         </TransformationSection>
+        <FilterEditor
+          value={d.filters}
+          onChange={(filters) => update({ filters })}
+          {...filterColumns}
+        />
         {error && (
           <p className="meta-error" role="alert">
             {error}
@@ -252,6 +265,7 @@ export function TransactionEditor({
               {preview.diagnostics.inputRows} input rows · {preview.diagnostics.resolvedRows}{' '}
               winning rows · {preview.diagnostics.overwrittenMatches} overwritten matches ·{' '}
               {preview.diagnostics.shadowedAssignments} earlier identical assignments replaced
+              {!!preview.diagnostics.filteredOutRows && <> · {preview.diagnostics.filteredOutRows} rows removed by filters</>}
             </p>
             <PlanningResult
               data={preview}

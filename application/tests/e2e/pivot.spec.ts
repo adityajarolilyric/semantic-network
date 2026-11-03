@@ -300,8 +300,14 @@ test('pivot a Dimension independently, preview raw/transformed data and reopen i
     .check()
   await expect(page.getByLabel('Display name for channel', { exact: true })).toBeVisible()
   await page.getByLabel('Key customer_id', { exact: true }).check()
+  await page.getByRole('button', { name: 'Add filter', exact: true }).click()
+  await page.getByLabel('Filter column', { exact: true }).selectOption({ label: 'channel' })
+  await page.getByLabel('Filter operator', { exact: true }).selectOption('contains')
+  await page.getByLabel('Filter value', { exact: true }).fill('Retail')
   await page.getByRole('button', { name: 'Preview', exact: true }).click()
   await expect(page.getByRole('cell', { name: 'Retail', exact: true })).toBeVisible()
+  await expect(page.getByText('1/1 rows', { exact: true })).toBeVisible()
+  await expect(page.getByRole('cell', { name: 'Wholesale', exact: true })).toHaveCount(0)
   await expect(page.locator('th .column-name').filter({ hasText: /^attribute$/ })).toHaveCount(0)
   await page.screenshot({ path: 'test-results/owned-dimension-pivot.png', fullPage: true })
   await page.getByRole('button', { name: 'Save metadata', exact: true }).click()
@@ -313,6 +319,7 @@ test('pivot a Dimension independently, preview raw/transformed data and reopen i
     .getByRole('button', { name: 'Edit', exact: true })
     .click()
   await expect(page.getByLabel('Pivot long-format columns', { exact: true })).toBeChecked()
+  await expect(page.getByLabel('Filter value', { exact: true })).toHaveValue('Retail')
   await expect(page.getByLabel('Display name for channel', { exact: true })).toBeVisible()
   expect(await (await page.request.get(base + '/managed-tables/' + run.sourceId)).json()).toEqual(
     original,

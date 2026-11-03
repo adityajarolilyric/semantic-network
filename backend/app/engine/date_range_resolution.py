@@ -1,5 +1,6 @@
 """Calendar-day expansion and native-period mapping for transaction assignments."""
 
+from .filters import dimension_filter_columns
 from ..core.errors import MetadataError
 from ..warehouse.repository import quote_identifier as q, quote_literal as lit
 from .contracts import Check, digest
@@ -145,7 +146,7 @@ class DateRangeCompiler:
         )
         dim_sql = f"SELECT {fields} FROM {input_table}"
         if dim.get("filters"):
-            dim_sql = f"SELECT * FROM ({dim_sql}) WHERE {h.filter_sql(dim['filters'], list(c['columnId'] for c in dim['columns']))}"
+            dim_sql = f"SELECT * FROM ({dim_sql}) WHERE {h.filter_sql(dim['filters'], dimension_filter_columns(dim, columns))}"
         date = strict_date(q(dim["time"]["dateColumnId"]))
         key = q(cfg["calendarKeyColumnId"])
         typ = next(

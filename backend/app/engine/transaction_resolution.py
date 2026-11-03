@@ -313,6 +313,7 @@ class ResolvedTransaction:
     matches: str
     latest_nodes: list
     input_node: str | None = None
+    unfiltered_node: str | None = None
 
 
 class TransactionResolutionCompiler:
