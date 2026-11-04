@@ -2,6 +2,22 @@
 
 A Transaction references a saved Managed Table and one native planning level. Measures are defined later, so transaction expansion has its own per-value Split/Copy policy. It never guesses a measure aggregation/disaggregation policy. Sources stay unchanged; resolved relations are CTEs shared by Preview and Materialise, with no extra physical table, imported Source or persistent resolved view.
 
+## Start from a table without an existing planning level
+
+New Transaction authoring offers **No Planning Level**. Configure optional Pivot and Date resolution, choose grain columns from that effective output, and review the suggested planning-level name. The shortcut creates ordinary metadata: a source-populated Planning Level with selected keys, no Dimension bindings and no population attributes, plus a directly mapped Transaction. Existing final DISTINCT compilation supplies the observed intersections; fact rows remain intact for configured measure aggregation. No Dimensions, new persistent mapping mode, auto-generation flags or population contributor metadata are introduced.
+
+Pivot and Date resolution are available before a native level exists. They execute **Pivot → Date resolution → DISTINCT selected grain keys** for the generated population. The Transaction keeps the same input stages and maps their output IDs directly to those grain keys. Date resolution uses an explicitly configured daily Time Dimension; the calendar catalog does not require a planning level. No Time Dimension is inferred from column names.
+
+To make population rebuilds self-contained and avoid a population → Transaction → population cycle, source populations may store `inputTransform` with `objectId` (a stable output-ID namespace, not a reference), `pivot` and `calendarResolution`. On creation this is an exact snapshot of the Transaction input configuration. The population and Transaction subsequently remain independent; editing Transaction transformations does not silently redefine the population. Selecting a different population source explicitly replaces its input pipeline while retaining logical grain IDs through remapping. Planning-level editors/schema APIs read the effective transformed columns, including generated calendar fields. The shared operators run their existing duplicate-cell/calendar checks and expansion bounds; previews of these populations also run input checks. No additional physical table or shared Managed Table mutation is introduced.
+
+Filters and multi-grain assignment still require the target-level workflow. Adding Sales to an existing level never expands its population automatically; unmatched intersections still fail, and the user changes the population explicitly.
+
+- `POST /transactions/from-grain`: creation command with object identity/name/description, sourceId, grainColumnIds and optional planningLevelName, pivot and calendarResolution. In one MongoDB transaction, validate/create both standard objects and select Base only if this is the first planning level and Base is unset. Existing Base is preserved. Generated IDs make exact retries idempotent; changed requests or edited objects conflict rather than overwrite.
+- `POST /transactions/from-grain/preview`: same command; preview the distinct proposed population with count and at most 50 rows, without creating definitions, changing versions or selecting Base.
+- Save metadata then submits the ordinary planning-level build and waits for completion. This is not an atomic metadata-plus-ClickHouse operation. If the build fails, both saved definitions remain available; the UI adopts the saved Transaction version and directs the user to repair/build Planning Levels. No duplicate objects or successful-build message is produced. Submitted builds remain durable after navigation; an unsubmitted build still needs explicit recovery if the browser closes between creation and submission.
+
+Nullable/invalid keys and resource bounds keep their existing build checks. A declared time-like column does not create a Time Dimension or infer temporal ordering. Planning View supports explicit planning-level grain/population-attribute axes so an unbound generated level is usable without Dimensions. See [Planning View](PLANNING_VIEW.md).
+
 ## Direct mapping
 
 Map every native grain key exactly once to the effective source schema. Multiple detail rows per native key are allowed: each referenced measure independently aggregates by **all** mapped keys using its configured policy, then LEFT JOINs the native planning population. Reject unmatched source keys explicitly; a LEFT JOIN alone would silently drop them. Preserve population rows without transactions and apply the measure's missing-value policy.
@@ -132,3 +148,11 @@ Tests cover order reversal/ties, NULL winners, Split/Copy/no redistribution, typ
 A schema/preview request never changes a shared Managed Table. Pivot output IDs include owner object, stage, pair and literal, preserving identity across renames/revisions while isolating owners. Column discovery precedes semantic mapping; no automatic dimension matching by display name is inferred. Transaction schema endpoints include generated pivot/calendar columns, so referenced measures can select numeric pivot outputs.
 
 Final-output filters use the shared typed engine module and nested AND/OR editor. See [Filters](FILTERS.md) for stage placement, scalar operators, NULL semantics, schema APIs and compatibility.
+
+Transformation panels start collapsed. Dimension Preview runs the complete configured pipeline, including Pivot and final Filters; the Dimension pivot editor has no separate intermediate preview button. Base Level Visibility is a read-only derived policy per expanding Time/Non-time axis: **Equal** for SUM and **None – Repeat Values** otherwise. It uses the same policy selector presentation as edit Dis-aggregation, but does not override edit policies or persist a second source allocation setting.
+
+Transaction mapping is a three-option switch: **No Planning Level** (default for new Transactions, creates and maps a distinct grain population), **Map to Native Planning Level**, and **Resolve Multi Grain**. Saved Transactions retain their existing mapping when reopened. No Planning Level is an authoring shortcut, not a persisted unmapped Transaction; it is unavailable when editing an existing Transaction or using final filters requiring an existing target.
+
+Direct key-mapping selectors use **{Native Planning Level name}.{key}** so users can identify the target level and key before selecting the Transaction field.
+
+Direct key mappings render as a vertical list: each target key is on the left with its Managed Table field selector on the right, stacking on narrow screens. Labels and mapping identity remain unchanged.

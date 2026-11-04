@@ -59,6 +59,24 @@ class PlanningViewService(Service):
         return {
             "buildId": builds[0]["runId"] if builds else None,
             "dimensions": dimensions,
+            "planningLevels": [
+                {
+                    "planningLevelId": o["objectId"],
+                    "name": o["name"],
+                    "columns": [
+                        *[
+                            {"columnId": c["grainColumnId"], "name": c["name"]}
+                            for c in o["definition"]["grain"]["columns"]
+                        ],
+                        *[
+                            {"columnId": c["columnId"], "name": c["name"]}
+                            for c in o["definition"].get("populationAttributes", [])
+                        ],
+                    ],
+                }
+                for o in objects
+                if o["kind"] == "planningLevel"
+            ],
             "measures": [
                 {"measureId": o["objectId"], "name": o["name"]}
                 for o in objects

@@ -69,10 +69,7 @@ export function MaterialisePanel({
   return (
     <section className="meta-card" aria-label="Materialise">
       <h2>Materialise saved definitions</h2>
-      <p className="meta-hint">
-        Build measures across compatible planning levels from the saved definitions. Planning
-        populations must be ready first.
-      </p>
+
       <div className="meta-toolbar">
         {editable && (
           <button
@@ -109,10 +106,7 @@ export function MaterialisePanel({
       </div>
       <div className="meta-subsection">
         <h2>Preview materialised tables</h2>
-        <p className="meta-hint">
-          Choose a planning level to view its built values. This selection does not change the
-          network build.
-        </p>
+
         <Select
           label="Preview planning level"
           value={selected}

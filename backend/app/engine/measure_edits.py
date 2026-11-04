@@ -294,16 +294,26 @@ class MeasureEditCompiler(MeasureCompiler):
         )
         predicates = []
         for field, value in zip(self.fields, self.edit.memberValues):
-            dim = self.objects[field["dimensionId"]]["definition"]
-            dc = next(c for c in dim["columns"] if c["columnId"] == field["columnId"])
-            source = self.managed[dim["sourceId"]]
-            typ = next(
-                c["physicalType"]
-                for c in self.object_input(self.objects[field["dimensionId"]], source)[
-                    1
-                ]
-                if c["columnId"] == dc["sourceColumnId"]
-            )
+            if field.get("planningLevelId"):
+                population = self.populations[field["planningLevelId"]]
+                typ = next(
+                    c["physicalType"]
+                    for c in population["columns"]
+                    if c["columnId"] == field["columnId"]
+                )
+            else:
+                dim = self.objects[field["dimensionId"]]["definition"]
+                dc = next(
+                    c for c in dim["columns"] if c["columnId"] == field["columnId"]
+                )
+                source = self.managed[dim["sourceId"]]
+                typ = next(
+                    c["physicalType"]
+                    for c in self.object_input(
+                        self.objects[field["dimensionId"]], source
+                    )[1]
+                    if c["columnId"] == dc["sourceColumnId"]
+                )
             literal = (
                 "NULL"
                 if value is None

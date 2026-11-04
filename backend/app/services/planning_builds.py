@@ -13,7 +13,7 @@ class PlanningBuildService(Service):
     def __init__(self, store, settings, managed):
         super().__init__(store, settings.max_objects_per_revision)
         self.settings, self.managed = settings, managed
-        self.planner = PlanningLevelPlanner()
+        self.planner = PlanningLevelPlanner(settings.resolution_max_rows)
         self.compiler = PlanningLevelCompiler(settings.clickhouse_database)
         self.storage = TableStorage(store, managed.executor.warehouse)
         self.executor = PlanningTableExecutor(managed.executor.warehouse, settings)
@@ -69,8 +69,12 @@ class PlanningBuildService(Service):
             relations[parent["objectId"]] = artifact
             versions[parent["objectId"]] = parent["version"]
             bindings[parent["objectId"]] = binding
-        for binding in definition["dimensionBindings"]:
-            dim = by_id[binding["dimensionId"]]
+        dimension_ids = {b["dimensionId"] for b in definition["dimensionBindings"]}
+        calendar = (population.get("inputTransform") or {}).get("calendarResolution")
+        if calendar:
+            dimension_ids.add(calendar["dimensionId"])
+        for did in dimension_ids:
+            dim = by_id[did]
             versions[dim["objectId"]] = dim["version"]
             source_ids.add(dim["definition"]["sourceId"])
         for sid in sorted(source_ids):
@@ -556,8 +560,11 @@ class PlanningBuildService(Service):
         level, objects, captured = await self.store.transaction(snapshot)
         await self.storage.ensure_inputs(captured["relations"].values())
         plan = self.planner.plan(level, objects, captured["relations"])
+        compiled = self.compiler.compile(plan)
+        if level["definition"]["population"].get("inputTransform"):
+            await self.executor.checks(compiled)
         estimate = await self.executor.estimate(plan, self.compiler)
-        return {**await self.executor.preview(self.compiler.compile(plan)), **estimate}
+        return {**await self.executor.preview(compiled), **estimate}
 
     async def preflight(self, model, revision):
         for level in await self.objects(self.store.repository, model, revision):

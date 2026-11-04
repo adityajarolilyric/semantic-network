@@ -1,5 +1,7 @@
 /** Browser-only layout preferences. Never cache query results or edit contexts. */
-export type ViewRef = { dimensionId: string; columnId: string }
+export type ViewRef = { dimensionId?: string; planningLevelId?: string; columnId: string }
+export const viewReference = ({ dimensionId, planningLevelId, columnId }: ViewRef): ViewRef =>
+  dimensionId ? { dimensionId, columnId } : { planningLevelId, columnId }
 export type ViewPreferences = {
   buildId: string | null
   rows: ViewRef[]
@@ -21,8 +23,7 @@ export function saveViewPreferences(scope: string, value: ViewPreferences) {
     clearViewPreferences(scope)
     return
   }
-  const refs = (items: ViewRef[]) =>
-    items.map(({ dimensionId, columnId }) => ({ dimensionId, columnId }))
+  const refs = (items: ViewRef[]) => items.map(viewReference)
   const serialized = JSON.stringify({
     buildId: value.buildId,
     rows: refs(value.rows),
@@ -36,7 +37,7 @@ export function saveViewPreferences(scope: string, value: ViewPreferences) {
     /* Keep navigation working when storage is blocked. */
   }
 }
-export function readViewPreferences(scope: string, buildId: string | null): ViewPreferences | null {
+export function readViewPreferences(scope: string, _buildId: string | null): ViewPreferences | null {
   let raw: string | null | undefined
   try {
     raw = window.localStorage.getItem(key(scope))
@@ -49,9 +50,14 @@ export function readViewPreferences(scope: string, buildId: string | null): View
     const value = JSON.parse(raw) as ViewPreferences
     const refs = (items: unknown): items is ViewRef[] =>
       Array.isArray(items) &&
-      items.every((v) => v && typeof v.dimensionId === 'string' && typeof v.columnId === 'string')
+      items.every(
+        (v) =>
+          v &&
+          typeof v.columnId === 'string' &&
+          ((typeof v.dimensionId === 'string' && v.planningLevelId === undefined) ||
+            (typeof v.planningLevelId === 'string' && v.dimensionId === undefined)),
+      )
     if (
-      value.buildId !== buildId ||
       !refs(value.rows) ||
       !refs(value.columns) ||
       value.rows.length + value.columns.length > 8 ||

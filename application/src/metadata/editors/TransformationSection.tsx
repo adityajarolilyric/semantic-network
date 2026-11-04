@@ -12,7 +12,7 @@ export function TransformationSection({
   children: ReactNode
 }) {
   return (
-    <details className="transformation-section" open>
+    <details className="transformation-section">
       <summary>
         <span>{title}</span>
         <span className={configured ? 'badge' : 'meta-hint'}>

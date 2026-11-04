@@ -1,9 +1,11 @@
 from typing import Annotated, Literal, Union
 
-from pydantic import Field, model_validator
+from pydantic import Field, model_validator, model_serializer
 
 from .common import DocumentMetadata, Identifier, Name, Schema, SemanticInput, unique
 from .filters import FilterDefinition
+from .managed_tables import PivotStage
+from .transactions import CalendarResolution
 
 
 class PopulationFactor(Schema):
@@ -32,9 +34,24 @@ class ProjectionPopulation(Schema):
     sourcePlanningLevelId: Identifier
 
 
+class PopulationInputTransform(Schema):
+    # Stable namespace for generated pivot/calendar column IDs; not an object reference.
+    objectId: Identifier
+    pivot: PivotStage | None = None
+    calendarResolution: CalendarResolution | None = None
+
+
 class SourcePopulation(Schema):
     operation: Literal["source"]
     sourceId: Identifier
+    inputTransform: PopulationInputTransform | None = None
+
+    @model_serializer(mode="wrap")
+    def serialize(self, handler):
+        value = handler(self)
+        if value.get("inputTransform") is None:
+            value.pop("inputTransform", None)
+        return value
 
 
 Population = Annotated[

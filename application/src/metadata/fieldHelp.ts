@@ -28,7 +28,7 @@ const help: Record<string, string> = {
   'Treat empty text as absent':
     'Empty text skips this restriction. Other restrictions still apply; an unconstrained axis requires Allow all members. NULL is always absent.',
   'Transaction mapping':
-    'Direct mapping aggregates source rows at native keys. Resolve multi grain treats each source row as an ordered assignment that can match several native cells.',
+    'No Planning Level creates a planning level from distinct selected grain keys. Map to Native Planning Level maps columns to an existing level; Resolve Multi Grain expands mixed-grain rows into it.',
   'Match using':
     'Column equals attribute matches a fixed source column. Level and value uses a selector column, such as Brand or Product ID, to interpret a second column.',
   'Match source column':
@@ -49,9 +49,9 @@ const help: Record<string, string> = {
     'Carry these fields from the winning assignment. Numeric fields retained here are not split or copied as measure values.',
 
   'Planning View rows':
-    'Attributes that group records down the pivot. Example: Brand then Zone gives one row for each Brand/Zone combination. Use the arrows to change their order.',
+    'Dimension or planning-level fields that group records down the pivot. Example: Brand then Zone gives one row for each Brand/Zone combination. Use the arrows to change their order.',
   'Planning View columns':
-    'Attributes whose values become column groups. Example: Month compares January and February side by side. Keep this list short for a readable pivot.',
+    'Dimension or planning-level fields whose values become column groups. Example: Month compares January and February side by side. Keep this list short for a readable pivot.',
   'Planning View values':
     'Measures appear as rows at the selected dimension grain. Aggregation follows each measure’s saved Time and NonTime policies. AggregateFirst formulas use inputs resolved at this grain.',
   'Planning View source':
@@ -105,11 +105,11 @@ const help: Record<string, string> = {
     'Additional columns to carry into the planning table. They describe a row without becoming its grain keys.',
   'Parent planning level':
     'The existing level from which distinct key combinations and attributes are taken.',
-  'Retain parent keys':
+  'Select keys from Parent keys':
     'Choose which parent keys identify rows in the new level. Example: retain Product and Time from Product–Location–Time.',
-  'Attributes from parent level':
+  'Select attributes from Parent':
     'Carry parent attributes into the new table without using them as grain keys.',
-  'Use parent attributes as grain keys':
+  'Make Parent attribute as a grain key':
     'Create a level identified by parent attributes. Example: use Brand instead of Product ID.',
   'Dimension bindings (optional)':
     'Connect planning columns to dimension members for validation, enrichment and hierarchy traversal. Explicit key projections can work without bindings.',
@@ -121,6 +121,8 @@ const help: Record<string, string> = {
     'Choose dimension attributes to include in the planning table. Example: bring Brand from Product.',
   'Native planning level':
     'The level where a measure is originally loaded or its calculation is defined. Transactions are first grouped and matched at their native level.',
+  'Transaction grain columns':
+    'Columns identifying one planning intersection, such as Product, Location and Time. The planning population takes distinct combinations; repeated fact records remain available for measure aggregation.',
   'Map every grain key':
     'Match each native planning key to its transaction column. Transactions are aggregated by all these keys before the left join.',
   'Output Planning Level':
@@ -174,7 +176,6 @@ export function fieldHelp(label: string): string | undefined {
   if (label.startsWith('Include ')) return help['Cartesian product']
   if (label.startsWith('Population attributes from ')) return help['Population attributes']
   if (label.startsWith('Attributes from ')) return help['Dimension attributes']
-  if (label.startsWith('Source column for ')) return help['Map every grain key']
   if (/ planning-level column \d+$/.test(label)) return help['Planning-level column']
   if (/ dimension column \d+$/.test(label)) return help['Dimension column']
   return undefined

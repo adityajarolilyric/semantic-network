@@ -244,7 +244,7 @@ it('restores selections and loads fresh results after navigation, then supports 
   expect(screen.queryByRole('table')).not.toBeInTheDocument()
   expect(storedPreferences.size).toBe(0)
 })
-it('resets selections after a successful new build and isolates other revisions', async () => {
+it('preserves selections after a successful new build and isolates other revisions', async () => {
   const user = userEvent.setup()
   let buildId = 'one'
   vi.spyOn(metadataApi, 'request').mockImplementation(async (path) =>
@@ -258,8 +258,8 @@ it('resets selections after a successful new build and isolates other revisions'
   other.unmount()
   buildId = 'two'
   render(<PlanningViewPanel base="/models/m/revisions/r" revisionVersion={2} />)
-  expect(await screen.findByLabelText('FQTY')).not.toBeChecked()
-  expect(storedPreferences.size).toBe(0)
+  expect(await screen.findByLabelText('FQTY')).toBeChecked()
+  expect(storedPreferences.size).toBe(1)
 })
 it('detects rebuilds before querying a layout that is still open', async () => {
   const user = userEvent.setup()
@@ -273,9 +273,11 @@ it('detects rebuilds before querying a layout that is still open', async () => {
   await user.click(await screen.findByLabelText('FQTY'))
   buildId = 'two'
   await user.click(screen.getByRole('button', { name: 'Update pivot' }))
-  expect(await screen.findByRole('alert')).toHaveTextContent('Semantic Network was rebuilt')
-  expect(screen.getByLabelText('FQTY')).not.toBeChecked()
-  expect(request.mock.calls.some(([path]) => path.endsWith('/query'))).toBe(false)
+  expect(await screen.findByLabelText('FQTY')).toBeChecked()
+  await waitFor(() =>
+    expect(request.mock.calls.some(([path]) => path.endsWith('/query'))).toBe(true),
+  )
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument()
 })
 
 it('reorders selected measures and submits the order to the query', async () => {

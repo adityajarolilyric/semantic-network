@@ -1,7 +1,7 @@
 import { metadataApi } from '../api'
 import { MeasureBaseVisibility } from './MeasureBaseVisibility'
 import { FieldHelp } from '../../components/FieldHelp'
-import { useEffect, useId, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { formatFormula, parseFormula, formulaUnit } from '../formula'
 import { referencedResultType } from '../measureTypes'
 import type { Aggregation, CalcDefinition, Measure, RefDefinition, SourceColumn } from '../types'
@@ -33,6 +33,34 @@ export function MeasureEditor({
         )
       : '',
   )
+  const formulaEditor = useRef<HTMLTextAreaElement>(null)
+  const pendingCaret = useRef<number | null>(null)
+  useLayoutEffect(() => {
+    if (pendingCaret.current === null || !formulaEditor.current) return
+    const caret = pendingCaret.current
+    pendingCaret.current = null
+    formulaEditor.current.focus({ preventScroll: true })
+    formulaEditor.current.setSelectionRange(caret, caret)
+  }, [text])
+  function insertMeasure(name: string) {
+    const editor = formulaEditor.current
+    if (!editor) return
+    const { selectionStart: start, selectionEnd: end } = editor
+    const token = `[${name}]`
+    const next = text.slice(0, start) + token + text.slice(end)
+    if (next.length > editor.maxLength) {
+      editor.focus({ preventScroll: true })
+      return
+    }
+    const caret = start + token.length
+    if (next === text) {
+      editor.focus({ preventScroll: true })
+      editor.setSelectionRange(caret, caret)
+      return
+    }
+    pendingCaret.current = caret
+    setText(next)
+  }
   const [error, setError] = useState('')
   const d = value.definition
   const update = (patch: Partial<typeof d>) =>
@@ -292,6 +320,7 @@ export function MeasureEditor({
           </div>
           <Field label="Formula" hint="Use measure names, such as ABS(FQTY - SQTY).">
             <textarea
+              ref={formulaEditor}
               value={text}
               onChange={(e) => setText(e.target.value)}
               required
@@ -307,7 +336,10 @@ export function MeasureEditor({
                   key={m.objectId}
                   type="button"
                   className="meta-tag"
-                  onClick={() => setText((t) => t + `[${m.name}]`)}
+                  onMouseDown={(event) => {
+                    if (event.button === 0) event.preventDefault()
+                  }}
+                  onClick={() => insertMeasure(m.name)}
                   title={m.name}
                 >
                   {m.name}
@@ -420,11 +452,7 @@ export function MeasureEditor({
               />
             )}
           </div>
-          <p className="meta-hint">
-            None repeats the value to every finer row. Your aggregation policies control how those
-            values combine; no aggregation method is inferred. This policy also applies to future
-            edits at coarser levels, including for Base-native measures.
-          </p>
+
           {d.allocation?.mode === 'weighted_by_self' && (
             <p className="meta-hint">
               Uses this measure’s populated values at the edit write level (Base when reachable,

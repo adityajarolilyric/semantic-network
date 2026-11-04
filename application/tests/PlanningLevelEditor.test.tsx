@@ -126,7 +126,7 @@ it('populates projection bindings interactively, supports bulk attributes and of
     />,
   )
   const user = userEvent.setup()
-  const keys = within(screen.getByRole('group', { name: 'Retain parent keys' }))
+  const keys = within(screen.getByRole('group', { name: 'Select keys from Parent keys' }))
   await user.click(keys.getByLabelText('product'))
   expect(screen.getByRole('tab', { name: 'Product' })).toHaveAttribute('aria-selected', 'true')
   expect(screen.queryByRole('tab', { name: 'Composite' })).not.toBeInTheDocument()

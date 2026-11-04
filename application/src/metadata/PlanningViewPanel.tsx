@@ -1,5 +1,7 @@
 import {
   clearViewPreferences,
+  viewReference,
+  type ViewRef,
   readViewPreferences,
   saveViewPreferences,
 } from './planningViewPreferences'
@@ -9,11 +11,16 @@ import { FieldHelp } from '../components/FieldHelp'
 import { PlanningEditCell } from './PlanningEditCell'
 import { metadataApi } from './api'
 
-type Ref = { dimensionId: string; columnId: string }
+type Ref = ViewRef
 type Field = Ref & { key: string; label: string }
 type Options = {
   buildId?: string | null
   dimensions: { dimensionId: string; name: string; columns: { columnId: string; name: string }[] }[]
+  planningLevels?: {
+    planningLevelId: string
+    name: string
+    columns: { columnId: string; name: string }[]
+  }[]
   measures: { measureId: string; name: string }[]
 }
 export type PlanningViewResult = {
@@ -65,7 +72,7 @@ function AxisEditor({
             if (field) onChange([...selected, field])
           }}
         >
-          <option value="">Choose dimension attribute…</option>
+          <option value="">Choose an attribute…</option>
           {available.map((f) => (
             <option key={f.key} value={f.key}>
               {f.label}
@@ -322,7 +329,10 @@ export function PlanningViewPanel({
         const restore = (refs: Ref[]) =>
           refs.flatMap((ref) => {
             const field = catalog.find(
-              (f) => f.dimensionId === ref.dimensionId && f.columnId === ref.columnId,
+              (f) =>
+                f.dimensionId === ref.dimensionId &&
+                f.planningLevelId === ref.planningLevelId &&
+                f.columnId === ref.columnId,
             )
             if (!field || used.has(field.key)) return []
             used.add(field.key)
@@ -356,14 +366,24 @@ export function PlanningViewPanel({
     saveViewPreferences(base, { buildId: options.buildId ?? null, rows, columns, measures })
   }, [base, loadedScope, options, rows, columns, measures])
   function fieldsFor(data: Options): Field[] {
-    return data.dimensions.flatMap((d) =>
-      d.columns.map((c) => ({
-        dimensionId: d.dimensionId,
-        columnId: c.columnId,
-        key: d.dimensionId + ':' + c.columnId,
-        label: d.name + ' · ' + c.name,
-      })),
-    )
+    return [
+      ...data.dimensions.flatMap((d) =>
+        d.columns.map((c) => ({
+          dimensionId: d.dimensionId,
+          columnId: c.columnId,
+          key: d.dimensionId + ':' + c.columnId,
+          label: d.name + ' · ' + c.name,
+        })),
+      ),
+      ...(data.planningLevels ?? []).flatMap((level) =>
+        level.columns.map((column) => ({
+          planningLevelId: level.planningLevelId,
+          columnId: column.columnId,
+          key: 'level:' + level.planningLevelId + ':' + column.columnId,
+          label: level.name + ' · ' + column.name,
+        })),
+      ),
+    ]
   }
   const fields = options ? fieldsFor(options) : []
   const selected = new Set([...rows, ...columns].map((f) => f.key))
@@ -391,13 +411,9 @@ export function PlanningViewPanel({
       )
       if (controller.signal.aborted) return
       if ((fresh.buildId ?? null) !== (options?.buildId ?? null)) {
-        clearViewPreferences(base)
-        setOptions(fresh)
-        setRows([])
-        setColumns([])
-        setMeasures([])
         setResult(null)
-        setError('The Semantic Network was rebuilt. Choose your Planning View selections again.')
+        acceptedVersion.current = null
+        refreshOptions((n) => n + 1)
         return
       }
       await loadPivot(rows, columns, measures, controller)
@@ -417,8 +433,7 @@ export function PlanningViewPanel({
     setLoading(true)
     setError('')
     setResult(null)
-    const refs = (items: Field[]) =>
-      items.map(({ dimensionId, columnId }) => ({ dimensionId, columnId }))
+    const refs = (items: Field[]) => items.map(viewReference)
     try {
       const data = await metadataApi.request<PlanningViewResult>(
         base + '/planning-view/query',
@@ -449,12 +464,8 @@ export function PlanningViewPanel({
     if (!result?.editContext || saving) return
     const context = result.editContext
     const view = {
-      rows: result.fields
-        .filter((f) => f.axis === 'row')
-        .map(({ dimensionId, columnId }) => ({ dimensionId, columnId })),
-      columns: result.fields
-        .filter((f) => f.axis === 'column')
-        .map(({ dimensionId, columnId }) => ({ dimensionId, columnId })),
+      rows: result.fields.filter((f) => f.axis === 'row').map(viewReference),
+      columns: result.fields.filter((f) => f.axis === 'column').map(viewReference),
       measures: result.measures.map((m) => m.measureId),
     }
     const controller = new AbortController()
@@ -538,11 +549,6 @@ export function PlanningViewPanel({
       <div className="planning-view-heading">
         <div>
           <h2>Explore your planning data</h2>
-          <p className="meta-hint">
-            Choose row and column attributes, then add measures. Values use the saved semantic
-            policies. Your selections are remembered in this browser until a successful Semantic
-            Network rebuild or Clear selections.
-          </p>
         </div>
         <div className="meta-toolbar">
           <button
@@ -687,26 +693,17 @@ export function PlanningViewPanel({
             </span>
             <FieldHelp label="Planning View source" />
           </div>
-          <p className="meta-hint">
-            {result.plan.explanation}
-            {result.measures.some((m) => m.calculation === 'recalculated')
-              ? ' AggregateFirst formulas are recalculated at this pivot grain.'
-              : ''}
-          </p>
+          {result.measures.some((m) => m.calculation === 'recalculated') && (
+            <p className="meta-hint">
+              AggregateFirst formulas are recalculated at this pivot grain.
+            </p>
+          )}
           {result.warnings?.map((warning) => (
             <p key={warning.measureId} className="meta-hint" role="status">
               {warning.message}
             </p>
           ))}
-          {columns.length > 0 && (
-            <p className="planning-column-label">
-              Columns: {columns.map((f) => f.label).join(' / ')}
-            </p>
-          )}
-          <p className="meta-hint">
-            Editable values show a pencil. Edits use configured disaggregation and aggregation
-            policies. Build Semantic Network replaces manual edits from source data.
-          </p>
+
           <PlanningPivot
             result={result}
             onEdit={result.editContext ? editCell : undefined}

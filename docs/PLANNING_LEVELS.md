@@ -81,3 +81,15 @@ Planning previews use resourceKind `planningLevelPreview`, while their artifacts
 Regression coverage includes parent-first bulk ordering, waiting for parent activation, dependency-cycle/missing-parent rejection, partial failure refresh, read-only/empty/busy actions, optional/composite/attribute bindings, membership versus functional enrichment, Cartesian name collisions, projection grain/ambiguous attributes, NULL/duplicate keys, full validation with 50-row samples, build limits, staged Preview without Save, reuse, conflicts, clone/publication and previous-generation preservation.
 
 Final-output filters use the shared typed engine module and nested AND/OR editor. See [Filters](FILTERS.md) for stage placement, scalar operators, NULL semantics, schema APIs and compatibility.
+
+## Replacing a single-source population
+
+For an existing source-populated level, choosing another Population table opens explicit mappings for existing grain and population-attribute fields. Map each field to a compatible new source column, including reordered/differently named columns. Preserve logical grain/attribute IDs, Transaction references, filters, projection references and Dimension bindings; inherit current source names for display. Preview/Save use the existing candidate/build/commit checks and reject incompatible types or invalid combinations. New source grain selections also preserve existing IDs when the same selected field survives. No automatic union, inference from equal names or remapping of Transaction input columns occurs.
+
+Transaction-first onboarding creates exactly this ordinary source population through [the creation shortcut](TRANSACTIONS.md#start-from-a-table-without-an-existing-planning-level). It can be expanded or replaced manually when later Transactions need more intersections.
+
+### Authoring layout
+
+Population method uses a three-option switch: **From a Table**, **From Multiple Tables**, **From Existing Planning Level**. Parent key retention, promotion of parent attributes to grain keys, and retained parent attributes appear in three adjacent panels (stacked on narrow screens). Dimension mapping and selected attributes appear alongside each other. These labels/layouts do not change population semantics or logical column IDs. Transformation panels start collapsed, including configured filters.
+
+Transaction-first populations can have a captured input pipeline (Pivot → daily-calendar resolution) before DISTINCT selection. Rebuilds use the same shared engine operators and validations as the Transaction, capture the calendar Dimension/source dependencies, and retain the strict population/value table pair. Reopening the level shows transformed fields for grain/attribute selection. The stored namespace preserves generated column IDs without referencing the Transaction or forming a dependency cycle.

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { metadataApi } from '../api'
+import { Select } from './Fields'
 import type { Measure, PlanningLevel } from '../types'
 
 type BasePath = {
@@ -98,20 +99,31 @@ export function MeasureBaseVisibility({
           <p className="meta-hint">
             Values expand into matching Base rows, in reverse aggregation order:
           </p>
-          <ol className="meta-hint">
+          <div className="meta-grid">
             {axes
               .filter((axis) => info.expansionAxes.includes(axis))
               .map((axis) => (
-                <li key={axis}>
-                  <strong>
-                    {axis === 'time' ? 'Time' : 'Non-time'} — {policy?.[axis]?.toUpperCase()}:{' '}
-                  </strong>
-                  {policy?.[axis] === 'sum'
-                    ? 'Split equally across eligible finer combinations. For example, 100 across 4 combinations becomes 25 each.'
-                    : 'Repeat the value across eligible finer combinations. For example, 100 remains 100 in each combination.'}
-                </li>
+                <div key={axis}>
+                  <Select
+                    label={(axis === 'time' ? 'Time' : 'Non-time') + ' Base visibility policy'}
+                    value={policy?.[axis] === 'sum' ? 'equal' : 'repeat'}
+                    items={[
+                      { value: 'repeat', label: 'None – Repeat Values' },
+                      { value: 'equal', label: 'Equal' },
+                    ]}
+                    onChange={() => {}}
+                    disabled
+                  />
+                  <p className="meta-hint">
+                    Derived from {axis === 'time' ? 'Time' : 'Non-time'} aggregation (
+                    {policy?.[axis]?.toUpperCase()}).{' '}
+                    {policy?.[axis] === 'sum'
+                      ? '100 across 4 eligible combinations becomes 25 each.'
+                      : '100 remains 100 in each eligible combination.'}
+                  </p>
+                </div>
               ))}
-          </ol>
+          </div>
           <p className="meta-hint">
             Axes with unchanged grain do not distribute values. Counts use actual planning
             intersections.

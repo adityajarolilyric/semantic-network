@@ -1,10 +1,23 @@
-from pydantic import Field, model_validator
+from pydantic import Field, model_validator, model_serializer
 from .common import Identifier, Schema
 
 
 class PlanningViewField(Schema):
-    dimensionId: Identifier
+    dimensionId: Identifier | None = None
+    planningLevelId: Identifier | None = None
     columnId: Identifier
+
+    @model_validator(mode="after")
+    def one_owner(self):
+        if (self.dimensionId is None) == (self.planningLevelId is None):
+            raise ValueError(
+                "Choose exactly one dimension or planning level for each field"
+            )
+        return self
+
+    @model_serializer(mode="wrap")
+    def serialize(self, handler):
+        return {key: value for key, value in handler(self).items() if value is not None}
 
 
 class PlanningViewRequest(Schema):
@@ -14,10 +27,13 @@ class PlanningViewRequest(Schema):
 
     @model_validator(mode="after")
     def distinct_fields(self):
-        fields = [(f.dimensionId, f.columnId) for f in [*self.rows, *self.columns]]
+        fields = [
+            (f.dimensionId, f.planningLevelId, f.columnId)
+            for f in [*self.rows, *self.columns]
+        ]
         if len(fields) > 8 or len(fields) != len(set(fields)):
             raise ValueError(
-                "Choose at most eight distinct dimension attributes across rows and columns."
+                "Choose at most eight distinct fields across rows and columns."
             )
         if len(self.measures) != len(set(self.measures)):
             raise ValueError("Choose each measure once.")

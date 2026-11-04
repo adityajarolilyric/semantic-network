@@ -2,6 +2,10 @@
 
 These guides describe the current implementation in `backend/` and `application/`. They consolidate the former plans, implementation notes and follow-up decisions. Current rules appear once under their owning topic; superseded proposals and incremental test-count logs have been removed.
 
+## Product documents
+
+Start with the [User flow](USER_FLOW.md) for the demo-based modeller/planner journey, checkpoints and recovery paths. Use the [PRD](PRD.md) for the rule catalogue and rationale, acceptance criteria, engineering invariants, limits and unresolved work. Both were reconciled with the supplied demo transcript and current contracts on 4 November 2026; implementation-topic guides below retain ownership of detailed technical behaviour.
+
 ## Read by topic
 
 - [Metadata](METADATA.md): MongoDB collections, stable identities, dimensions, revision lifecycle, CRUD conventions and shared UI rules.

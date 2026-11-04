@@ -1,6 +1,6 @@
 # Planning View: pivot reads and edits
 
-Planning View sits below Materialise. Choose exposed dimension attributes for Rows/Columns and measures under Values. **Measures render as rows** inside each row-dimension group, never as the column axis. Reorder/remove axis fields; Update pivot sends the layout to the backend. The browser arranges returned cells but performs no aggregation/disaggregation/formula evaluation. Layout selections are browser experience preferences; results remain transient and are always read fresh from the server. Neither is a persisted semantic definition.
+Planning View sits below Materialise. Choose exposed Dimension attributes or explicit Planning Level grain/population attributes for Rows/Columns and measures under Values. **Measures render as rows** inside each row-dimension group, never as the column axis. Reorder/remove axis fields; Update pivot sends the layout to the backend. The browser arranges returned cells but performs no aggregation/disaggregation/formula evaluation. Layout selections are browser experience preferences; results remain transient and are always read fresh from the server. Neither is a persisted semantic definition.
 
 Use current saved populations and Build Semantic Network first. Results explain the selected planning level and reuse/recalculation; hide internal IDs, SQL, physical names and generation tokens. Distinguish NULL values, absent intersections and empty members. Scrolling/responsive selectors support large layouts. Empty dimension axes request a global group; automatic subtotals/grand totals, filters and server-saved/shared layouts remain unimplemented.
 
@@ -80,7 +80,7 @@ Eligible cells show a pencil. Save/Enter submits; Cancel/Escape discards only th
 
 There is **no durable edit journal, replay or separate override store**. Pending/running jobs temporarily hold `__edit` input for recovery; remove it on success/failure under the same fence, so an expired worker cannot delete replacement context. Ordinary run hashes/state/artifact lineage remain operational records, without retaining a business edit journal.
 
-Active edited values survive restarts. **Build Semantic Network recomputes from sources and replaces manual edits**; required rebuilds after metadata/population changes have the same consequence. Normal self-weight builds may use current proportions as frozen weights; no journal preserves a pristine pre-edit pattern. Sources and semantic definitions are never mutated by an edit.
+Active edited values survive restarts. **Build Semantic Network recomputes from sources and replaces manual edits**; required rebuilds after metadata/population changes have the same consequence. Source/network builds initialise finer visibility from configured aggregation (SUM splits, other supported methods repeat); they do not consult previous self values or edit weights. Self-weighting applies to interactive edits, using the captured populated write representation. Sources and semantic definitions are never mutated by an edit.
 
 ## Implementation and tests
 
@@ -98,6 +98,12 @@ Legacy/edit-derived incomplete distributions carry coverage flags in the same va
 
 Row/column order and selected measure IDs persist in localStorage, scoped by model/revision, across navigation and refresh. Labels are resolved from current metadata; unavailable fields/measures are pruned. Reopening automatically queries fresh values. No results, cell edits, edit-generation tokens or semantic definitions are cached. If browser storage is blocked, an in-memory fallback preserves selections during navigation.
 
-`GET /planning-view/options` also returns `buildId`: the latest successful non-edit Semantic Network run, or null before any build. A changed build clears saved selections; failed/in-progress builds, metadata reloads and cell edits do not. Check the token on re-entry, browser focus and before Update pivot. The engine-runs index supports the scoped latest-build lookup. **Clear selections** removes this layout and current results without changing metadata or data. Clearing browser storage also removes the preferences.
+`GET /planning-view/options` also returns `buildId`: the latest successful non-edit Semantic Network run, or null before any build. A changed build refreshes options and results while preserving valid ordered selections. References to removed fields/measures are dropped; failed/in-progress builds, metadata reloads and cell edits do not clear the layout. Check the token on re-entry, browser focus and before Update pivot. The engine-runs index supports the scoped latest-build lookup. **Clear selections** removes this layout and current results without changing metadata or data. Clearing browser storage also removes the preferences.
 
 Selected measures can be reordered using the same move-up controls as row/column attributes. This order is submitted to the query and retained with browser layout preferences.
+
+## Axes without Dimensions
+
+`GET /planning-view/options` also returns planningLevels with named public grain/population-attribute columns. A field request identifies exactly one owner: dimensionId or planningLevelId, plus columnId. Old Dimension requests/serialization remain compatible; new references are query/layout data, not extra semantic metadata. Unknown owners, nonpublic columns, duplicate fields and conflicting owner types are rejected.
+
+The planner obtains the level field's existing semantic coordinate/lineage and uses the same source selection, calculation and edit-eligibility logic. Member casts for edits use captured population types. Browser preferences preserve both owner forms and resolve current labels after reopening. No Dimension objects or time semantics are inferred; Time-specific policies still need explicit Time lineage. Both fields and measures can therefore be plotted from a Transaction-generated level with zero Dimensions. Selecting another unbound level with similar column names does not create a cross-level relationship.

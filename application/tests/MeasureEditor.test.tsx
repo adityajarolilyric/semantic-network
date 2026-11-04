@@ -4,7 +4,7 @@ import { expect, it, vi } from 'vitest'
 import { MeasureEditor, defaultAggregation } from '../src/metadata/editors/MeasureEditor'
 import { referencedResultType } from '../src/metadata/measureTypes'
 import { emptySnapshot, type Measure } from '../src/metadata/types'
-function setup(resolved = false, baseLevelId?: string) {
+function setup(resolved = false, baseLevelId?: string, withReferences = false) {
   const data = emptySnapshot()
   const envelope = { modelId: 'm', revisionId: 'r', version: 1, createdAt: '', updatedAt: '' }
   data.sources = [
@@ -99,6 +99,10 @@ function setup(resolved = false, baseLevelId?: string) {
       editable: false,
     },
   }
+  if (withReferences)
+    data.measures = [
+      { ...initial, ...envelope, objectId: 'forecast', name: 'FQTY', displayName: 'FQTY' },
+    ]
   const save = vi.fn(async () => {})
   render(
     <MeasureEditor
@@ -247,4 +251,56 @@ it('hides disaggregation for Base-native calculated measures and restores it at 
   expect(screen.getByRole('heading', { name: 'Aggregation policies' })).toBeVisible()
   await user.selectOptions(screen.getByLabelText('Output Planning Level'), 'other')
   expect(screen.getByLabelText('Dis-aggregation policy')).toHaveValue('weighted_by_self')
+})
+
+it.each(['mouse', 'keyboard'])(
+  'inserts a measure at the formula caret and restores typing focus via %s',
+  async (activation) => {
+    const { user } = setup(false, undefined, true)
+    await user.click(screen.getByRole('radio', { name: 'Calculated' }))
+    const formula = screen.getByLabelText('Formula') as HTMLTextAreaElement
+    await user.type(formula, 'ABS( + 2)')
+    formula.setSelectionRange(4, 4)
+    const measure = screen.getByRole('button', { name: 'FQTY' })
+    if (activation === 'mouse') await user.click(measure)
+    else {
+      measure.focus()
+      await user.keyboard('{Enter}')
+    }
+    expect(formula).toHaveValue('ABS([FQTY] + 2)')
+    expect(formula).toHaveFocus()
+    expect(formula.selectionStart).toBe(10)
+    expect(formula.selectionEnd).toBe(10)
+    await user.keyboard('-1')
+    expect(formula).toHaveValue('ABS([FQTY]-1 + 2)')
+  },
+)
+
+it('replaces selected formula text with the measure and continues at its end', async () => {
+  const { user } = setup(false, undefined, true)
+  await user.click(screen.getByRole('radio', { name: 'Calculated' }))
+  const formula = screen.getByLabelText('Formula') as HTMLTextAreaElement
+  await user.type(formula, 'MAX(12, 3)')
+  formula.setSelectionRange(4, 6)
+  await user.click(screen.getByRole('button', { name: 'FQTY' }))
+  expect(formula).toHaveValue('MAX([FQTY], 3)')
+  expect(formula).toHaveFocus()
+  await user.keyboard('+1')
+  expect(formula).toHaveValue('MAX([FQTY]+1, 3)')
+})
+
+it('collapses the selection after inserting the same selected measure token', async () => {
+  const { user } = setup(false, undefined, true)
+  await user.click(screen.getByRole('radio', { name: 'Calculated' }))
+  const formula = screen.getByLabelText('Formula') as HTMLTextAreaElement
+  await user.click(formula)
+  await user.paste('ABS([FQTY])')
+  expect(formula).toHaveValue('ABS([FQTY])')
+  formula.setSelectionRange(4, 10)
+  await user.click(screen.getByRole('button', { name: 'FQTY' }))
+  expect(formula).toHaveFocus()
+  expect(formula.selectionStart).toBe(10)
+  expect(formula.selectionEnd).toBe(10)
+  await user.keyboard('+1')
+  expect(formula).toHaveValue('ABS([FQTY]+1)')
 })

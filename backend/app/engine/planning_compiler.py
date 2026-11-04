@@ -36,6 +36,16 @@ class PlanningLevelCompiler(ClickHouseCompiler):
     def render(self, node):
         if isinstance(node, RelationScan):
             table = self.table(node.table_name)
+            if node.input_pipeline:
+                from .population_inputs import compile_population_input
+
+                query, checks = compile_population_input(
+                    self.database, node.input_pipeline
+                )
+                self.input_checks.extend(
+                    c for c in checks if c not in self.input_checks
+                )
+                table = "(" + query + ")"
             if node.transform:
                 compiled = ClickHouseCompiler(self.database).compile(node.transform)
                 for check in compiled.checks:

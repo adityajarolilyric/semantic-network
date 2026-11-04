@@ -1,4 +1,5 @@
 from .services.transaction_resolution import TransactionResolutionService
+from .services.transaction_grains import TransactionGrainService
 from .services.planning_view import PlanningViewService
 from .services.workspace_gate import WorkspaceGate
 from .services.workspace_reset import WorkspaceResetService
@@ -74,6 +75,9 @@ class ServiceContainer:
             self.store, self.settings, self.planning_builds, self.managed_tables
         )
         self.managed_tables.measure_builds = self.measure_builds
+        self.transaction_grains = TransactionGrainService(
+            self.store, self.settings, self.planning_builds
+        )
         self.transaction_resolution = TransactionResolutionService(
             self.store, self.settings, self.planning_builds, self.managed_tables
         )

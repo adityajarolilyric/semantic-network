@@ -95,7 +95,15 @@ export type PopulationAttribute = {
 }
 export type Factor = { factorId: string; sourceId: string; selectedColumnIds: string[] }
 export type Population =
-  | { operation: 'source'; sourceId: string }
+  | {
+      operation: 'source'
+      sourceId: string
+      inputTransform?: {
+        objectId: string
+        pivot?: PivotStage | null
+        calendarResolution?: CalendarResolution | null
+      } | null
+    }
   | { operation: 'cartesian_product'; factors: Factor[] }
   | { operation: 'distinct_projection'; sourcePlanningLevelId: string }
 export type Binding = {

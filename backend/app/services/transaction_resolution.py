@@ -23,14 +23,22 @@ class TransactionResolutionService(Service):
         self.settings, self.planning, self.managed = settings, planning, managed
         self.executor, self.warehouse = planning.executor, planning.executor.warehouse
 
-    async def options(self, model, revision, level_id):
+    async def options(self, model, revision, level_id=None):
         repo = self.store.repository
         objects = await self.objects(repo, model, revision)
-        level = await self.require(
-            repo,
-            "semantic_objects",
-            {**scope(model, revision), "objectId": level_id, "kind": "planningLevel"},
-            "Native planning level",
+        level = (
+            await self.require(
+                repo,
+                "semantic_objects",
+                {
+                    **scope(model, revision),
+                    "objectId": level_id,
+                    "kind": "planningLevel",
+                },
+                "Native planning level",
+            )
+            if level_id
+            else {"definition": {"grain": {"keyIds": [], "columns": []}}}
         )
         rel = LevelRelationshipAnalyzer(objects)
         binding = await repo.get(
@@ -64,7 +72,7 @@ class TransactionResolutionService(Service):
                 "target": {"dimensionId": None, "columnId": cid},
                 "label": "Native · " + names.get(cid, cid),
             }
-            for cid in rel.outputs(level_id)
+            for cid in (rel.outputs(level_id) if level_id else {})
             if cid in names
         ]
         for dim in rel.dimensions.values():
@@ -84,7 +92,11 @@ class TransactionResolutionService(Service):
                         }
                     )
                 )
-                if col["columnId"] in exposed and rel.resolve(level_id, coordinate):
+                if (
+                    level_id
+                    and col["columnId"] in exposed
+                    and rel.resolve(level_id, coordinate)
+                ):
                     targets.append(
                         {
                             "target": {
@@ -95,7 +107,7 @@ class TransactionResolutionService(Service):
                         }
                     )
         calendars = []
-        outputs = rel.outputs(level_id)
+        outputs = rel.outputs(level_id) if level_id else {}
         for dim in rel.dimensions.values():
             d = dim["definition"]
             if not dim["isTimeDim"] or d["time"]["baseGrain"] != "day":

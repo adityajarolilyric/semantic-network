@@ -26,10 +26,12 @@ it('shows the real Base path and updates split/repeat immediately from unsaved a
     const { rerender } = render(
       <MeasureBaseVisibility definition={definition} levels={[]} base="/test" baseLevelId="base" />,
     )
-    await waitFor(() => expect(screen.getByText(/Non-time — SUM/)).toBeVisible())
-    const steps = screen.getAllByRole('listitem')
-    expect(steps[0]).toHaveTextContent('Time — AVG: Repeat')
-    expect(steps[1]).toHaveTextContent('Non-time — SUM: Split equally')
+    await waitFor(() =>
+      expect(screen.getByLabelText('Non-time Base visibility policy')).toHaveValue('equal'),
+    )
+    expect(screen.getByLabelText('Time Base visibility policy')).toHaveValue('repeat')
+    expect(screen.getByLabelText('Non-time Base visibility policy')).toHaveValue('equal')
+    expect(screen.getByLabelText('Non-time Base visibility policy')).toBeDisabled()
     rerender(
       <MeasureBaseVisibility
         definition={{
@@ -46,8 +48,8 @@ it('shows the real Base path and updates split/repeat immediately from unsaved a
         baseLevelId="base"
       />,
     )
-    expect(screen.getAllByRole('listitem')[0]).toHaveTextContent('Non-time — MAX: Repeat')
-    expect(screen.getAllByRole('listitem')[1]).toHaveTextContent('Time — SUM: Split equally')
+    expect(screen.getByLabelText('Non-time Base visibility policy')).toHaveValue('repeat')
+    expect(screen.getByLabelText('Time Base visibility policy')).toHaveValue('equal')
     expect(request).toHaveBeenCalledTimes(1)
   } finally {
     request.mockRestore()
@@ -78,14 +80,12 @@ it('explains unreachable Base paths without promising disaggregation', async () 
 })
 
 it('describes AggregateFirst as recalculation, never splitting its formula result', async () => {
-  const request = vi
-    .spyOn(metadataApi, 'request')
-    .mockResolvedValue({
-      baseLevelId: 'base',
-      relationship: 'roll_down',
-      reason: null,
-      expansionAxes: ['nonTime'],
-    })
+  const request = vi.spyOn(metadataApi, 'request').mockResolvedValue({
+    baseLevelId: 'base',
+    relationship: 'roll_down',
+    reason: null,
+    expansionAxes: ['nonTime'],
+  })
   try {
     render(
       <MeasureBaseVisibility

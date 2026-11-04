@@ -829,6 +829,17 @@ export function MetadataWorkspace({
                     base={metadataApi.scope(model!.modelId, revision!.revisionId)}
                     {...common}
                     initial={editor.input as Transaction}
+                    onCreated={(transaction, close) => {
+                      setEditor((current) =>
+                        current?.input.objectId === transaction.objectId
+                          ? close
+                            ? null
+                            : { input: inputOf(transaction), version: transaction.version }
+                          : current,
+                      )
+                      meta.refresh()
+                      if (close) setNotice('Transaction and planning level created.')
+                    }}
                     onSave={save}
                   />
                 )}

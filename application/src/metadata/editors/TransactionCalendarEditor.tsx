@@ -33,11 +33,13 @@ export function TransactionCalendarEditor({
   const serialized = JSON.stringify(value)
   const pivotSignature = JSON.stringify(pivot ?? null)
   useEffect(() => {
-    if (!base || !levelId) return
+    if (!base) return
     const controller = new AbortController()
     void metadataApi
       .request<{ calendars: ResolutionCalendar[] }>(
-        base + '/transactions/resolution/options?planningLevelId=' + encodeURIComponent(levelId),
+        base +
+          '/transactions/resolution/options' +
+          (levelId ? '?planningLevelId=' + encodeURIComponent(levelId) : ''),
         'GET',
         undefined,
         undefined,

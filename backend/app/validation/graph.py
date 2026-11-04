@@ -158,6 +158,34 @@ class SemanticGraphValidator:
             )
         )
 
+    def population_columns(self, owner, source):
+        from ..engine.population_inputs import population_columns
+        from ..core.errors import MetadataError
+
+        population = owner["definition"]["population"]
+        calendar = (population.get("inputTransform") or {}).get("calendarResolution")
+        if calendar:
+            self.reference(
+                owner,
+                calendar["dimensionId"],
+                "dimension",
+                "definition.population.inputTransform.calendarResolution",
+            )
+        try:
+            return {
+                c["columnId"]: c
+                for c in population_columns(
+                    population,
+                    list(self.objects.values()),
+                    list(self.columns(source).values()),
+                )
+            }
+        except MetadataError as error:
+            self.error(
+                owner, error.code, error.message, "definition.population.inputTransform"
+            )
+            return {}
+
     def grain_type(self, level: dict, column_id: str, seen=None) -> str | None:
         seen = set() if seen is None else seen
         marker = (level["objectId"], column_id)
@@ -209,7 +237,11 @@ class SemanticGraphValidator:
             source_id = population["sourceId"]
         source = self.objects.get(source_id)
         if source and source["kind"] == "source":
-            return self.columns(source).get(ref["columnId"], {}).get("physicalType")
+            return (
+                self.population_columns(level, source)
+                .get(ref["columnId"], {})
+                .get("physicalType")
+            )
         return None
 
     def dimension_type(self, dimension: dict, column_id: str) -> str | None:
@@ -326,7 +358,10 @@ class SemanticGraphValidator:
                             c["populationRef"]["columnId"] for c in all_columns.values()
                         ]
                     self.require_columns(
-                        obj, selected, self.columns(source), "definition.population"
+                        obj,
+                        selected,
+                        self.population_columns(obj, source),
+                        "definition.population",
                     )
         for binding in definition["dimensionBindings"]:
             dimension = self.reference(

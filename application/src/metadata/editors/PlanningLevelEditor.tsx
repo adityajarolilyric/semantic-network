@@ -1,3 +1,4 @@
+import { usePopulationInputColumns } from './usePopulationInputColumns'
 import { FilterEditor } from './FilterEditor'
 import { useFilterColumns } from './useFilterColumns'
 import { projectionAttributes } from '../projectionColumns'
@@ -48,6 +49,7 @@ export function PlanningLevelEditor({
   const p = d.population
   const cols = d.grain.columns
   const attrs = d.populationAttributes ?? []
+  const [remapPopulation, setRemapPopulation] = useState(false)
   const [activeDimension, setActiveDimension] = useState(
     initial.definition.dimensionBindings[0]?.dimensionId ?? '',
   )
@@ -66,8 +68,17 @@ export function PlanningLevelEditor({
           ? projectionBindings(parent, columns, d.dimensionBindings, data.dimensions)
           : [],
     })
+  const populationInput = usePopulationInputColumns(
+    p,
+    base,
+    p.operation === 'source'
+      ? (data.sources.find((s) => s.objectId === p.sourceId)?.definition.columns ?? [])
+      : [],
+  )
   const sourceCols = (sourceId: string) =>
-    data.sources.find((s) => s.objectId === sourceId)?.definition.columns ?? []
+    p.operation === 'source' && p.sourceId === sourceId && populationInput.configured
+      ? populationInput.columns
+      : (data.sources.find((s) => s.objectId === sourceId)?.definition.columns ?? [])
   const parent =
     p.operation === 'distinct_projection'
       ? data.planningLevels.find((l) => l.objectId === p.sourcePlanningLevelId)
@@ -263,6 +274,7 @@ export function PlanningLevelEditor({
     }
   }
   function changePopulation(population: Population) {
+    setRemapPopulation(false)
     update({
       population,
       grain: { keyIds: [], columns: [] },
@@ -280,24 +292,38 @@ export function PlanningLevelEditor({
     >
       <fieldset disabled={readOnly || busy || previewBusy}>
         <IdentityFields value={value} editing={editing} onChange={(v) => set({ ...value, ...v })} />
-        <Select
-          label="Population method"
-          value={p.operation}
-          items={[
-            { value: 'source', label: 'Rows from one managed table' },
-            { value: 'cartesian_product', label: 'Cartesian product of valid source combinations' },
-            { value: 'distinct_projection', label: 'Distinct projection of an existing level' },
-          ]}
-          onChange={(operation) =>
-            changePopulation(
-              operation === 'source'
-                ? { operation, sourceId: '' }
-                : operation === 'cartesian_product'
-                  ? { operation, factors: [] }
-                  : { operation: 'distinct_projection', sourcePlanningLevelId: '' },
-            )
-          }
-        />
+        <fieldset className="measure-type-control">
+          <legend>
+            Population method <FieldHelp label="Population method" />
+          </legend>
+          <div className="measure-type-switch">
+            {(
+              [
+                ['source', 'From a Table'],
+                ['cartesian_product', 'From Multiple Tables'],
+                ['distinct_projection', 'From Existing Planning Level'],
+              ] as const
+            ).map(([operation, label]) => (
+              <label className="measure-type-option" key={operation}>
+                <input
+                  type="radio"
+                  name="population-method"
+                  checked={p.operation === operation}
+                  onChange={() =>
+                    changePopulation(
+                      operation === 'source'
+                        ? { operation, sourceId: '' }
+                        : operation === 'cartesian_product'
+                          ? { operation, factors: [] }
+                          : { operation, sourcePlanningLevelId: '' },
+                    )
+                  }
+                />
+                <span>{label}</span>
+              </label>
+            ))}
+          </div>
+        </fieldset>
         <p className="meta-hint">
           Preview builds without saving metadata. Save commits the configuration and its built
           table. An unchanged, current table is reused.
@@ -308,37 +334,131 @@ export function PlanningLevelEditor({
         </p>
         {p.operation === 'source' && (
           <>
+            {p.inputTransform && (
+              <p className="meta-hint">
+                This population applies the Pivot and Date resolution configuration captured at
+                creation, then selects distinct grain keys. Choosing a different population table
+                replaces that input pipeline.
+              </p>
+            )}
+            {populationInput.error && (
+              <p className="meta-error" role="alert">
+                {populationInput.error}
+              </p>
+            )}
             <Select
               label="Population table"
               value={p.sourceId}
               items={options(data.sources.filter((s) => s.definition.inScope))}
-              onChange={(sourceId) => changePopulation({ operation: 'source', sourceId })}
-            />
-            <div className="meta-grid">
-              <Checks
-                label="Grain columns"
-                items={sourceCols(p.sourceId).map((c) => ({
-                  value: c.columnId,
-                  label: c.name,
-                  disabled:
-                    c.nullable ||
-                    attrs.some(
-                      (a) => !a.populationRef.factorId && a.populationRef.columnId === c.columnId,
-                    ),
-                }))}
-                selected={cols.map((c) => c.populationRef.columnId!)}
-                onChange={(ids) =>
-                  setColumns(
-                    ids.map((id) => ({
-                      grainColumnId: id,
-                      name: sourceCols(p.sourceId).find((c) => c.columnId === id)!.name,
-                      populationRef: { columnId: id },
+              onChange={(sourceId) => {
+                if (editing && cols.length) {
+                  setRemapPopulation(true)
+                  update({
+                    population: { operation: 'source', sourceId },
+                    grain: {
+                      ...d.grain,
+                      columns: cols.map((c) => ({ ...c, populationRef: { columnId: '' } })),
+                    },
+                    populationAttributes: attrs.map((a) => ({
+                      ...a,
+                      populationRef: { columnId: '' },
                     })),
-                  )
-                }
-              />
-              {populationAttributes(p.sourceId)}
-            </div>
+                  })
+                } else changePopulation({ operation: 'source', sourceId })
+              }}
+            />
+            {remapPopulation ? (
+              <div className="meta-subsection">
+                <h3>Map existing fields to the new population</h3>
+                <p className="meta-hint">
+                  Map each field explicitly. Grain identities, Transaction mappings and Dimension
+                  bindings are preserved.
+                </p>
+                <div className="meta-grid">
+                  {cols.map((column, i) => (
+                    <Select
+                      key={column.grainColumnId}
+                      label={'Population column for ' + column.name}
+                      value={column.populationRef.columnId ?? ''}
+                      items={sourceCols(p.sourceId)
+                        .filter((c) => !c.nullable)
+                        .map((c) => ({ value: c.columnId, label: c.name }))}
+                      onChange={(columnId) =>
+                        update({
+                          grain: {
+                            ...d.grain,
+                            columns: cols.map((c, index) =>
+                              index === i
+                                ? {
+                                    ...c,
+                                    name: sourceCols(p.sourceId).find(
+                                      (source) => source.columnId === columnId,
+                                    )!.name,
+                                    populationRef: { columnId },
+                                  }
+                                : c,
+                            ),
+                          },
+                        })
+                      }
+                    />
+                  ))}
+                  {attrs.map((attribute, i) => (
+                    <Select
+                      key={attribute.columnId}
+                      label={'Population column for attribute ' + attribute.name}
+                      value={attribute.populationRef.columnId ?? ''}
+                      items={sourceCols(p.sourceId).map((c) => ({
+                        value: c.columnId,
+                        label: c.name,
+                      }))}
+                      onChange={(columnId) =>
+                        update({
+                          populationAttributes: attrs.map((a, index) =>
+                            index === i
+                              ? {
+                                  ...a,
+                                  name: sourceCols(p.sourceId).find(
+                                    (source) => source.columnId === columnId,
+                                  )!.name,
+                                  populationRef: { columnId },
+                                }
+                              : a,
+                          ),
+                        })
+                      }
+                    />
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="meta-grid">
+                <Checks
+                  label="Grain columns"
+                  items={sourceCols(p.sourceId).map((c) => ({
+                    value: c.columnId,
+                    label: c.name,
+                    disabled:
+                      (!populationInput.configured && c.nullable) ||
+                      attrs.some(
+                        (a) => !a.populationRef.factorId && a.populationRef.columnId === c.columnId,
+                      ),
+                  }))}
+                  selected={cols.map((c) => c.populationRef.columnId!)}
+                  onChange={(ids) =>
+                    setColumns(
+                      ids.map((id) => ({
+                        grainColumnId:
+                          cols.find((c) => c.populationRef.columnId === id)?.grainColumnId ?? id,
+                        name: sourceCols(p.sourceId).find((c) => c.columnId === id)!.name,
+                        populationRef: { columnId: id },
+                      })),
+                    )
+                  }
+                />
+                {populationAttributes(p.sourceId)}
+              </div>
+            )}
           </>
         )}
         {p.operation === 'cartesian_product' && (
@@ -464,9 +584,9 @@ export function PlanningLevelEditor({
                 changePopulation({ operation: 'distinct_projection', sourcePlanningLevelId })
               }
             />
-            <div className="meta-grid">
+            <div className="planning-parent-fields">
               <Checks
-                label="Retain parent keys"
+                label="Select keys from Parent keys"
                 items={(parent?.definition.grain.columns ?? [])
                   .filter((c) => parent?.definition.grain.keyIds.includes(c.grainColumnId))
                   .map((c) => ({
@@ -494,7 +614,30 @@ export function PlanningLevelEditor({
                 }
               />
               <Checks
-                label="Attributes from parent level"
+                label="Make Parent attribute as a grain key"
+                bulk
+                items={parentAttributes.map((c) => ({
+                  ...c,
+                  disabled: attrs.some((a) => a.populationRef.sourceOutputColumnId === c.value),
+                }))}
+                selected={cols
+                  .filter((c) => c.populationRef.sourceOutputColumnId)
+                  .map((c) => c.populationRef.sourceOutputColumnId!)}
+                onChange={(ids) =>
+                  setColumns([
+                    ...cols.filter((c) => c.populationRef.sourceGrainColumnId),
+                    ...ids.map((id) => ({
+                      grainColumnId:
+                        cols.find((c) => c.populationRef.sourceOutputColumnId === id)
+                          ?.grainColumnId ?? 'g_' + crypto.randomUUID().replaceAll('-', ''),
+                      name: parentAttributes.find((c) => c.value === id)!.label,
+                      populationRef: { sourceOutputColumnId: id },
+                    })),
+                  ])
+                }
+              />
+              <Checks
+                label="Select attributes from Parent"
                 bulk
                 items={parentAttributes.map((c) => ({
                   value: c.value,
@@ -520,29 +663,6 @@ export function PlanningLevelEditor({
                 }
               />
             </div>
-            <Checks
-              label="Use parent attributes as grain keys"
-              bulk
-              items={parentAttributes.map((c) => ({
-                ...c,
-                disabled: attrs.some((a) => a.populationRef.sourceOutputColumnId === c.value),
-              }))}
-              selected={cols
-                .filter((c) => c.populationRef.sourceOutputColumnId)
-                .map((c) => c.populationRef.sourceOutputColumnId!)}
-              onChange={(ids) =>
-                setColumns([
-                  ...cols.filter((c) => c.populationRef.sourceGrainColumnId),
-                  ...ids.map((id) => ({
-                    grainColumnId:
-                      cols.find((c) => c.populationRef.sourceOutputColumnId === id)
-                        ?.grainColumnId ?? 'g_' + crypto.randomUUID().replaceAll('-', ''),
-                    name: parentAttributes.find((c) => c.value === id)!.label,
-                    populationRef: { sourceOutputColumnId: id },
-                  })),
-                ])
-              }
-            />
           </>
         )}
         {cols.length > 0 && (
@@ -653,104 +773,113 @@ export function PlanningLevelEditor({
                   >
                     {b && (
                       <>
-                        <div className="dimension-join-mappings">
-                          {b.keyMappings.map((m, i) => (
-                            <div className="dimension-join-row" key={i}>
-                              <Select
-                                label={`${dim.name} planning-level column ${i + 1}`}
-                                value={m.grainColumnId ?? m.populationColumnId ?? ''}
-                                items={[
-                                  ...cols.map((c) => ({ value: c.grainColumnId, label: c.name })),
-                                  ...attrs.map((a) => ({
-                                    value: a.columnId,
-                                    label: a.name + ' (attribute)',
-                                  })),
-                                ]}
-                                onChange={(grainColumnId) =>
-                                  setBinding({
-                                    ...b,
-                                    keyMappings: b.keyMappings.map((row, j) =>
-                                      j === i
-                                        ? {
-                                            dimensionColumnId: row.dimensionColumnId,
-                                            ...(cols.some((c) => c.grainColumnId === grainColumnId)
-                                              ? { grainColumnId }
-                                              : { populationColumnId: grainColumnId }),
-                                          }
-                                        : row,
-                                    ),
-                                  })
-                                }
-                              />
-                              <Select
-                                label={`${dim.name} dimension column ${i + 1}`}
-                                value={m.dimensionColumnId}
-                                items={dim.definition.columns.map((c) => ({
-                                  value: c.columnId,
-                                  label: c.displayName,
-                                }))}
-                                onChange={(dimensionColumnId) =>
-                                  setBinding({
-                                    ...b,
-                                    keyMappings: b.keyMappings.map((row, j) =>
-                                      j === i ? { ...row, dimensionColumnId } : row,
-                                    ),
-                                  })
-                                }
-                              />
-                              {b.keyMappings.length > 1 && (
-                                <button
-                                  type="button"
-                                  className="meta-danger"
-                                  aria-label={`Remove ${dim.name} mapping ${i + 1}`}
-                                  onClick={() =>
-                                    setBinding({
-                                      ...b,
-                                      keyMappings: b.keyMappings.filter((_, j) => j !== i),
-                                    })
-                                  }
-                                >
-                                  Remove
-                                </button>
-                              )}
+                        <div className="planning-binding-fields">
+                          <div>
+                            <div className="dimension-join-mappings">
+                              {b.keyMappings.map((m, i) => (
+                                <div className="dimension-join-row" key={i}>
+                                  <Select
+                                    label={`${dim.name} planning-level column ${i + 1}`}
+                                    value={m.grainColumnId ?? m.populationColumnId ?? ''}
+                                    items={[
+                                      ...cols.map((c) => ({
+                                        value: c.grainColumnId,
+                                        label: c.name,
+                                      })),
+                                      ...attrs.map((a) => ({
+                                        value: a.columnId,
+                                        label: a.name + ' (attribute)',
+                                      })),
+                                    ]}
+                                    onChange={(grainColumnId) =>
+                                      setBinding({
+                                        ...b,
+                                        keyMappings: b.keyMappings.map((row, j) =>
+                                          j === i
+                                            ? {
+                                                dimensionColumnId: row.dimensionColumnId,
+                                                ...(cols.some(
+                                                  (c) => c.grainColumnId === grainColumnId,
+                                                )
+                                                  ? { grainColumnId }
+                                                  : { populationColumnId: grainColumnId }),
+                                              }
+                                            : row,
+                                        ),
+                                      })
+                                    }
+                                  />
+                                  <Select
+                                    label={`${dim.name} dimension column ${i + 1}`}
+                                    value={m.dimensionColumnId}
+                                    items={dim.definition.columns.map((c) => ({
+                                      value: c.columnId,
+                                      label: c.displayName,
+                                    }))}
+                                    onChange={(dimensionColumnId) =>
+                                      setBinding({
+                                        ...b,
+                                        keyMappings: b.keyMappings.map((row, j) =>
+                                          j === i ? { ...row, dimensionColumnId } : row,
+                                        ),
+                                      })
+                                    }
+                                  />
+                                  {b.keyMappings.length > 1 && (
+                                    <button
+                                      type="button"
+                                      className="meta-danger"
+                                      aria-label={`Remove ${dim.name} mapping ${i + 1}`}
+                                      onClick={() =>
+                                        setBinding({
+                                          ...b,
+                                          keyMappings: b.keyMappings.filter((_, j) => j !== i),
+                                        })
+                                      }
+                                    >
+                                      Remove
+                                    </button>
+                                  )}
+                                </div>
+                              ))}
                             </div>
-                          ))}
-                        </div>
-                        <div className="meta-toolbar">
-                          <button
-                            type="button"
-                            className="text-button"
-                            disabled={b.keyMappings.length >= 32}
-                            onClick={() =>
-                              setBinding({
-                                ...b,
-                                keyMappings: [
-                                  ...b.keyMappings,
-                                  { grainColumnId: '', dimensionColumnId: '' },
-                                ],
-                              })
+                            <div className="meta-toolbar">
+                              <button
+                                type="button"
+                                className="text-button"
+                                disabled={b.keyMappings.length >= 32}
+                                onClick={() =>
+                                  setBinding({
+                                    ...b,
+                                    keyMappings: [
+                                      ...b.keyMappings,
+                                      { grainColumnId: '', dimensionColumnId: '' },
+                                    ],
+                                  })
+                                }
+                              >
+                                Add {dim.name} mapping
+                              </button>
+                            </div>
+                            <p className="meta-hint">
+                              Without selected attributes, the mapping only checks that the values
+                              exist. Multiple dimension members may match. Selected attributes must
+                              have one distinct combination for each mapped value; they do not
+                              change the grain.
+                            </p>
+                          </div>
+                          <Checks
+                            label={'Attributes from ' + dim.name}
+                            bulk
+                            items={dim.definition.columns
+                              .filter((c) => dim.definition.attributeColumnIds.includes(c.columnId))
+                              .map((c) => ({ value: c.columnId, label: c.displayName }))}
+                            selected={b.selectedAttributeColumnIds}
+                            onChange={(selectedAttributeColumnIds) =>
+                              setBinding({ ...b, selectedAttributeColumnIds })
                             }
-                          >
-                            Add {dim.name} mapping
-                          </button>
+                          />{' '}
                         </div>
-                        <p className="meta-hint">
-                          Without selected attributes, the mapping only checks that the values
-                          exist. Multiple dimension members may match. Selected attributes must have
-                          one distinct combination for each mapped value; they do not change the
-                          grain.
-                        </p>
-                        <Checks
-                          label={'Attributes from ' + dim.name}
-                          bulk
-                          items={dim.definition.columns
-                            .filter((c) => dim.definition.attributeColumnIds.includes(c.columnId))
-                            .map((c) => ({ value: c.columnId, label: c.displayName }))}
-                          selected={b.selectedAttributeColumnIds}
-                          onChange={(selectedAttributeColumnIds) =>
-                            setBinding({ ...b, selectedAttributeColumnIds })
-                          }
-                        />
                       </>
                     )}
                     <div className="meta-actions" style={{ justifyContent: 'flex-end' }}>

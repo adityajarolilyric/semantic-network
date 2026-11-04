@@ -18,6 +18,9 @@ def invalid(message):
 class PlanningLevelPlanner:
     """Analyze stable logical references; SQL generation belongs to the compiler."""
 
+    def __init__(self, resolution_max_rows=1000000):
+        self.resolution_max_rows = resolution_max_rows
+
     def plan(self, level, objects, relations):
         objects = {o["objectId"]: o for o in objects}
         definition = level["definition"]
@@ -44,6 +47,26 @@ class PlanningLevelPlanner:
             invalid("Choose at least one population factor.")
         for factor in factors:
             relation = relations[factor["sourceId"]]
+            pipeline = None
+            if population.get("inputTransform"):
+                from .population_inputs import population_columns, population_owner
+                from .calendar_resolution import effective_calendar_objects
+
+                effective = effective_calendar_objects(
+                    list(objects.values()), relations
+                )
+                relation = {
+                    **relation,
+                    "columns": population_columns(
+                        population, effective, relation["columns"]
+                    ),
+                }
+                pipeline = {
+                    "owner": population_owner(population),
+                    "objects": effective,
+                    "relations": relations,
+                    "maxRows": self.resolution_max_rows,
+                }
             available = {c["columnId"]: c for c in relation["columns"]}
             selected = [
                 (cid, ref)
@@ -67,7 +90,12 @@ class PlanningLevelPlanner:
                     )
                 source_column = available[input_id]
                 columns.append(
-                    (cid, source_column.get("storageName", source_column["name"]))
+                    (
+                        cid,
+                        source_column["name"]
+                        if pipeline
+                        else source_column.get("storageName", source_column["name"]),
+                    )
                 )
                 schema.append(
                     {
@@ -90,6 +118,7 @@ class PlanningLevelPlanner:
                 RelationScan(
                     relation["physicalName"],
                     tuple(columns),
+                    input_pipeline=pipeline,
                     generation=relation.get("generationToken", relation["artifactId"])
                     if projection
                     else None,

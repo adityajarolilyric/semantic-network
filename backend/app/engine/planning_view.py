@@ -63,6 +63,43 @@ class PlanningViewPlanner:
     def fields(self, request):
         result = []
         for index, ref in enumerate([*request.rows, *request.columns]):
+            if ref.planningLevelId:
+                level = self.objects.get(ref.planningLevelId)
+                if not level or level["kind"] != "planningLevel":
+                    raise MetadataError(
+                        "invalid_view_field",
+                        "A selected planning level no longer exists.",
+                    )
+                definition = level["definition"]
+                columns = {
+                    c["grainColumnId"]: c["name"]
+                    for c in definition["grain"]["columns"]
+                }
+                columns.update(
+                    {
+                        c["columnId"]: c["name"]
+                        for c in definition.get("populationAttributes", [])
+                    }
+                )
+                if ref.columnId not in columns:
+                    raise MetadataError(
+                        "invalid_view_field",
+                        "Choose a grain column or population attribute from the planning level.",
+                    )
+                coordinate = LevelRelationshipAnalyzer(
+                    list(self.objects.values())
+                ).outputs(level["objectId"])[ref.columnId]
+                result.append(
+                    {
+                        "id": f"axis_{index}",
+                        "planningLevelId": level["objectId"],
+                        "columnId": ref.columnId,
+                        "label": level["name"] + " · " + columns[ref.columnId],
+                        "axis": "row" if index < len(request.rows) else "column",
+                        "coordinate": coordinate,
+                    }
+                )
+                continue
             dim = self.objects.get(ref.dimensionId)
             if not dim or dim["kind"] != "dimension":
                 raise MetadataError(

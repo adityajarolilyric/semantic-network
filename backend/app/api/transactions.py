@@ -7,15 +7,23 @@ from ..schemas.transactions import (
     TransactionDocument,
     TransactionInput,
     CalendarSchemaInput,
+    TransactionFromGrainInput,
 )
 from ..services.transactions import TransactionService
 from .base import RevisionResourceAPI
 
 
 class TransactionAPI(RevisionResourceAPI):
-    def __init__(self, service: TransactionService, resolution=None):
+    def __init__(self, service: TransactionService, resolution=None, grains=None):
         super().__init__(service, "transactions", TransactionDocument)
         self.resolution = resolution
+        self.grains = grains
+        self.router.add_api_route(
+            "/from-grain", self.from_grain, methods=["POST"], status_code=201
+        )
+        self.router.add_api_route(
+            "/from-grain/preview", self.preview_grain, methods=["POST"]
+        )
         self.router.add_api_route("/input/schema", self.input_schema, methods=["POST"])
         self.router.add_api_route(
             "/input/preview", self.input_preview, methods=["POST"]
@@ -32,6 +40,22 @@ class TransactionAPI(RevisionResourceAPI):
             "/resolution/schema", self.output_schema, methods=["POST"]
         )
         self.router.add_api_route("/{resource_id}/schema", self.schema, methods=["GET"])
+
+    async def from_grain(
+        self,
+        model_id: Identifier,
+        revision_id: Identifier,
+        payload: TransactionFromGrainInput,
+    ):
+        return await self.grains.create(model_id, revision_id, payload)
+
+    async def preview_grain(
+        self,
+        model_id: Identifier,
+        revision_id: Identifier,
+        payload: TransactionFromGrainInput,
+    ):
+        return await self.grains.preview(model_id, revision_id, payload)
 
     async def output_schema(
         self, model_id: Identifier, revision_id: Identifier, payload: TransactionInput
@@ -75,7 +99,10 @@ class TransactionAPI(RevisionResourceAPI):
         )
 
     async def options(
-        self, model_id: Identifier, revision_id: Identifier, planningLevelId: Identifier
+        self,
+        model_id: Identifier,
+        revision_id: Identifier,
+        planningLevelId: Identifier | None = None,
     ):
         return await self.resolution.options(model_id, revision_id, planningLevelId)
 

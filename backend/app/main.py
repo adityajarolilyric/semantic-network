@@ -155,7 +155,11 @@ class ApplicationFactory:
             SourceRegistrationAPI(container.source_registration),
             DimensionAPI(container.dimensions, container.transaction_resolution),
             PlanningLevelAPI(container.planning_levels, container.planning_builds),
-            TransactionAPI(container.transactions, container.transaction_resolution),
+            TransactionAPI(
+                container.transactions,
+                container.transaction_resolution,
+                container.transaction_grains,
+            ),
             MeasureAPI(container.measures, container.measure_builds),
             PlanningViewAPI(container.planning_view),
             EvidenceAPI(container.evidence),

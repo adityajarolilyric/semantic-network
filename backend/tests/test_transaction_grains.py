@@ -1,0 +1,59 @@
+from .conftest import ROOT
+from .test_metadata_api import publish
+
+
+def command(client, oid="NewTransaction"):
+    source = client.get(ROOT + "/sources/src_forecast").json()
+    return {
+        "objectId": oid,
+        "name": oid,
+        "displayName": oid,
+        "sourceId": source["objectId"],
+        "grainColumnIds": [c["columnId"] for c in source["definition"]["columns"][:3]],
+    }
+
+
+def test_creation_keeps_base_and_retries_without_extra_versions(populated):
+    payload = command(populated)
+    original = populated.get(ROOT).json()
+    result = populated.post(ROOT + "/transactions/from-grain", json=payload)
+    assert result.status_code == 201, result.text
+    created = result.json()
+    assert (
+        populated.get(ROOT).json()["basePlanningLevelId"]
+        == original["basePlanningLevelId"]
+    )
+    assert created["transaction"]["definition"]["mappingMode"] == "direct"
+    assert "createPlanningLevel" not in created["transaction"]["definition"]
+    revision = populated.get(ROOT).json()
+    replay = populated.post(ROOT + "/transactions/from-grain", json=payload)
+    assert replay.json() == created
+    assert populated.get(ROOT).json() == revision
+
+
+def test_object_limit_prevents_partial_creation(populated):
+    service = populated.app.state.container.transaction_grains
+    objects = []
+    for kind in [
+        "sources",
+        "dimensions",
+        "planning-levels",
+        "transactions",
+        "measures",
+    ]:
+        objects.extend(populated.get(ROOT + "/" + kind).json()["items"])
+    service.max_objects = len(objects) + 1
+    before = populated.get(ROOT).json()
+    result = populated.post(ROOT + "/transactions/from-grain", json=command(populated))
+    assert result.status_code == 409, result.text
+    assert populated.get(ROOT).json() == before
+    assert populated.get(ROOT + "/transactions/NewTransaction").status_code == 404
+
+
+def test_published_revision_cannot_generate_a_level(populated):
+    payload = command(populated)
+    assert publish(populated).status_code == 200
+    before = populated.get(ROOT).json()
+    result = populated.post(ROOT + "/transactions/from-grain", json=payload)
+    assert result.status_code == 409, result.text
+    assert populated.get(ROOT).json() == before

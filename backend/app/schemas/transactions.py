@@ -4,7 +4,7 @@ from pydantic import Field, model_validator, model_serializer
 
 from .managed_tables import PivotStage
 from .filters import FilterDefinition
-from .common import DocumentMetadata, Identifier, Schema, SemanticInput, unique
+from .common import DocumentMetadata, Identifier, Name, Schema, SemanticInput, unique
 
 
 class TransactionKeyMapping(Schema):
@@ -201,3 +201,19 @@ class TransactionInput(SemanticInput):
 
 class TransactionDocument(TransactionInput, DocumentMetadata):
     pass
+
+
+class TransactionFromGrainInput(SemanticInput):
+    """Creation command only; no onboarding fields persist on semantic definitions."""
+
+    kind: Literal["transaction"] = "transaction"
+    sourceId: Identifier
+    grainColumnIds: list[Identifier] = Field(min_length=1, max_length=32)
+    planningLevelName: Name | None = None
+    pivot: PivotStage | None = None
+    calendarResolution: CalendarResolution | None = None
+
+    @model_validator(mode="after")
+    def distinct_grain(self):
+        unique(self.grainColumnIds, "grain columns")
+        return self

@@ -317,31 +317,33 @@ export function ObjectPivotEditor({
               Choose the attribute/value columns and Discover output columns to complete this pivot.
             </p>
           )}
-          <button
-            type="button"
-            className="secondary-button"
-            disabled={!complete || !source || !base}
-            onClick={async () => {
-              setBusy(true)
-              setPreview(null)
-              setError('')
-              try {
-                setPreview(
-                  await metadataApi.request(base + '/' + kind + '/input/preview', 'POST', {
-                    objectId,
-                    sourceId: source!.objectId,
-                    pivot: value,
-                  }),
-                )
-              } catch (e) {
-                setError(e instanceof Error ? e.message : 'Pivot preview failed.')
-              } finally {
-                setBusy(false)
-              }
-            }}
-          >
-            Preview pivot output
-          </button>
+          {kind !== 'dimensions' && (
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={!complete || !source || !base}
+              onClick={async () => {
+                setBusy(true)
+                setPreview(null)
+                setError('')
+                try {
+                  setPreview(
+                    await metadataApi.request(base + '/' + kind + '/input/preview', 'POST', {
+                      objectId,
+                      sourceId: source!.objectId,
+                      pivot: value,
+                    }),
+                  )
+                } catch (e) {
+                  setError(e instanceof Error ? e.message : 'Pivot preview failed.')
+                } finally {
+                  setBusy(false)
+                }
+              }}
+            >
+              Preview pivot output
+            </button>
+          )}
         </>
       )}
       {error && (

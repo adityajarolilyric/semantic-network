@@ -26,6 +26,7 @@ function Harness() {
 it('authors nested AND/OR rules with type-specific controls and preserves literal list values', async () => {
   const user = userEvent.setup()
   render(<Harness />)
+  await user.click(screen.getByText('Filters', { exact: true }))
   await user.click(screen.getByRole('button', { name: 'Add filter' }))
   await user.selectOptions(screen.getByLabelText('Filter operator'), 'in')
   await user.type(screen.getByLabelText('Filter values'), 'A,B{Enter}Promo%')

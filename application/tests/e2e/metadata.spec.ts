@@ -111,7 +111,7 @@ test('manage from the source grid and capture PLT/PT metadata without visible in
   await nav(page, 'Planning Levels')
   await page.getByRole('button', { name: 'Create planning level', exact: true }).click()
   await page.getByLabel('Name', { exact: true }).fill('PLT')
-  await page.getByLabel('Population method', { exact: true }).selectOption('cartesian_product')
+  await page.getByRole('radio', { name: 'From Multiple Tables', exact: true }).check()
   await page.getByLabel('Include UI_SourcingMatrix', { exact: true }).check()
   await page
     .getByRole('group', { name: 'Keys from UI_SourcingMatrix', exact: true })
@@ -149,14 +149,14 @@ test('manage from the source grid and capture PLT/PT metadata without visible in
   ).toBeEnabled()
   await page.getByRole('button', { name: 'Create planning level', exact: true }).click()
   await page.getByLabel('Name', { exact: true }).fill('PT')
-  await page.getByLabel('Population method', { exact: true }).selectOption('distinct_projection')
+  await page.getByRole('radio', { name: 'From Existing Planning Level', exact: true }).check()
   await page.getByLabel('Parent planning level', { exact: true }).selectOption({ label: 'PLT' })
   await page
-    .getByRole('group', { name: 'Retain parent keys', exact: true })
+    .getByRole('group', { name: 'Select keys from Parent keys', exact: true })
     .getByLabel('product_id', { exact: true })
     .check()
   await page
-    .getByRole('group', { name: 'Retain parent keys', exact: true })
+    .getByRole('group', { name: 'Select keys from Parent keys', exact: true })
     .getByLabel('date', { exact: true })
     .check()
   await expect(page.getByRole('tab', { name: 'Product', exact: true })).toBeVisible()
@@ -194,10 +194,25 @@ test('manage from the source grid and capture PLT/PT metadata without visible in
     await expect(page.getByLabel('Expected rows per grain', { exact: true })).toHaveCount(0)
     await page.getByLabel('Managed table', { exact: true }).selectOption({ label: tx.table })
     await page
+      .locator('.transformation-section > summary')
+      .filter({ hasText: /^Planning-level mapping/ })
+      .click()
+    await page.getByRole('radio', { name: 'Map to Native Planning Level', exact: true }).check()
+    await page
       .getByLabel('Native planning level', { exact: true })
       .selectOption({ label: tx.level })
     for (const [key, column] of Object.entries(tx.mapping))
-      await page.getByLabel('Source column for ' + key, { exact: true }).selectOption(column)
+      await page.getByLabel(tx.level + '.' + key, { exact: true }).selectOption(column)
+    const mappings = page.locator('.transaction-key-mappings > .meta-field')
+    const bounds = await mappings.evaluateAll((rows) => rows.map((row) => ({
+      top: row.getBoundingClientRect().top,
+      labelRight: row.querySelector('.field-label-with-help')!.getBoundingClientRect().right,
+      selectLeft: row.querySelector('select')!.getBoundingClientRect().left,
+    })))
+    expect(bounds.every((row, index) => row.labelRight <= row.selectLeft &&
+      (index === 0 || row.top > bounds[index - 1].top))).toBe(true)
+    if (tx.name === 'Forecast')
+      await page.screenshot({ path: 'test-results/transaction-key-mappings.png', fullPage: true })
     await save(page)
   }
   expect(
@@ -233,7 +248,15 @@ test('manage from the source grid and capture PLT/PT metadata without visible in
   await page.getByLabel('Name', { exact: true }).fill('Error')
   await page.getByRole('radio', { name: 'Calculated', exact: true }).check()
   await page.getByLabel('Output Planning Level', { exact: true }).selectOption({ label: 'PT' })
-  await page.getByLabel('Formula', { exact: true }).fill('ABS(FQTY-SQTY)')
+  const formula = page.getByLabel('Formula', { exact: true })
+  await formula.fill('ABS(')
+  await page.getByRole('button', { name: 'FQTY', exact: true }).click()
+  await expect(formula).toBeFocused()
+  await page.keyboard.type('-')
+  await page.getByRole('button', { name: 'SQTY', exact: true }).click()
+  await expect(formula).toBeFocused()
+  await page.keyboard.type(')')
+  await expect(formula).toHaveValue('ABS([FQTY]-[SQTY])')
   await save(page)
   await page.reload()
   await expect(page.locator('.meta-object-card')).toHaveCount(3)
