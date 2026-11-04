@@ -449,6 +449,31 @@ test('manage from the source grid and capture PLT/PT metadata without visible in
   }
   await page.screenshot({ path: 'test-results/planning-pivot-pinned.png', fullPage: true })
   await page.setViewportSize({ width: 1440, height: 1000 })
+  await page.getByRole('button', { name: 'Create Measure', exact: true }).click()
+  const quick = page.getByRole('dialog', { name: 'Create Measure', exact: true })
+  await expect(quick).toBeVisible()
+  await page.screenshot({ path: 'test-results/quick-create-measure.png' })
+  await expect(quick.getByLabel('Name', { exact: true })).toBeFocused()
+  await expect(quick.getByLabel('Calculation type', { exact: true })).toHaveCount(0)
+  await quick.getByLabel('Name', { exact: true }).fill('QuickDouble')
+  await quick.getByRole('button', { name: 'FQTY', exact: true }).click()
+  await expect(quick.getByLabel('Formula', { exact: true })).toBeFocused()
+  await page.keyboard.type('*2')
+  await quick.getByRole('button', { name: 'Save metadata', exact: true }).click()
+  await expect(quick).not.toBeVisible()
+  await expect(
+    page.getByText('Calculated measure created and materialised. Select it under Values.', {
+      exact: true,
+    }),
+  ).toBeVisible()
+  await page.getByLabel('QuickDouble', { exact: true }).check()
+  await page.getByRole('button', { name: 'Update pivot', exact: true }).click()
+  await expect(
+    page
+      .getByRole('region', { name: 'Planning pivot results' })
+      .getByText('QuickDouble', { exact: true })
+      .first(),
+  ).toBeVisible()
   await page.getByRole('button', { name: 'Clear selections', exact: true }).click()
   await expect(page.getByLabel('FQTY', { exact: true })).not.toBeChecked()
   expect(await page.evaluate(() => Object.keys(localStorage))).toEqual([])
@@ -469,7 +494,7 @@ test('manage from the source grid and capture PLT/PT metadata without visible in
   await expect(page.getByLabel('Revision', { exact: true })).not.toHaveValue('revision_1')
   const second = await page.getByLabel('Revision', { exact: true }).inputValue()
   await nav(page, 'Measures')
-  await expect(page.locator('.meta-object-card')).toHaveCount(3)
+  await expect(page.locator('.meta-object-card')).toHaveCount(4)
   await expect(page.getByLabel('Semantic model', { exact: true })).toHaveCount(0)
   await expect(page.getByLabel('Revision', { exact: true })).toHaveCount(0)
   await page.screenshot({ path: 'test-results/metadata-desktop.png', fullPage: true })
@@ -506,7 +531,7 @@ test('manage from the source grid and capture PLT/PT metadata without visible in
     .getByRole('button', { name: 'Delete', exact: true })
     .click()
   await page.getByRole('button', { name: 'Confirm deletion', exact: true }).click()
-  await expect(page.locator('.meta-object-card')).toHaveCount(2)
+  await expect(page.locator('.meta-object-card')).toHaveCount(3)
   expect(
     (
       await page.request.get(

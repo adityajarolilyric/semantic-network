@@ -275,9 +275,13 @@ export function PlanningViewPanel({
   base,
   revisionVersion,
   onCommitted,
+  onCreateMeasure,
+  creatingMeasure = false,
 }: {
   base: string
   revisionVersion: number
+  onCreateMeasure?: () => void
+  creatingMeasure?: boolean
   onCommitted?: (version: number) => void
 }) {
   const [refreshToken, refreshOptions] = useState(0)
@@ -575,10 +579,20 @@ export function PlanningViewPanel({
           <h2>Explore your planning data</h2>
         </div>
         <div className="meta-toolbar">
+          {onCreateMeasure && (
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={saving || creatingMeasure || loading}
+              onClick={onCreateMeasure}
+            >
+              {creatingMeasure ? 'Creating measure…' : 'Create Measure'}
+            </button>
+          )}
           <button
             type="button"
             className="secondary-button"
-            disabled={saving}
+            disabled={saving || creatingMeasure}
             onClick={() => {
               query.current?.abort()
               setLoading(false)
@@ -595,7 +609,7 @@ export function PlanningViewPanel({
           <button
             type="button"
             className="primary-button"
-            disabled={!options || !measures.length || loading || saving}
+            disabled={!options || !measures.length || loading || saving || creatingMeasure}
             onClick={() => void run()}
           >
             {loading ? 'Loading pivot…' : 'Update pivot'}
@@ -604,7 +618,7 @@ export function PlanningViewPanel({
       </div>
       {!options && !error && <p role="status">Loading dimensions and measures…</p>}
       {options && (
-        <fieldset className="planning-controls" disabled={saving}>
+        <fieldset className="planning-controls" disabled={saving || creatingMeasure}>
           <div className="planning-view-selectors">
             <AxisEditor
               name="Rows"
@@ -731,7 +745,7 @@ export function PlanningViewPanel({
           <PlanningPivot
             result={result}
             onEdit={result.editContext ? editCell : undefined}
-            busy={saving}
+            busy={saving || creatingMeasure}
           />
         </div>
       )}

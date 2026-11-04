@@ -5,7 +5,16 @@ import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { formatFormula, parseFormula, formulaUnit } from '../formula'
 import { referencedResultType } from '../measureTypes'
 import type { Aggregation, CalcDefinition, Measure, RefDefinition, SourceColumn } from '../types'
-import { Actions, Check, Field, IdentityFields, options, Select, type EditorProps } from './Fields'
+import {
+  Actions,
+  Check,
+  Field,
+  IdentityFields,
+  options,
+  Select,
+  Text,
+  type EditorProps,
+} from './Fields'
 export const defaultAggregation: Aggregation = {
   nonTime: 'sum',
   time: 'sum',
@@ -21,10 +30,13 @@ export function MeasureEditor({
   busy,
   base,
   baseLevelId,
-}: EditorProps<Measure> & { base?: string; baseLevelId?: string | null }) {
+  quick = false,
+}: EditorProps<Measure> & { base?: string; baseLevelId?: string | null; quick?: boolean }) {
+  const [advanced, setAdvanced] = useState(false)
+  const showSettings = !quick || advanced
   const [value, set] = useState(initial)
   const [text, setText] = useState(
-    initial.definition.measureType === 'calculated'
+    !quick && initial.definition.measureType === 'calculated'
       ? formatFormula(
           initial.definition.formula.expression,
           data.measures,
@@ -33,7 +45,7 @@ export function MeasureEditor({
         )
       : '',
   )
-  const formulaEditor = useRef<HTMLTextAreaElement>(null)
+  const formulaEditor = useRef<HTMLTextAreaElement | HTMLInputElement>(null)
   const pendingCaret = useRef<number | null>(null)
   useLayoutEffect(() => {
     if (pendingCaret.current === null || !formulaEditor.current) return
@@ -45,7 +57,8 @@ export function MeasureEditor({
   function insertMeasure(name: string) {
     const editor = formulaEditor.current
     if (!editor) return
-    const { selectionStart: start, selectionEnd: end } = editor
+    const start = editor.selectionStart ?? text.length
+    const end = editor.selectionEnd ?? start
     const token = `[${name}]`
     const next = text.slice(0, start) + token + text.slice(end)
     if (next.length > editor.maxLength) {
@@ -155,6 +168,35 @@ export function MeasureEditor({
     set({ ...value, definition })
     setError('')
   }
+  const calculationSettings =
+    d.measureType === 'calculated' ? (
+      <div className="meta-grid">
+        <div className="measure-output-level">
+          <Select
+            label="Output Planning Level"
+            value={d.nativePlanningLevelId}
+            items={options(data.planningLevels)}
+            onChange={(nativePlanningLevelId) => update({ nativePlanningLevelId })}
+          />
+        </div>
+        <Select
+          label="Calculation type"
+          value={d.calculationType}
+          items={['AggregateFirst', 'CalculateFirst']}
+          onChange={(v) =>
+            set({
+              ...value,
+              definition: {
+                ...d,
+                calculationType: v as 'AggregateFirst' | 'CalculateFirst',
+                aggregation: v === 'CalculateFirst' ? defaultAggregation : null,
+                allocation: v === 'CalculateFirst' ? { mode: 'weighted_by_self' } : null,
+              },
+            })
+          }
+        />
+      </div>
+    ) : null
   return (
     <form
       onSubmit={(e) => {
@@ -206,31 +248,41 @@ export function MeasureEditor({
         }
       }}
     >
-      <IdentityFields value={value} editing={editing} onChange={(v) => set({ ...value, ...v })} />
-      <fieldset className="measure-type-control" disabled={busy}>
-        <legend>
-          Measure type <FieldHelp label="Measure type" />
-        </legend>
-        <div className="measure-type-switch">
-          {(
-            [
-              ['referenced', 'Reference'],
-              ['calculated', 'Calculated'],
-            ] as const
-          ).map(([type, label]) => (
-            <label key={type} className="measure-type-option">
-              <input
-                type="radio"
-                name={typeGroupId}
-                value={type}
-                checked={d.measureType === type}
-                onChange={() => changeMeasureType(type)}
-              />
-              <span>{label}</span>
-            </label>
-          ))}
-        </div>
-      </fieldset>
+      {quick ? (
+        <Text
+          label="Name"
+          value={value.name}
+          onChange={(name) => set({ ...value, name, displayName: name })}
+        />
+      ) : (
+        <IdentityFields value={value} editing={editing} onChange={(v) => set({ ...value, ...v })} />
+      )}
+      {!quick && (
+        <fieldset className="measure-type-control" disabled={busy}>
+          <legend>
+            Measure type <FieldHelp label="Measure type" />
+          </legend>
+          <div className="measure-type-switch">
+            {(
+              [
+                ['referenced', 'Reference'],
+                ['calculated', 'Calculated'],
+              ] as const
+            ).map(([type, label]) => (
+              <label key={type} className="measure-type-option">
+                <input
+                  type="radio"
+                  name={typeGroupId}
+                  value={type}
+                  checked={d.measureType === type}
+                  onChange={() => changeMeasureType(type)}
+                />
+                <span>{label}</span>
+              </label>
+            ))}
+          </div>
+        </fieldset>
+      )}
       {d.measureType === 'referenced' && (
         <>
           {schemaError && (
@@ -292,41 +344,36 @@ export function MeasureEditor({
         </>
       ) : (
         <>
-          <div className="meta-grid">
-            <div className="measure-output-level">
-              <Select
-                label="Output Planning Level"
-                value={d.nativePlanningLevelId}
-                items={options(data.planningLevels)}
-                onChange={(nativePlanningLevelId) => update({ nativePlanningLevelId })}
+          {!quick && calculationSettings}
+          <Field
+            label="Formula"
+            hint={quick ? undefined : 'Use measure names, such as ABS(FQTY - SQTY).'}
+          >
+            {quick ? (
+              <input
+                ref={(element) => {
+                  formulaEditor.current = element
+                }}
+                className="quick-measure-formula"
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                required
+                maxLength={4000}
+                autoComplete="off"
+                spellCheck={false}
               />
-            </div>
-            <Select
-              label="Calculation type"
-              value={d.calculationType}
-              items={['AggregateFirst', 'CalculateFirst']}
-              onChange={(v) =>
-                set({
-                  ...value,
-                  definition: {
-                    ...d,
-                    calculationType: v as 'AggregateFirst' | 'CalculateFirst',
-                    aggregation: v === 'CalculateFirst' ? defaultAggregation : null,
-                    allocation: v === 'CalculateFirst' ? { mode: 'weighted_by_self' } : null,
-                  },
-                })
-              }
-            />
-          </div>
-          <Field label="Formula" hint="Use measure names, such as ABS(FQTY - SQTY).">
-            <textarea
-              ref={formulaEditor}
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              required
-              maxLength={4000}
-              placeholder="ABS(FQTY - SQTY)"
-            />
+            ) : (
+              <textarea
+                ref={(element) => {
+                  formulaEditor.current = element
+                }}
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                required
+                maxLength={4000}
+                placeholder="ABS(FQTY - SQTY)"
+              />
+            )}
           </Field>
           <div className="meta-reference-list">
             {data.measures
@@ -346,14 +393,27 @@ export function MeasureEditor({
                 </button>
               ))}
           </div>
-          <p className="meta-hint">
-            {d.calculationType === 'AggregateFirst'
-              ? 'Inputs are aligned and aggregated before the formula is evaluated.'
-              : 'The formula is evaluated at its native grain before its result is aggregated.'}
-          </p>
+          {quick && (
+            <button
+              type="button"
+              className="secondary-button quick-measure-advanced"
+              aria-expanded={advanced}
+              onClick={() => setAdvanced(!advanced)}
+            >
+              {advanced ? 'Hide advanced settings' : 'Advanced settings'}
+            </button>
+          )}
+          {quick && showSettings && calculationSettings}
+          {showSettings && (
+            <p className="meta-hint">
+              {d.calculationType === 'AggregateFirst'
+                ? 'Inputs are aligned and aggregated before the formula is evaluated.'
+                : 'The formula is evaluated at its native grain before its result is aggregated.'}
+            </p>
+          )}
         </>
       )}
-      {d.measureType === 'calculated' && (
+      {showSettings && d.measureType === 'calculated' && (
         <>
           <Check
             label="Nullable result"
@@ -362,111 +422,115 @@ export function MeasureEditor({
           />
         </>
       )}
-      {(d.measureType === 'referenced' || d.calculationType === 'CalculateFirst') && (
-        <>
-          <h3>Aggregation policies</h3>
-          <div className="meta-grid">
-            <Select
-              label="Non-time aggregation"
-              value={aggregation.nonTime}
-              items={['sum', 'avg', 'min', 'max', 'count', 'count_distinct']}
-              onChange={(v) =>
-                update({ aggregation: { ...aggregation, nonTime: v as Aggregation['nonTime'] } })
-              }
-            />
-            <Select
-              label="Time aggregation"
-              value={aggregation.time}
-              items={['sum', 'avg', 'min', 'max', 'count', 'count_distinct', 'first', 'last']}
-              onChange={(v) =>
-                update({ aggregation: { ...aggregation, time: v as Aggregation['time'] } })
-              }
-            />
-            <Select
-              label="Aggregation order"
-              value={aggregation.order ?? 'nonTimeThenTime'}
-              items={[
-                { value: 'nonTimeThenTime', label: 'Non-time, then Time' },
-                { value: 'timeThenNonTime', label: 'Time, then non-time' },
-              ]}
-              onChange={(order) =>
-                update({ aggregation: { ...aggregation, order: order as Aggregation['order'] } })
-              }
-            />
-            <Select
-              label="Null input policy"
-              value={aggregation.nullInputPolicy}
-              items={['ignore', 'propagate']}
-              onChange={(v) =>
-                update({
-                  aggregation: { ...aggregation, nullInputPolicy: v as 'ignore' | 'propagate' },
-                })
-              }
-            />
-            <Select
-              label="All-null result"
-              value={aggregation.allNullResult}
-              items={['null', 'zero']}
-              onChange={(v) =>
-                update({ aggregation: { ...aggregation, allNullResult: v as 'null' | 'zero' } })
-              }
-            />
-          </div>
-        </>
-      )}
-      {(d.measureType === 'referenced' ||
-        (d.calculationType === 'CalculateFirst' &&
-          !(baseLevelId && d.nativePlanningLevelId === baseLevelId))) && (
-        <>
-          <h3>Dis-Aggregation policies</h3>
-          <p className="meta-hint">
-            Used for user edits. Materialisation splits SUM axes equally and repeats other axes.
-          </p>
-          <div className="meta-grid">
-            <Select
-              label="Dis-aggregation policy"
-              value={d.allocation?.mode ?? 'none'}
-              items={[
-                { value: 'none', label: 'None — repeat value' },
-                { value: 'equal', label: 'Equal' },
-                { value: 'weighted', label: 'Weighted' },
-                { value: 'weighted_by_self', label: 'Weighted by self' },
-              ]}
-              onChange={(v) =>
-                update({
-                  allocation: {
-                    mode: v as 'none' | 'equal' | 'weighted' | 'weighted_by_self',
-                    ...(v === 'weighted' ? { basisMeasureId: '' } : {}),
-                  },
-                })
-              }
-            />
-            {d.allocation?.mode === 'weighted' && (
+      {showSettings &&
+        (d.measureType === 'referenced' || d.calculationType === 'CalculateFirst') && (
+          <>
+            <h3>Aggregation policies</h3>
+            <div className="meta-grid">
               <Select
-                label="Dis-aggregation basis measure"
-                value={d.allocation.basisMeasureId ?? ''}
-                items={options(data.measures.filter((m) => m.objectId !== value.objectId))}
-                onChange={(basisMeasureId) =>
-                  update({ allocation: { mode: 'weighted', basisMeasureId } })
+                label="Non-time aggregation"
+                value={aggregation.nonTime}
+                items={['sum', 'avg', 'min', 'max', 'count', 'count_distinct']}
+                onChange={(v) =>
+                  update({ aggregation: { ...aggregation, nonTime: v as Aggregation['nonTime'] } })
                 }
               />
-            )}
-          </div>
-
-          {d.allocation?.mode === 'weighted_by_self' && (
+              <Select
+                label="Time aggregation"
+                value={aggregation.time}
+                items={['sum', 'avg', 'min', 'max', 'count', 'count_distinct', 'first', 'last']}
+                onChange={(v) =>
+                  update({ aggregation: { ...aggregation, time: v as Aggregation['time'] } })
+                }
+              />
+              <Select
+                label="Aggregation order"
+                value={aggregation.order ?? 'nonTimeThenTime'}
+                items={[
+                  { value: 'nonTimeThenTime', label: 'Non-time, then Time' },
+                  { value: 'timeThenNonTime', label: 'Time, then non-time' },
+                ]}
+                onChange={(order) =>
+                  update({ aggregation: { ...aggregation, order: order as Aggregation['order'] } })
+                }
+              />
+              <Select
+                label="Null input policy"
+                value={aggregation.nullInputPolicy}
+                items={['ignore', 'propagate']}
+                onChange={(v) =>
+                  update({
+                    aggregation: { ...aggregation, nullInputPolicy: v as 'ignore' | 'propagate' },
+                  })
+                }
+              />
+              <Select
+                label="All-null result"
+                value={aggregation.allNullResult}
+                items={['null', 'zero']}
+                onChange={(v) =>
+                  update({ aggregation: { ...aggregation, allNullResult: v as 'null' | 'zero' } })
+                }
+              />
+            </div>
+          </>
+        )}
+      {showSettings &&
+        (d.measureType === 'referenced' ||
+          (d.calculationType === 'CalculateFirst' &&
+            !(baseLevelId && d.nativePlanningLevelId === baseLevelId))) && (
+          <>
+            <h3>Dis-Aggregation policies</h3>
             <p className="meta-hint">
-              Uses this measure’s populated values at the edit write level (Base when reachable,
-              otherwise its output level) as proportional weights.
+              Used for user edits. Materialisation splits SUM axes equally and repeats other axes.
             </p>
-          )}
-        </>
+            <div className="meta-grid">
+              <Select
+                label="Dis-aggregation policy"
+                value={d.allocation?.mode ?? 'none'}
+                items={[
+                  { value: 'none', label: 'None — repeat value' },
+                  { value: 'equal', label: 'Equal' },
+                  { value: 'weighted', label: 'Weighted' },
+                  { value: 'weighted_by_self', label: 'Weighted by self' },
+                ]}
+                onChange={(v) =>
+                  update({
+                    allocation: {
+                      mode: v as 'none' | 'equal' | 'weighted' | 'weighted_by_self',
+                      ...(v === 'weighted' ? { basisMeasureId: '' } : {}),
+                    },
+                  })
+                }
+              />
+              {d.allocation?.mode === 'weighted' && (
+                <Select
+                  label="Dis-aggregation basis measure"
+                  value={d.allocation.basisMeasureId ?? ''}
+                  items={options(data.measures.filter((m) => m.objectId !== value.objectId))}
+                  onChange={(basisMeasureId) =>
+                    update({ allocation: { mode: 'weighted', basisMeasureId } })
+                  }
+                />
+              )}
+            </div>
+
+            {d.allocation?.mode === 'weighted_by_self' && (
+              <p className="meta-hint">
+                Uses this measure’s populated values at the edit write level (Base when reachable,
+                otherwise its output level) as proportional weights.
+              </p>
+            )}
+          </>
+        )}
+      {showSettings && (
+        <MeasureBaseVisibility
+          definition={d}
+          levels={data.planningLevels}
+          base={base}
+          baseLevelId={baseLevelId}
+        />
       )}
-      <MeasureBaseVisibility
-        definition={d}
-        levels={data.planningLevels}
-        base={base}
-        baseLevelId={baseLevelId}
-      />
       {error && (
         <p className="meta-error" role="alert">
           {error}

@@ -1,3 +1,4 @@
+import { QuickCalculatedMeasure } from './QuickCalculatedMeasure'
 import { PlanningViewPanel } from './PlanningViewPanel'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { TableManagement } from '../components/TableCatalog'
@@ -121,6 +122,7 @@ export function MetadataWorkspace({
 }) {
   const meta = useMetadata()
   const [busy, setBusy] = useState(false)
+  const [quickMeasure, setQuickMeasure] = useState(false)
   const [pendingManaged, setPendingManaged] = useState<Record<string, boolean>>({})
   useEffect(() => {
     if (!meta.loading && !meta.error)
@@ -154,6 +156,7 @@ export function MetadataWorkspace({
   const locked = busy || meta.loading
   useEffect(() => {
     setEditor(null)
+    setQuickMeasure(false)
     setPendingManaged({})
     setDeleteTarget(null)
     setReport(null)
@@ -194,6 +197,37 @@ export function MetadataWorkspace({
       'Changes saved.',
     )
     if (ok) setEditor(null)
+  }
+  async function createQuickMeasure(measure: Measure) {
+    if (!model || !revision || !editable || busy) return
+    setBusy(true)
+    setError('')
+    setNotice('')
+    let saved = false
+    try {
+      await metadataApi.save(model.modelId, revision.revisionId, inputOf(measure))
+      saved = true
+      setQuickMeasure(false)
+      const base = metadataApi.scope(model.modelId, revision.revisionId)
+      const current = await metadataApi.request<Revision>(base)
+      await metadataApi.managedOperation(
+        base + '/measures/execution/build',
+        { mode: 'incremental' },
+        current.version,
+      )
+      setNotice('Calculated measure created and materialised. Select it under Values.')
+    } catch (error) {
+      if (!saved) throw error
+      fail(
+        new Error(
+          'Measure saved, but materialisation failed. Retry Build Semantic Network from Materialise.\n' +
+            (error instanceof Error ? error.message : 'Build failed.'),
+        ),
+      )
+    } finally {
+      setBusy(false)
+      meta.refresh()
+    }
   }
   const all = Object.values(meta.data).flat() as ObjectDocument[]
   const kind = tabKind[tab]
@@ -527,6 +561,16 @@ export function MetadataWorkspace({
           </div>
         </section>
       )}
+      {quickMeasure && model && revision?.basePlanningLevelId && (
+        <QuickCalculatedMeasure
+          data={meta.data}
+          base={metadataApi.scope(model.modelId, revision.revisionId)}
+          baseLevelId={revision.basePlanningLevelId}
+          busy={busy}
+          onClose={() => setQuickMeasure(false)}
+          onSave={createQuickMeasure}
+        />
+      )}
       {tab === 'sources' ? (
         children(management)
       ) : tab === 'planning-view' ? (
@@ -535,6 +579,10 @@ export function MetadataWorkspace({
             key={model.modelId + revision.revisionId}
             base={metadataApi.scope(model.modelId, revision.revisionId)}
             revisionVersion={revision.version}
+            onCreateMeasure={
+              editable && revision.basePlanningLevelId ? () => setQuickMeasure(true) : undefined
+            }
+            creatingMeasure={busy}
             onCommitted={(version) =>
               meta.updateRevisionVersion(model.modelId, revision.revisionId, version)
             }
