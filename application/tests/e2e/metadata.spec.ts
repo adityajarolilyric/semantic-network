@@ -204,13 +204,19 @@ test('manage from the source grid and capture PLT/PT metadata without visible in
     for (const [key, column] of Object.entries(tx.mapping))
       await page.getByLabel(tx.level + '.' + key, { exact: true }).selectOption(column)
     const mappings = page.locator('.transaction-key-mappings > .meta-field')
-    const bounds = await mappings.evaluateAll((rows) => rows.map((row) => ({
-      top: row.getBoundingClientRect().top,
-      labelRight: row.querySelector('.field-label-with-help')!.getBoundingClientRect().right,
-      selectLeft: row.querySelector('select')!.getBoundingClientRect().left,
-    })))
-    expect(bounds.every((row, index) => row.labelRight <= row.selectLeft &&
-      (index === 0 || row.top > bounds[index - 1].top))).toBe(true)
+    const bounds = await mappings.evaluateAll((rows) =>
+      rows.map((row) => ({
+        top: row.getBoundingClientRect().top,
+        labelRight: row.querySelector('.field-label-with-help')!.getBoundingClientRect().right,
+        selectLeft: row.querySelector('select')!.getBoundingClientRect().left,
+      })),
+    )
+    expect(
+      bounds.every(
+        (row, index) =>
+          row.labelRight <= row.selectLeft && (index === 0 || row.top > bounds[index - 1].top),
+      ),
+    ).toBe(true)
     if (tx.name === 'Forecast')
       await page.screenshot({ path: 'test-results/transaction-key-mappings.png', fullPage: true })
     await save(page)
@@ -396,6 +402,53 @@ test('manage from the source grid and capture PLT/PT metadata without visible in
   await expect(
     page.getByRole('button', { name: 'Edit SQTY · P1 / 2026-10-31', exact: true }),
   ).toContainText('150')
+  await nav(page, 'Materialise')
+  await page.getByRole('button', { name: 'Build Semantic Network', exact: true }).click()
+  await expect(
+    page.getByText('Already up to date. Existing values were reused.', { exact: true }),
+  ).toBeVisible()
+  await nav(page, 'Planning View')
+  await expect(
+    page.getByRole('button', { name: 'Edit SQTY · P1 / 2026-10-31', exact: true }),
+  ).toContainText('150')
+  await nav(page, 'Materialise')
+  page.once('dialog', async (dialog) => {
+    expect(dialog.message()).toContain('replaces manual edits')
+    await dialog.accept()
+  })
+  await page.getByRole('button', { name: 'Full Refresh', exact: true }).click()
+  await expect(page.getByText('Full Refresh completed.', { exact: true })).toBeVisible()
+  await nav(page, 'Planning View')
+  await expect(page.getByLabel('FQTY', { exact: true })).toBeChecked()
+  await expect(
+    page.getByRole('button', { name: 'Edit SQTY · P1 / 2026-10-31', exact: true }),
+  ).toContainText('90')
+  await page.getByLabel('Add rows attribute').selectOption({ label: 'Location · location_name' })
+  await page.getByRole('button', { name: 'Update pivot', exact: true }).click()
+  await page.setViewportSize({ width: 650, height: 900 })
+  const scroll = page.getByRole('region', { name: 'Planning pivot results', exact: true })
+  const pinned = scroll.locator('thead [data-pinned-column]')
+  await expect(pinned).toHaveCount(3)
+  const beforeScroll = await pinned.evaluateAll((cells) =>
+    cells.map((cell) => cell.getBoundingClientRect().left),
+  )
+  await scroll.evaluate((element) => {
+    element.scrollLeft = element.scrollWidth
+  })
+  await expect.poll(async () => scroll.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0)
+  const afterScroll = await pinned.evaluateAll((cells) =>
+    cells.map((cell) => cell.getBoundingClientRect().left),
+  )
+  afterScroll.forEach((left, index) => expect(Math.abs(left - beforeScroll[index])).toBeLessThan(1))
+  for (let index = 0; index < 3; index++) {
+    const bodyLeft = await scroll
+      .locator(`tbody [data-pinned-column="${index}"]`)
+      .first()
+      .evaluate((cell) => cell.getBoundingClientRect().left)
+    expect(Math.abs(bodyLeft - afterScroll[index])).toBeLessThan(1)
+  }
+  await page.screenshot({ path: 'test-results/planning-pivot-pinned.png', fullPage: true })
+  await page.setViewportSize({ width: 1440, height: 1000 })
   await page.getByRole('button', { name: 'Clear selections', exact: true }).click()
   await expect(page.getByLabel('FQTY', { exact: true })).not.toBeChecked()
   expect(await page.evaluate(() => Object.keys(localStorage))).toEqual([])

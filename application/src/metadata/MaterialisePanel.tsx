@@ -41,6 +41,7 @@ export function MaterialisePanel({
   const [status, setStatus] = useState<Values | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
   const path = base + '/measures/execution/levels/' + selected
   const currentPath = useRef(path)
   currentPath.current = path
@@ -66,6 +67,43 @@ export function MaterialisePanel({
     const timer = setInterval(() => void load().catch((e) => setError(e.message)), 1000)
     return () => clearInterval(timer)
   }, [status?.state, load])
+  async function build(mode: 'incremental' | 'full') {
+    if (
+      mode === 'full' &&
+      !window.confirm(
+        'Full Refresh reloads all measures from sources and replaces manual edits. Continue?',
+      )
+    )
+      return
+    setBusy(true)
+    setError('')
+    setNotice('')
+    try {
+      const run = await metadataApi.managedOperation(
+        base + '/measures/execution/build',
+        { mode },
+        revisionVersion,
+      )
+      await load()
+      setNotice(
+        run?.reused
+          ? 'Already up to date. Existing values were reused.'
+          : mode === 'full'
+            ? 'Full Refresh completed.'
+            : 'Semantic Network updated.',
+      )
+      onBuilt()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Measure build failed.')
+      try {
+        await load()
+      } catch {
+        /* Preserve the build error. */
+      }
+    } finally {
+      setBusy(false)
+    }
+  }
   return (
     <section className="meta-card" aria-label="Materialise">
       <h2>Materialise saved definitions</h2>
@@ -76,34 +114,31 @@ export function MaterialisePanel({
             type="button"
             className="secondary-button"
             disabled={busy || !baseLevelId || !measures.length || status?.state === 'building'}
-            onClick={async () => {
-              setBusy(true)
-              setError('')
-              try {
-                await metadataApi.managedOperation(
-                  base + '/measures/execution/build',
-                  undefined,
-                  revisionVersion,
-                )
-                await load()
-                onBuilt()
-              } catch (e) {
-                setError(e instanceof Error ? e.message : 'Measure build failed.')
-                try {
-                  await load()
-                } catch {
-                  /* Keep original error. */
-                }
-              } finally {
-                setBusy(false)
-              }
-            }}
+            onClick={() => void build('incremental')}
           >
             {busy ? 'Building Semantic Network…' : 'Build Semantic Network'}
           </button>
         )}
-        <FieldHelp label="Build Semantic Network" />
+        <FieldHelp label="Build Semantic Network" />{' '}
+        {editable && (
+          <>
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={busy || !baseLevelId || !measures.length || status?.state === 'building'}
+              onClick={() => void build('full')}
+            >
+              Full Refresh
+            </button>
+            <FieldHelp label="Full Refresh" />
+          </>
+        )}
       </div>
+      {notice && (
+        <p className="meta-notice" aria-live="polite">
+          {notice}
+        </p>
+      )}
       <div className="meta-subsection">
         <h2>Preview materialised tables</h2>
 

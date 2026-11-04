@@ -5,6 +5,7 @@ import {
   readViewPreferences,
   saveViewPreferences,
 } from './planningViewPreferences'
+import { usePinnedPivotColumns } from './usePinnedPivotColumns'
 import { formatNumericDisplay } from '../lib/numberFormat'
 import { useEffect, useRef, useState } from 'react'
 import { FieldHelp } from '../components/FieldHelp'
@@ -130,6 +131,9 @@ export function PlanningPivot({
 }) {
   const rowFields = result.fields.filter((f) => f.axis === 'row')
   const columnFields = result.fields.filter((f) => f.axis === 'column')
+  const table = useRef<HTMLTableElement>(null)
+  const dimensionCount = Math.max(1, rowFields.length)
+  usePinnedPivotColumns(table, dimensionCount + 1, result)
   const rowKeys = new Map<string, (string | null)[]>()
   const columnKeys = new Map<string, (string | null)[]>()
   const cells = new Map<string, (string | null)[]>()
@@ -153,7 +157,7 @@ export function PlanningPivot({
       role="region"
       aria-label="Planning pivot results"
     >
-      <table className="data-table planning-pivot">
+      <table ref={table} className="data-table planning-pivot">
         <caption className="sr-only">
           Planning View from {result.plan.planningLevelName}. Values follow the configured measure
           policies.
@@ -161,15 +165,23 @@ export function PlanningPivot({
         <thead>
           <tr>
             {rowFields.length ? (
-              rowFields.map((f) => (
-                <th key={f.id} scope="col">
+              rowFields.map((f, index) => (
+                <th key={f.id} scope="col" className="planning-pinned" data-pinned-column={index}>
                   {f.label}
                 </th>
               ))
             ) : (
-              <th scope="col">Rows</th>
+              <th scope="col" className="planning-pinned" data-pinned-column={0}>
+                Rows
+              </th>
             )}
-            <th scope="col">Measure</th>
+            <th
+              scope="col"
+              className="planning-pinned planning-pinned-edge"
+              data-pinned-column={dimensionCount}
+            >
+              Measure
+            </th>
             {[...columnKeys].map(([key, values]) => (
               <th key={key} scope="col">
                 {values.length ? values.map(display).join(' / ') : 'Value'}
@@ -184,18 +196,30 @@ export function PlanningPivot({
                 {measureIndex === 0 &&
                   (values.length ? (
                     values.map((v, index) => (
-                      <th rowSpan={result.measures.length} scope="rowgroup" key={index}>
+                      <th
+                        rowSpan={result.measures.length}
+                        scope="rowgroup"
+                        key={index}
+                        className="planning-pinned"
+                        data-pinned-column={index}
+                      >
                         {display(v)}
                       </th>
                     ))
                   ) : (
-                    <th rowSpan={result.measures.length} scope="rowgroup">
+                    <th
+                      rowSpan={result.measures.length}
+                      scope="rowgroup"
+                      className="planning-pinned"
+                      data-pinned-column={0}
+                    >
                       All
                     </th>
                   ))}
                 <th
                   scope="row"
-                  className="planning-measure-name"
+                  className="planning-measure-name planning-pinned planning-pinned-edge"
+                  data-pinned-column={dimensionCount}
                   title={
                     measure.editReason ??
                     (measure.writeLevelName ? 'Writes to ' + measure.writeLevelName : undefined)

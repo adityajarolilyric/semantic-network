@@ -14,6 +14,7 @@ from .relationships import Coordinate, LevelRelationshipAnalyzer
 
 VALUE = "__value"
 COMPLETE = "__complete"
+MEASURE_COMPILER_VERSION = "measure-v4-aggregation-derived-round6-sqlglot-27.28.1"
 MATERIALISATION_POLICY = "aggregation-derived-disaggregation-v1-round6"
 
 
@@ -77,6 +78,27 @@ class MeasureCompiler(PlanningLevelCompiler):
             node = self.cte("SELECT * FROM " + table)
             self.object_inputs[identity] = (q(node), columns)
         return self.object_inputs[identity]
+
+    def stored_measure(self, mid, level, snapshots):
+        artifact = snapshots.get(level, {})
+        if mid not in artifact.get("measureColumns", {}):
+            raise MetadataError(
+                "measure_path_unavailable",
+                "This measure was not materialised at this level in the captured generation.",
+            )
+        column = next(c for c in artifact["columns"] if c.get("measureId") == mid)
+        selected = [
+            q(artifact["keyColumns"][k]) + " AS " + q(k) for k in self.keys(level)
+        ]
+        selected.append(column_sql(column) + " AS " + q(VALUE))
+        body = f"FROM {self.table(artifact['physicalName'])} WHERE {q(GENERATION)}={lit(token(artifact))}"
+        coverage = artifact.get("coverageColumns", {}).get(mid)
+        flag = q(coverage) if coverage else "toUInt8(1)"
+        selected.append(flag + " AS " + q(COMPLETE))
+        result = self.cte(f"SELECT {', '.join(selected)} {body}")
+        if coverage:
+            self.coverage_nodes[result] = True
+        return result
 
     def keys(self, level):
         return self.levels[level]["definition"]["grain"]["keyIds"]
@@ -883,5 +905,5 @@ class MeasureCompiler(PlanningLevelCompiler):
             parse_one(sql, read="clickhouse"),
             checks,
             RelationSchema(tuple(columns)),
-            "measure-v4-aggregation-derived-round6-sqlglot-27.28.1",
+            MEASURE_COMPILER_VERSION,
         ), unavailable

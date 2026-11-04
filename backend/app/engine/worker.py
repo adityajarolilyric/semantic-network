@@ -162,11 +162,28 @@ class EngineWorker:
             await self.fenced(repo, run)
             query = {"runId": run["runId"], "stepId": step_id}
             current = await repo.get("engine_run_steps", query)
+            timestamp = now()
+            same_attempt = current and current.get("attempt") == run["fence"]
+            started = current.get("startedAt") if same_attempt else None
+            if state == "running" and (
+                not same_attempt or current["state"] != "running"
+            ):
+                started = timestamp
             document = {
                 **query,
                 "state": state,
                 "attempt": run["fence"],
-                "updatedAt": now(),
+                "updatedAt": timestamp,
+                **({"startedAt": started} if started else {}),
+                **(
+                    {
+                        "durationMs": round(
+                            (timestamp - started).total_seconds() * 1000, 3
+                        )
+                    }
+                    if started and state != "running"
+                    else {}
+                ),
                 **details,
             }
             if current:

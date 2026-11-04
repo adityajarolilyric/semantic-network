@@ -48,6 +48,9 @@ export type EngineRun = {
   resourceId: string
   state: string
   error: { message: string; details?: { message: string }[] } | null
+  buildMode?: 'incremental' | 'full' | 'edit'
+  reused?: boolean
+  generationId?: string
 }
 export type Source = Identity & {
   managed?: ManagedTable

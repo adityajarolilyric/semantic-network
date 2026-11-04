@@ -155,7 +155,10 @@ const help: Record<string, string> = {
   'Dis-aggregation basis measure':
     'The measure supplying proportional weights. Example: weights 30 and 70 split a value of 200 into 60 and 140. Missing weights or a zero total fail the build.',
   'Build Semantic Network':
-    'Builds compatible measure representations across all defined planning levels using saved policies. Planning populations must be ready. The preview selection does not restrict the build.',
+    'Builds new or changed measure representations and dependent formulas. Unchanged values, including manual edits, are reused. If nothing changed, the current generation is kept. The preview selection does not restrict the build.',
+  'Full Refresh':
+    'Recomputes every measure from its source data and replaces manual edits. Use after direct external source-data changes or when a complete source reload is required.',
+
   'Preview planning level':
     'Choose the built table to inspect. Shows at most 50 rows and does not trigger a build.',
   'Network status':

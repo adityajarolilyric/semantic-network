@@ -6,7 +6,7 @@ Each measure has one native planning level. Referenced measures read a Transacti
 
 A source build and a user edit use different disaggregation rules. Never infer SUM/AVG from measure names or business meaning; use the saved aggregation and NULL policies.
 
-**Build Semantic Network (including source rebuilds):** initialise every supported finer/Base representation from its native seed using the aggregation of the axis being expanded:
+**Materialisation of new/invalidated measures and Full Refresh:** initialise every supported finer/Base representation from its native seed using the aggregation of the axis being expanded:
 
 - SUM: divide equally across eligible finer combinations for that stage.
 - Other supported methods: repeat the value.
@@ -73,7 +73,7 @@ Float64 is approximate (roughly 15–17 significant digits): decimal sources los
 
 ## Materialise and consistency
 
-Materialise is its own navigation item below Measures. It has one global **Build Semantic Network** action, visually separate from the planning-level selector that automatically previews up to 50 rows. “What gets materialised at …” explains native placement, configured policies, derivation/recalculation and unavailable reasons. Model/revision controls remain on Sources.
+Materialise is its own navigation item below Measures. It has **Build Semantic Network** (incremental) and a separate confirmed **Full Refresh**, visually separate from the planning-level selector that automatically previews up to 50 rows. “What gets materialised at …” explains native placement, configured policies, derivation/recalculation and unavailable reasons. Model/revision controls remain on Sources.
 
 Build current managed views and planning populations first. The network build captures semantic objects and input artifacts, pins them, compiles a dependency DAG and inserts candidate values generations into the existing values table for each level. Validate source NULLs, source/population coverage, lookups, child coverage, grain/cardinality, types and limits. Formula dependency/basis failures cannot activate stale/partial results.
 
@@ -97,7 +97,7 @@ Tests cover all aggregate methods/axis orders, irregular staged initialisation, 
 
 Store measure representations rounded to six decimal places using bankers rounding (legacy Decimal scales smaller than six remain smaller). Round at representation boundaries before downstream calculations/rollups, so coarser representations aggregate the actual six-place Base/write values. The shared materialisation fingerprint includes aggregation-derived-disaggregation-v1-round6; older networks require an explicit rebuild. Float64 remains the referenced measure type. No rounding is applied to imported raw source data.
 
-Pivot measure cells and Float/Decimal preview cells display two decimal places; identifiers and integer source columns keep their representation. The formatter works on decimal strings to avoid losing large Decimal precision. Edit inputs use the original stored value, not the two-place display. Rounding may leave small residual differences from source totals; do not silently balance a final child or change aggregation. Build Semantic Network still replaces manual edits from sources; there is no durable edit journal.
+Pivot measure cells and Float/Decimal preview cells display two decimal places; identifiers and integer source columns keep their representation. The formatter works on decimal strings to avoid losing large Decimal precision. Edit inputs use the original stored value, not the two-place display. Rounding may leave small residual differences from source totals; do not silently balance a final child or change aggregation. Incremental builds preserve unchanged manual values. Full Refresh replaces edits from sources; source/semantic changes replace affected measures. There is no durable edit journal.
 
 Measure authoring uses a visible **Reference / Calculated** switch. **Output Planning Level** is highlighted: Reference inherits it from the transaction; Calculated selects it explicitly. This label represents the existing native planning level, with no semantic contract change. Editable measure appears before Missing transaction value.
 
@@ -106,3 +106,9 @@ At the end of the measure form, **Base Level Visibility policy** appears when Ba
 Calculated measures at the Base output planning level hide Dis-Aggregation policies. CalculateFirst at a different output level retains the controls; AggregateFirst has no allocation controls at any level. Reference measures retain edit disaggregation controls even at Base for coarser edits. This is a UI visibility rule; saved metadata is preserved.
 
 Formula measure buttons insert at the current caret or replace the selected text. Focus returns to the formula with a collapsed caret immediately after the inserted reference, so typing can continue; mouse and keyboard activation follow the same behaviour.
+
+## Incremental build and Full Refresh
+
+New/changed measures and downstream formula dependencies are computed only where their representation inputs changed. Unchanged values (including edits) are read from the captured active generation. A no-change build returns `reused=true` and preserves its generation/version. New referenced measures initialise independently from their own source; new calculated measures can use edited existing dependencies. Changed/removed output columns activate coherently in the existing values tables, with no third/staging table.
+
+`POST /measures/execution/build` accepts `{ "mode": "incremental" }` or `{ "mode": "full" }`; the UI sends an explicit mode. An omitted body retains legacy full-build behavior for API compatibility; an object with omitted mode defaults to incremental. Full Refresh requires one UI confirmation because it replaces manual edits. Direct external source-data mutations require Full Refresh (or an explicit managed-source refresh that advances its artifact token); metadata equality alone does not detect arbitrary ClickHouse row changes. See [engine reuse and freshness](ENGINE_AND_STORAGE.md#schema-reuse-and-incremental-materialisation-direction).

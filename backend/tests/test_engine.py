@@ -235,3 +235,33 @@ async def test_collection_retains_bound_published_artifact_and_drops_only_owned_
     assert len([a for a in artifacts if a["state"] == "ready"]) == 1
     await ArtifactCollector(service).collect()
     assert len(service.executor.warehouse.dropped) == 1
+
+
+@pytest.mark.asyncio
+async def test_step_durations_use_the_current_attempt_and_restart_on_retry(monkeypatch):
+    store, service, worker = await context()
+    await submit(service)
+    run = await worker.claim()
+    clock = [now()]
+    monkeypatch.setattr("backend.app.engine.worker.now", lambda: clock[0])
+    await worker.step(run, "timed", "running")
+    clock[0] += timedelta(milliseconds=1250)
+    await worker.step(run, "timed", "succeeded")
+    step = await store.repository.get(
+        "engine_run_steps", {"runId": run["runId"], "stepId": "timed"}
+    )
+    assert step["durationMs"] == 1250
+    assert step["updatedAt"] - step["startedAt"] == timedelta(milliseconds=1250)
+    retried = {
+        **await store.repository.get("engine_runs", {"runId": run["runId"]}),
+        "fence": run["fence"] + 1,
+    }
+    await store.repository.replace("engine_runs", {"runId": run["runId"]}, retried)
+    await worker.step(retried, "timed", "running")
+    clock[0] += timedelta(milliseconds=500)
+    await worker.step(retried, "timed", "succeeded")
+    step = await store.repository.get(
+        "engine_run_steps", {"runId": run["runId"], "stepId": "timed"}
+    )
+    assert step["durationMs"] == 500
+    assert step["attempt"] == retried["fence"]

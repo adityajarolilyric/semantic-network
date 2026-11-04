@@ -5,11 +5,22 @@ from ..engine.transaction_resolution import (
 )
 from ..engine.table_storage import STORAGE_POLICY, owner, relation_sql
 from .measure_types import MEASURE_TYPE_POLICY
+from .incremental_builds import IncrementalBuildCoordinator
+from ..engine.incremental import (
+    MaterialisationManifest,
+    INCREMENTAL_POLICY,
+    IncrementalMeasureCompiler,
+)
 from uuid import uuid4
+from time import perf_counter
 
 from ..core.errors import Conflict, ImmutableRevision, MetadataError
 from ..engine.contracts import PlanningPlan, digest
-from ..engine.measure_compiler import MeasureCompiler, MATERIALISATION_POLICY
+from ..engine.measure_compiler import (
+    MeasureCompiler,
+    MATERIALISATION_POLICY,
+    MEASURE_COMPILER_VERSION,
+)
 from ..engine.planning_executor import PlanningTableExecutor
 from ..engine.relationships import LevelRelationshipAnalyzer
 from .base import Service, now, scope
@@ -21,6 +32,7 @@ class MeasureBuildService(Service):
     def __init__(self, store, settings, planning, managed):
         super().__init__(store, settings.max_objects_per_revision)
         self.settings, self.planning, self.managed = settings, planning, managed
+        self.incremental = IncrementalBuildCoordinator(self)
         self.storage = planning.storage
         self.executor = PlanningTableExecutor(managed.executor.warehouse, settings)
         self.executor.storage = self.storage
@@ -110,16 +122,21 @@ class MeasureBuildService(Service):
         )
         return rev, objects, populations, managed, managed_defs, bindings, fingerprint
 
-    async def submit(self, model, revision, expected, key, edit=None):
+    async def submit(self, model, revision, expected, key, edit=None, mode="full"):
+        if mode not in ("full", "incremental"):
+            raise MetadataError(
+                "invalid_build_mode", "Choose incremental or full materialisation.", 400
+            )
         if not key or len(key) > 128:
             raise MetadataError(
                 "invalid_idempotency_key",
                 "Supply an Idempotency-Key of 1 to 128 characters.",
                 400,
             )
-        request_hash = digest(
-            ["measureSet", expected, edit.model_dump() if edit else None]
-        )
+        request = ["measureSet", expected, edit.model_dump() if edit else None]
+        if mode == "incremental" and edit is None:
+            request.append("incremental")
+        request_hash = digest(request)
 
         async def operation(repo):
             query = scope(model, revision)
@@ -158,7 +175,20 @@ class MeasureBuildService(Service):
                 if old
                 else None
             )
-            snapshots = {}
+            manifests = MaterialisationManifest(
+                objects, populations, managed, rev["basePlanningLevelId"]
+            ).all()
+            snapshots, reuse_only, dirty = {}, False, set()
+            if mode == "incremental" and edit is None:
+                snapshots, reuse_only, dirty = await self.incremental.prepare(
+                    repo,
+                    model,
+                    revision,
+                    rev["basePlanningLevelId"],
+                    populations,
+                    manifests,
+                    previous_artifact,
+                )
             if edit is not None:
                 from ..engine.measure_edits import MeasureEditPlanner
                 from ..engine.planning_view import PlanningViewPlanner
@@ -217,11 +247,27 @@ class MeasureBuildService(Service):
                 "updatedAt": now(),
                 "error": None,
                 "isEdit": edit is not None,
+                "buildMode": "edit" if edit is not None else mode,
+                "reuseOnly": reuse_only,
+                "incrementalPolicy": INCREMENTAL_POLICY,
+                "incrementalCompilerVersion": MEASURE_COMPILER_VERSION,
+                "dirtyMeasures": sorted(dirty),
                 "previousGenerationId": previous_artifact.get("generationId")
                 if previous_artifact
                 else None,
             }
             await repo.insert("engine_runs", run)
+            # Keep manifests per level to stay below MongoDB's single-document limit
+            # as the measure × planning-level matrix grows.
+            for lid, manifest in manifests.items():
+                await repo.insert(
+                    "engine_run_inputs",
+                    {
+                        "runId": run_id,
+                        "inputId": "__manifest_" + lid,
+                        "document": manifest,
+                    },
+                )
             for obj in objects:
                 await repo.insert(
                     "engine_run_inputs",
@@ -263,15 +309,15 @@ class MeasureBuildService(Service):
                         "document": edit.model_dump(),
                     },
                 )
-                for lid, snapshot in snapshots.items():
-                    await repo.insert(
-                        "engine_run_inputs",
-                        {
-                            "runId": run_id,
-                            "inputId": "__values_" + lid,
-                            "document": snapshot,
-                        },
-                    )
+            for lid, snapshot in snapshots.items():
+                await repo.insert(
+                    "engine_run_inputs",
+                    {
+                        "runId": run_id,
+                        "inputId": "__values_" + lid,
+                        "document": snapshot,
+                    },
+                )
             pinned = {
                 a["artifactId"]: a
                 for a in [
@@ -314,6 +360,7 @@ class MeasureBuildService(Service):
             raise Conflict(
                 "This build predates the table-storage upgrade. Submit a new build."
             )
+        self.incremental.validate_runtime_policy(run)
         docs = await self.store.repository.list(
             "engine_run_inputs",
             {"runId": run["runId"]},
@@ -339,8 +386,45 @@ class MeasureBuildService(Service):
         previous = next(
             (d["document"] for d in docs if d["inputId"] == "__previous"), None
         )
+        manifests = {
+            d["inputId"].removeprefix("__manifest_"): d["document"]
+            for d in docs
+            if d["inputId"].startswith("__manifest_")
+        }
+        manifests = manifests or run.get("materialisationManifests", {})
+        snapshots = {
+            d["inputId"][9:]: d["document"]
+            for d in docs
+            if d["inputId"].startswith("__values_")
+        }
+        if run.get("reuseOnly"):
+            await self.incremental.reuse(run, worker, snapshots, manifests)
+            return
+        needed_transactions = None
+        if run.get("buildMode") == "incremental":
+            needed_transactions = {
+                o["definition"]["transactionId"]
+                for o in objects
+                if o["kind"] == "measure"
+                and o["objectId"] in run["dirtyMeasures"]
+                and o["definition"]["measureType"] == "referenced"
+            }
+        required_sources = set(managed)
+        if needed_transactions is not None:
+            required_sources = {
+                o["definition"]["sourceId"] for o in objects if o["kind"] == "dimension"
+            }
+            for tx in objects:
+                if (
+                    tx["kind"] == "transaction"
+                    and tx["objectId"] in needed_transactions
+                ):
+                    required_sources.add(tx["definition"]["sourceId"])
+                    required_sources.update(calendar_source_ids(objects, tx))
         by_id = {o["objectId"]: o for o in objects}
         for sid, artifact in managed.items():
+            if sid not in required_sources:
+                continue
             source = by_id[sid]
             await self.managed.executor.inspect(source)
             plan = self.managed.planner.plan(
@@ -352,17 +436,12 @@ class MeasureBuildService(Service):
         await self.storage.ensure_inputs(
             [
                 *populations.values(),
-                *([previous] if previous and run.get("isEdit") else []),
+                *snapshots.values(),
             ]
         )
         edit_document = next(
             (d["document"] for d in docs if d["inputId"] == "__edit"), None
         )
-        snapshots = {
-            d["inputId"][9:]: d["document"]
-            for d in docs
-            if d["inputId"].startswith("__values_")
-        }
         if run.get("isEdit"):
             from ..schemas.planning_view import PlanningViewEdit
             from ..engine.measure_edits import MeasureEditCompiler
@@ -384,12 +463,23 @@ class MeasureBuildService(Service):
         else:
             resolution_profiles = await prepare_resolution_profiles(
                 self.executor.warehouse,
-                objects,
+                [
+                    o
+                    for o in objects
+                    if o["kind"] != "transaction"
+                    or needed_transactions is None
+                    or o["objectId"] in needed_transactions
+                ],
                 managed,
                 self.settings.resolution_max_profiles,
                 self.executor.execution_settings(),
             )
-            compiler = MeasureCompiler(
+            compiler_class = (
+                IncrementalMeasureCompiler
+                if run.get("buildMode") == "incremental"
+                else MeasureCompiler
+            )
+            compiler = compiler_class(
                 self.settings.clickhouse_database,
                 objects,
                 populations,
@@ -398,6 +488,14 @@ class MeasureBuildService(Service):
                 previous,
                 resolution_profiles,
                 self.settings.resolution_max_rows,
+                **(
+                    {
+                        "snapshots": snapshots,
+                        "manifests": manifests,
+                    }
+                    if run.get("buildMode") == "incremental"
+                    else {}
+                ),
             )
         compiler.max_nodes = self.settings.measure_max_nodes
         outcomes = []
@@ -406,6 +504,7 @@ class MeasureBuildService(Service):
             *(lid for lid in populations if lid != run["resourceId"]),
         ]
         for lid in order:
+            level_started = perf_counter()
             compiled, unavailable = compiler.compile_level(lid)
             if (
                 run.get("isEdit")
@@ -420,6 +519,7 @@ class MeasureBuildService(Service):
                     "measure_sql_limit",
                     "Compiled measure graph exceeds the configured SQL-size limit.",
                 )
+            compiled_at = perf_counter()
             step = "values_" + lid
             await worker.step(
                 run,
@@ -429,7 +529,9 @@ class MeasureBuildService(Service):
                 compilerVersion=compiled.compiler_version,
                 unavailable=unavailable,
             )
+            prechecks_started = perf_counter()
             await self.executor.checks(compiled)
+            prechecks_ms = (perf_counter() - prechecks_started) * 1000
             aid = "artifact_" + uuid4().hex
             artifact = {
                 **scope(run["modelId"], run["revisionId"]),
@@ -460,7 +562,9 @@ class MeasureBuildService(Service):
                     "measure_cardinality",
                     "Measure merging changed the planning population row count.",
                 )
+            postchecks_started = perf_counter()
             await self.executor.checks(compiled)
+            postchecks_ms = (perf_counter() - postchecks_started) * 1000
             populated = {
                 **artifact,
                 **outcome,
@@ -469,6 +573,7 @@ class MeasureBuildService(Service):
                 "levelId": lid,
                 "generationId": run["runId"],
                 "numericPolicy": MEASURE_TYPE_POLICY,
+                "materialisationManifest": manifests.get(lid),
                 "keyColumns": {
                     c["columnId"]: c.get("storageName", c["name"])
                     for c in outcome["columns"]
@@ -499,7 +604,25 @@ class MeasureBuildService(Service):
             }
             outcomes.append(populated)
             await worker.step(
-                run, step, "succeeded", rowCount=outcome["rowCount"], artifactId=aid
+                run,
+                step,
+                "succeeded",
+                rowCount=outcome["rowCount"],
+                artifactId=aid,
+                reusedMeasures=sorted(
+                    {
+                        n.measure_id
+                        for n in compiler.nodes
+                        if n.level_id == lid and n.operation == "reuse"
+                    }
+                ),
+                timingsMs={
+                    "compile": round((compiled_at - level_started) * 1000, 3),
+                    "preChecks": round(prechecks_ms, 3),
+                    "tableBuild": outcome.get("buildTimingsMs", {}),
+                    "postChecks": round(postchecks_ms, 3),
+                    "total": round((perf_counter() - level_started) * 1000, 3),
+                },
             )
 
         async def activate(repo):
@@ -512,6 +635,8 @@ class MeasureBuildService(Service):
                 raise ImmutableRevision()
             if fingerprint != run["inputHash"]:
                 raise Conflict("Measure inputs changed during the build.")
+            if run.get("buildMode") == "incremental":
+                await self.incremental.check_snapshots(repo, run, snapshots)
             previous_binding = await repo.get(
                 "engine_artifact_bindings",
                 {

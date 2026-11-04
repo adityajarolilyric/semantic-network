@@ -2844,3 +2844,17 @@ fieldset:disabled textarea {
 @media (max-width: 600px) {
   .transaction-key-mappings > .meta-field { grid-template-columns: 1fr; gap: 6px; }
 }
+
+.planning-pivot .planning-pinned {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+}
+.planning-pivot thead .planning-pinned {
+  z-index: 4;
+  background: #f3f6fb;
+}
+.planning-pivot .planning-pinned-edge {
+  border-right: 1px solid #dbe1ed;
+  box-shadow: 4px 0 6px -4px #24344d40;
+}

@@ -1729,3 +1729,54 @@ def test_source_nulls_are_preserved_for_configured_aggregation(
     assert run["state"] == "succeeded", run
     data, cols = values(client, "base")
     assert data["rows"][0][cols["FQTY"]] == expected
+
+
+def test_versioned_build_discovers_each_level_schema_once_and_records_timings(
+    clickhouse_app, monkeypatch
+):
+    client, admin, _, _ = clickhouse_app
+    setup(client)
+    queries = []
+    original = type(admin).query
+
+    def observe(connection, query=None, *args, **kwargs):
+        if (
+            isinstance(query, str)
+            and query.startswith("SELECT * FROM (")
+            and query.endswith("LIMIT 0")
+        ):
+            queries.append(query)
+        return original(connection, query, *args, **kwargs)
+
+    monkeypatch.setattr(type(admin), "query", observe)
+    run = build_values(client)
+    assert run["state"] == "succeeded", run
+    # Storage.prepare's authoritative header is reused for insertion metadata.
+    assert len(queries) == 2  # One schema request for each of the two levels.
+    result, columns = values(client, "base")
+    assert [r[columns["FQTY"]] for r in result["rows"]] == ["40.0", "60.0"]
+    assert (
+        next(c for c in result["columns"] if c["name"] == "FQTY")["physicalType"]
+        == "Float64"
+    )
+
+    async def recorded():
+        return await client.app.state.container.store.repository.list(
+            "engine_run_steps", {"runId": run["runId"]}, key="stepId"
+        )
+
+    steps = client.portal.call(recorded)
+    assert len(steps) == 2
+    for step in steps:
+        assert step["durationMs"] >= 0
+        timing = step["timingsMs"]
+        assert set(timing) == {
+            "compile",
+            "preChecks",
+            "tableBuild",
+            "postChecks",
+            "total",
+        }
+        assert timing["total"] >= timing["tableBuild"]["total"] >= 0
+        assert timing["tableBuild"]["prepareSchema"] >= 0
+        assert timing["tableBuild"]["insert"] >= 0

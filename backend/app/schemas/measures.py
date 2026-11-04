@@ -134,3 +134,8 @@ class MeasureInput(SemanticInput):
 
 class MeasureDocument(MeasureInput, DocumentMetadata):
     pass
+
+
+class MeasureBuildRequest(Schema):
+    # Omitted request bodies retain legacy full-refresh API semantics.
+    mode: Literal["incremental", "full"] = "incremental"

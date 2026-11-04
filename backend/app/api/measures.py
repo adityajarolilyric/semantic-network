@@ -2,7 +2,7 @@ from fastapi import Depends, Response, Header
 
 from ..core.http import expected_version
 from ..schemas.common import Identifier
-from ..schemas.measures import MeasureDocument, MeasureInput
+from ..schemas.measures import MeasureDocument, MeasureInput, MeasureBuildRequest
 from ..services.measures import MeasureService
 from .base import RevisionResourceAPI
 
@@ -38,10 +38,17 @@ class MeasureAPI(RevisionResourceAPI):
         self,
         model_id: Identifier,
         revision_id: Identifier,
+        payload: MeasureBuildRequest | None = None,
         expected: int = Depends(expected_version),
         key: str = Header(alias="Idempotency-Key"),
     ):
-        return await self.builds.submit(model_id, revision_id, expected, key)
+        return await self.builds.submit(
+            model_id,
+            revision_id,
+            expected,
+            key,
+            mode=payload.mode if payload else "full",
+        )
 
     async def values(
         self,

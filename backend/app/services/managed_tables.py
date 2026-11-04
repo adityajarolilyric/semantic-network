@@ -308,6 +308,9 @@ class ManagedTableService(Service):
             resourceKind=run.get("resourceKind", "managedTable"),
             resourceId=run.get("resourceId", run.get("sourceId")),
         )
+        for key in ("buildMode", "reused", "generationId"):
+            if key in run:
+                result[key] = run[key]
         if "sourceId" in run:
             result["sourceId"] = run["sourceId"]
         return result

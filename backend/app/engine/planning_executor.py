@@ -1,3 +1,5 @@
+from time import perf_counter
+
 from .table_storage import GENERATION, owner, relation_sql
 from ..core.errors import MetadataError
 from ..warehouse.repository import quote_identifier as q, quote_literal
@@ -107,6 +109,7 @@ class PlanningTableExecutor:
         await self.warehouse.run(operation)
 
     async def build(self, artifact, compiled, plan):
+        build_started = perf_counter()
         storage = getattr(self, "storage", None)
         storage_columns = (
             await storage.prepare(artifact, compiled, self.execution_settings())
@@ -114,7 +117,10 @@ class PlanningTableExecutor:
             else None
         )
 
+        schema_prepared = perf_counter()
+
         def operation(connect):
+            operation_started = perf_counter()
             client = connect()
             table = self.warehouse.qualify(artifact["physicalName"])
             marker = owner(artifact)
@@ -125,11 +131,14 @@ class PlanningTableExecutor:
                     "A candidate table already exists. Retry as a new build.",
                     409,
                 )
-            # The SELECT header determines authoritative ClickHouse types without reading rows.
-            header = client.query(
-                f"SELECT * FROM ({compiled.sql}) LIMIT 0",
-                settings=self.execution_settings(),
-            )
+            # Versioned storage.prepare already resolved authoritative ClickHouse types.
+            # Repeating LIMIT 0 expands the entire measure DAG a second time.
+            header = None
+            if not storage_columns:
+                header = client.query(
+                    f"SELECT * FROM ({compiled.sql}) LIMIT 0",
+                    settings=self.execution_settings(),
+                )
             names = {c["columnId"]: c["name"] for c in plan.schema.columns}
             keys = ", ".join(q(names[k]) for k in plan.key_ids)
             if storage_columns:
@@ -161,6 +170,7 @@ class PlanningTableExecutor:
                         *(q(c["name"]) for c in storage_columns),
                     ]
                 )
+                insert_started = perf_counter()
                 client.command(
                     f"INSERT INTO {table} ({target}) SELECT {selected} FROM ({compiled.sql}) LIMIT {self.settings.planning_max_rows + 1}",
                     settings=self.execution_settings(),
@@ -180,10 +190,12 @@ class PlanningTableExecutor:
                 client.command(
                     f"CREATE TABLE {table} ({declarations}) ENGINE = MergeTree ORDER BY ({keys}) SETTINGS allow_nullable_key=1 COMMENT {quote_literal(marker)}"
                 )
+                insert_started = perf_counter()
                 client.command(
                     f"INSERT INTO {table} SELECT * FROM ({compiled.sql}) LIMIT {self.settings.planning_max_rows + 1}",
                     settings=self.execution_settings(),
                 )
+            insert_finished = perf_counter()
             count = int(
                 client.command(
                     f"SELECT count() FROM {table}", settings=self.execution_settings()
@@ -252,14 +264,20 @@ class PlanningTableExecutor:
                 "rowCount": count,
                 "incompleteMeasures": coverage_counts,
                 "bytesOnDisk": size,
-                "columns": [
+                "buildTimingsMs": {
+                    "prepareSchema": round((schema_prepared - build_started) * 1000, 3),
+                    "tableSetup": round((insert_started - operation_started) * 1000, 3),
+                    "insert": round((insert_finished - insert_started) * 1000, 3),
+                    "verifyStoredTable": round(
+                        (perf_counter() - insert_finished) * 1000, 3
+                    ),
+                    "total": round((perf_counter() - build_started) * 1000, 3),
+                },
+                "columns": storage_columns
+                if storage_columns
+                else [
                     {
                         **c,
-                        **(
-                            {"storageName": storage_columns[index]["storageName"]}
-                            if storage_columns
-                            else {}
-                        ),
                         "physicalType": typ.name.removeprefix("Nullable(").removesuffix(
                             ")"
                         )
@@ -267,9 +285,7 @@ class PlanningTableExecutor:
                         else typ.name,
                         "nullable": typ.name.startswith("Nullable("),
                     }
-                    for index, (c, typ) in enumerate(
-                        zip(plan.schema.columns, header.column_types)
-                    )
+                    for c, typ in zip(plan.schema.columns, header.column_types)
                 ],
             }
 

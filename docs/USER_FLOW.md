@@ -193,7 +193,7 @@ Sales History is uniformly at Brand/Zone/Week/Month rather than Product/Location
 
 **Checkpoint:** Forecast is available at its native detail and supported coarser levels; Sales is available at its native level and, when connected, its derived Base representation. Error is calculated at the correct grain.
 
-**Why:** compatible precomputation reduces runtime work without overriding measure policies. The storage invariant is a population/value pair per revision and planning level, not two tables for an entire model. Failure preserves the previous active network. A source rebuild replaces manual measure edits; it is not an edit replay. See B01–B04 and E03–E07.
+**Why:** compatible precomputation reduces runtime work without overriding measure policies. The storage invariant is a population/value pair per revision and planning level, not two tables for an entire model. Failure preserves the previous active network. Full Refresh replaces manual measure edits; it is not an edit replay. See B01–B04 and E03–E07.
 
 ## 12. Explore and edit in Planning View
 
@@ -208,7 +208,7 @@ Sales History is uniformly at Brand/Zone/Week/Month rather than Product/Location
 
 **Why:** the native business grain determines edit authority, independently of the physical table serving the pivot. Writes go to Base when a compatible path exists; otherwise they go to native and supported coarser levels. Weighted-by-self edits use only populated cells, preserve NULLs and fail on an empty/zero-total pattern. See V01–V05 and W01–W07.
 
-Row/column/measure selections survive normal navigation and refresh in this browser. Clear selections removes them; a new successful non-edit network build clears them too. Browser memory is not saved semantic metadata or a shared report.
+Row/column/measure selections survive normal navigation and refresh in this browser. Clear selections removes them; successful network builds preserve valid selections and query fresh values. Browser memory is not saved semantic metadata or a shared report.
 
 ## 13. Resolve mixed-grain Promotions with date ranges
 
@@ -232,7 +232,7 @@ If a final filter removes a winning promotion, the older assignment is not resur
 2. Choose AVG for the relevant Time and NonTime aggregations if the intended percentage should remain constant across copied days/members. Select edit disaggregation None/Repeat when an edited coarse percentage must be copied to every eligible finer row.
 3. Create CalculateFirst measure Forecast Discount Quantity at Product Location Week: FQTY × Promo Discount Percentage ÷ 100.
 4. Create CalculateFirst Final Forecast Quantity: FQTY − Forecast Discount Quantity. Calculations may reference other calculated measures when the dependency graph is valid.
-5. Build Semantic Network again, return to Planning View; the saved layout is restored against fresh options and values.
+5. Build Semantic Network again (unchanged values are reused), return to Planning View; the saved layout is restored against fresh options and values.
 6. Edit the percentage at an eligible coarse grain and verify dependent values. For illustrative Forecast 1,150 and repeated percentage 10, the reduction is 115 and Final Forecast is 1,035.
 
 **Checkpoint:** percentage values repeat as intended, quantities roll up by their configured policies, and the calculated dependency chain refreshes after edits.
@@ -253,7 +253,7 @@ These are modelling outcomes, not fixed row counts. Retained transaction context
 
 - Validate and Publish revision on Sources when the draft is ready. Current contract publication requires Base, valid definitions and current managed/planning populations; it does not require a built measure network. Publish freezes definitions, not live external source rows. Start a child draft for further changes.
 - On stale-write or stale-build errors, reload current metadata, reconcile the preserved form and retry explicitly. Do not assume the system silently reapplied changes to a newer version.
-- Reload metadata does not build data. Planning Build all does not rebuild measures. Materialise is a source rebuild and does not preserve manual edits.
+- Reload metadata does not build data. Planning Build all does not rebuild measures. Incremental Materialise preserves unchanged edits; Full Refresh reloads sources and replaces edits.
 - Use Nuke everything only for an intentional whole-workspace reset. After one confirmation it removes all application data and configured-database tables/views, including other models and published history, then recreates only the default model and draft. It is not a model-scoped undo or a recovery shortcut.
 
 See P03–P08, B01–B04 and O01–O03.
@@ -268,3 +268,5 @@ Master-data row editing, development-to-production promotion, query-time Plannin
 - Planning population uses a switch (**From a Table**, **From Multiple Tables**, **From Existing Planning Level**). For parent projections show **Select keys from Parent keys**, **Make Parent attribute as a grain key**, and **Select attributes from Parent** alongside each other. Dimension mappings sit alongside selected Dimension attributes; both layouts stack on smaller screens. **Why:** grain choices and descriptive attributes remain distinct without excessive scrolling.
 - Base Level Visibility shows derived Time/Non-time policy selectors with **Equal** or **None – Repeat Values**. SUM selects Equal; other aggregation methods select Repeat. These selectors are informational; edit Dis-Aggregation is configured separately. **Why:** initial materialisation preserves the configured aggregation semantics while edits retain their own distribution policy.
 - Planning View retains ordered selections across successful network rebuilds. Fresh catalog validation drops removed references and fresh queries replace displayed values; only explicit Clear selections/browser cleanup resets the layout. **Why:** rebuilding data should not force users to repeat analysis setup.
+
+Materialise now offers incremental **Build Semantic Network** and explicit **Full Refresh**. Build reuses unchanged values/edits, computes changed measures and dependent formulas, and reports Already up to date when its generation can be retained. Full Refresh confirms once and reloads all source values, replacing edits. Registered source/population/semantic changes invalidate affected representations; direct external ClickHouse row changes need explicit refresh. Existing input snapshots establish pre-upgrade baselines only when provable; otherwise the user receives a safe Full Refresh requirement. Planning View keeps row-dimension and Measure columns pinned during horizontal scrolling.

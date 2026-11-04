@@ -5,7 +5,7 @@ from ..warehouse.repository import quote_identifier as q, quote_literal as lit
 from .contracts import Check
 from .measure_compiler import MeasureCompiler, VALUE, COMPLETE
 from .planning_view import PlanningViewPlanner, ViewRelationships, TARGET, virtual_level
-from .table_storage import GENERATION, column_sql, token
+from .table_storage import GENERATION, token
 
 
 class MeasureEditPlanner:
@@ -197,25 +197,7 @@ class MeasureEditCompiler(MeasureCompiler):
         return set()
 
     def stored(self, mid, level):
-        artifact = self.snapshots.get(level, {})
-        if mid not in artifact.get("measureColumns", {}):
-            raise MetadataError(
-                "measure_path_unavailable",
-                "This measure was not materialised at this level in the captured generation.",
-            )
-        column = next(c for c in artifact["columns"] if c.get("measureId") == mid)
-        selected = [
-            q(artifact["keyColumns"][k]) + " AS " + q(k) for k in self.keys(level)
-        ]
-        selected.append(column_sql(column) + " AS " + q(VALUE))
-        body = f"FROM {self.table(artifact['physicalName'])} WHERE {q(GENERATION)}={lit(token(artifact))}"
-        coverage = artifact.get("coverageColumns", {}).get(mid)
-        flag = q(coverage) if coverage else "toUInt8(1)"
-        selected.append(flag + " AS " + q(COMPLETE))
-        result = self.cte(f"SELECT {', '.join(selected)} {body}")
-        if coverage:
-            self.coverage_nodes[result] = True
-        return result
+        return self.stored_measure(mid, level, self.snapshots)
 
     def node(self, mid, target):
         key = (mid, target)
