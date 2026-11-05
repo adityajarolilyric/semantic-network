@@ -1,0 +1,27 @@
+?start: comparison
+?comparison: sum (COMPARE sum)?
+?sum: product (ADD product)*
+?product: unary (MULTIPLY unary)*
+?unary: "-" unary -> negate
+      | "+" unary -> positive
+      | atom
+?atom: NUMBER -> number
+     | ESCAPED_STRING -> string
+     | TRUE -> true
+     | FALSE -> false
+     | reference
+     | NAME "(" [arguments] ")" -> function
+     | "(" comparison ")"
+reference: BRACKET_NAME | NAME
+arguments: comparison ("," comparison)*
+COMPARE: ">=" | "<=" | "!=" | "<>" | "=" | ">" | "<"
+ADD: "+" | "-"
+MULTIPLY: "*" | "/"
+TRUE.10: /true(?![A-Za-z0-9_])/i
+FALSE.10: /false(?![A-Za-z0-9_])/i
+NAME: /[A-Za-z_][A-Za-z0-9_]*/
+BRACKET_NAME: /\[[^\[\]\r\n]+\]/
+%import common.NUMBER
+%import common.ESCAPED_STRING
+%import common.WS
+%ignore WS

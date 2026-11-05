@@ -302,6 +302,17 @@ class RangeMeasureAggregator:
             measure,
         )
 
+    @staticmethod
+    def mixed_expression(method):
+        from .value_states import mixed_group
+
+        return mixed_group(
+            method,
+            "range_input.__value",
+            "if(range_input.__mixed,2,1)",
+            "range_input.__resolved_order",
+        )
+
     def compile_calendar(self, config):
         from .measure_compiler import VALUE
 
@@ -328,6 +339,7 @@ class RangeMeasureAggregator:
             q(date_id) + " AS __resolved_date",
             q(order_id) + " AS __resolved_order",
             h.widen(q(d["valueColumnId"]), self.measure) + " AS " + q(VALUE),
+            "toUInt8(0) AS __mixed",
         ]
         node = h.cte(f"SELECT {', '.join(selected)} FROM {q(self.resolved.node)}")
         policy = d["aggregation"]
@@ -336,7 +348,7 @@ class RangeMeasureAggregator:
             h.assertions.append(
                 Check(
                     "ambiguous_resolution_time_order",
-                    f"SELECT {group}, __resolved_order FROM {q(node)} GROUP BY {group}, __resolved_order HAVING uniqExact(__resolved_date)>1 LIMIT 20",
+                    f"SELECT {group}, __resolved_order FROM {q(node)} AS range_input GROUP BY {group}, __resolved_order HAVING uniqExact(__resolved_date)>1 LIMIT 20",
                 )
             )
         pending = {"time": True, "nonTime": bool(series)}
@@ -354,17 +366,19 @@ class RangeMeasureAggregator:
                 *(series if pending["nonTime"] else []),
             ]
             expr = h.aggregate(
-                q(VALUE),
+                "range_input." + q(VALUE),
                 policy[stage],
                 policy,
                 q("__resolved_order") if stage == "time" else None,
+                "if(range_input.__mixed,2,1)",
             )
             ordering = (
                 ", min(__resolved_order) AS __resolved_order" if pending["time"] else ""
             )
+            mixed = self.mixed_expression(policy[stage])
             group = ", ".join(q(k) for k in groups)
             node = h.cte(
-                f"SELECT {group}, {expr} AS {q(VALUE)}{ordering} FROM {q(node)} GROUP BY {group}"
+                f"SELECT {group}, if({mixed},NULL,{expr}) AS {q(VALUE)}, toUInt8({mixed}) AS __mixed{ordering} FROM {q(node)} AS range_input GROUP BY {group}"
             )
         return h.cte(f"SELECT *, toUInt8(1) AS __present FROM {q(node)}")
 
@@ -415,6 +429,7 @@ class RangeMeasureAggregator:
             )
             + " AS __resolved_order",
             h.widen(q(d["valueColumnId"]), self.measure) + " AS " + q(VALUE),
+            "toUInt8(0) AS __mixed",
         ]
         node = h.cte(f"SELECT {', '.join(selected)} FROM {q(self.resolved.node)}")
         policy = d["aggregation"]
@@ -423,7 +438,7 @@ class RangeMeasureAggregator:
             h.assertions.append(
                 Check(
                     "ambiguous_resolution_time_order",
-                    f"SELECT {group}, __resolved_order FROM {q(node)} GROUP BY {group}, __resolved_order HAVING uniqExact(__resolved_date)>1 LIMIT 20",
+                    f"SELECT {group}, __resolved_order FROM {q(node)} AS range_input GROUP BY {group}, __resolved_order HAVING uniqExact(__resolved_date)>1 LIMIT 20",
                 )
             )
         pending = {"nonTime": bool(series), "time": True}
@@ -443,15 +458,17 @@ class RangeMeasureAggregator:
                 *(series if pending["nonTime"] else []),
             ]
             expression = h.aggregate(
-                q(VALUE),
+                "range_input." + q(VALUE),
                 policy[stage],
                 policy,
                 q("__resolved_order") if stage == "time" else None,
+                "if(range_input.__mixed,2,1)",
             )
             ordering = (
                 ", min(__resolved_order) AS __resolved_order" if pending["time"] else ""
             )
+            mixed = self.mixed_expression(policy[stage])
             node = h.cte(
-                f"SELECT {', '.join(q(k) for k in groups)}, {expression} AS {q(VALUE)}{ordering} FROM {q(node)} GROUP BY {', '.join(q(k) for k in groups)}"
+                f"SELECT {', '.join(q(k) for k in groups)}, if({mixed},NULL,{expression}) AS {q(VALUE)}, toUInt8({mixed}) AS __mixed{ordering} FROM {q(node)} AS range_input GROUP BY {', '.join(q(k) for k in groups)}"
             )
         return h.cte(f"SELECT *, toUInt8(1) AS __present FROM {q(node)}")

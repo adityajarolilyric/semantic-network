@@ -374,7 +374,20 @@ class MeasureBuildService(Service):
                 base_to_native in ("same", "equivalent", "roll_up")
                 and base_to_target in ("same", "equivalent", "roll_up")
             )
-            if d.get("calculationType") == "AggregateFirst" and reachable:
+            from ..formula_language.expressions import contains_counts
+
+            counted = contains_counts((d.get("formula") or {}).get("expression"))
+            if counted:
+                reachable = analyzer.analyze(d["nativePlanningLevelId"], level_id)[
+                    "relationship"
+                ] in {"same", "equivalent", "roll_up"}
+                operation = "Recalculate count" if reachable else "Unavailable"
+                explanation = (
+                    "Evaluate arguments at the measure’s Output Planning Level and recompute counts at this grain."
+                    if reachable
+                    else "the measure’s Output Planning Level cannot determine this grain; count results are never distributed."
+                )
+            elif d.get("calculationType") == "AggregateFirst" and reachable:
                 operation = "Recalculate formula"
                 explanation = (
                     "Resolve dependencies at this planning level, then evaluate "
@@ -459,7 +472,11 @@ class MeasureBuildService(Service):
             )
             result.update(
                 state="ready",
-                columns=[c for c in artifact["columns"] if c.get("role") != "coverage"],
+                columns=[
+                    c
+                    for c in artifact["columns"]
+                    if c.get("role") not in {"coverage", "mixed"}
+                ],
                 incompleteMeasures=artifact.get("incompleteMeasures", {}),
                 rowCount=artifact["rowCount"],
                 unavailable=artifact["unavailable"],
@@ -565,6 +582,22 @@ class MeasureBuildService(Service):
                 )
             )
             readable = result["relationship"] != "incompatible" or via_base
+            if (
+                measure["definition"]["resultType"]["type"]
+                in {"string", "date", "boolean"}
+                and measure["definition"].get("calculationType") != "AggregateFirst"
+            ):
+                readable = result["relationship"] in {"same", "equivalent", "roll_up"}
+                via_base = False
+            from ..formula_language.expressions import contains_counts
+
+            if contains_counts(
+                (measure["definition"].get("formula") or {}).get("expression")
+            ):
+                readable = analyzer.analyze(
+                    measure["definition"]["nativePlanningLevelId"], lid
+                )["relationship"] in {"same", "equivalent", "roll_up"}
+                via_base = False
             levels.append(
                 {
                     "planningLevelId": lid,

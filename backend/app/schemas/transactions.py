@@ -199,7 +199,7 @@ class TransactionMeasureSelection(Schema):
     valueColumnId: Identifier
     editable: bool = False
     aggregation: Aggregation
-    allocation: Allocation = Field(default_factory=Allocation)
+    allocation: Allocation | None = Field(default_factory=Allocation)
 
 
 class TransactionInput(SemanticInput):

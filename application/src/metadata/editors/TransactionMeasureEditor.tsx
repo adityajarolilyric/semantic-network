@@ -1,17 +1,18 @@
 import type { Aggregation, Measure, RefDefinition, SourceColumn } from '../types'
-import { referencedResultType } from '../measureTypes'
+import { typedResultType, numericType, aggregationOptions } from '../measureTypes'
 import { TransformationSection } from './TransformationSection'
 
 export type TransactionMeasureDraft = {
   valueColumnId: string
   name: string
   editable: boolean
+  valueType?: string
   nonTime: Aggregation['nonTime'] | ''
   time: Aggregation['time'] | ''
-  allocation: RefDefinition['allocation']
+  allocation: NonNullable<RefDefinition['allocation']>
 }
-export const numericMeasureColumns = (columns: SourceColumn[]) =>
-  columns.filter((column) => referencedResultType(column.physicalType, true))
+export const measureValueColumns = (columns: SourceColumn[]) =>
+  columns.filter((column) => typedResultType(column.physicalType, true))
 export function transactionMeasuresComplete(
   drafts: TransactionMeasureDraft[],
   columns: SourceColumn[],
@@ -30,22 +31,14 @@ export function transactionMeasureSelections(drafts: TransactionMeasureDraft[]) 
     editable: draft.editable,
     aggregation: {
       nonTime: draft.nonTime,
-      time: draft.time,
+      time: draft.valueType && !numericType(draft.valueType) ? draft.nonTime : draft.time,
       order: 'nonTimeThenTime',
       nullInputPolicy: 'ignore',
       allNullResult: 'null',
     },
-    allocation: draft.allocation,
+    allocation: draft.valueType && !numericType(draft.valueType) ? null : draft.allocation,
   }))
 }
-const aggregations = [
-  ['sum', 'Sum'],
-  ['avg', 'Average'],
-  ['min', 'Minimum'],
-  ['max', 'Maximum'],
-  ['count', 'Count'],
-  ['count_distinct', 'Distinct count'],
-]
 export function TransactionMeasureEditor({
   columns,
   drafts,
@@ -74,13 +67,13 @@ export function TransactionMeasureEditor({
       status={drafts.length ? `${drafts.length} selected` : 'Optional'}
     >
       <p className="meta-hint">
-        Select numeric columns to create measures when you save. Choose their aggregation policies;
-        the remaining settings are filled automatically.
+        Select columns to create measures when you save. Choose their aggregation policies; the
+        remaining settings are filled automatically.
       </p>
       {loading ? (
         <p role="status">Loading transformed columns…</p>
       ) : !rows.length ? (
-        <p className="meta-hint">No numeric value columns are available.</p>
+        <p className="meta-hint">No supported value columns are available.</p>
       ) : (
         <div className="transaction-measures-scroll">
           <table className="transaction-measures-table">
@@ -88,14 +81,16 @@ export function TransactionMeasureEditor({
               <tr>
                 <th>Column</th>
                 <th>Editable</th>
-                <th>Non-time aggregation</th>
-                <th>Time aggregation</th>
+                <th colSpan={2}>Aggregation</th>
                 <th>Dis-Aggregation policy</th>
               </tr>
             </thead>
             <tbody>
               {rows.map((column) => {
                 const draft = drafts.find((item) => item.valueColumnId === column.columnId)
+                const kind =
+                  typedResultType(column.physicalType)?.type ?? draft?.valueType ?? 'number'
+                const numeric = numericType(kind)
                 const available = columns.some((item) => item.columnId === column.columnId)
                 return (
                   <tr key={column.columnId}>
@@ -113,8 +108,9 @@ export function TransactionMeasureEditor({
                                       valueColumnId: column.columnId,
                                       name: column.name,
                                       editable: false,
-                                      nonTime: '',
-                                      time: '',
+                                      valueType: kind,
+                                      nonTime: kind === 'string' ? 'single_value' : '',
+                                      time: kind === 'string' ? 'single_value' : '',
                                       allocation: { mode: 'weighted_by_self' },
                                     },
                                   ]
@@ -134,91 +130,124 @@ export function TransactionMeasureEditor({
                       <input
                         type="checkbox"
                         aria-label={`${column.name} editable`}
-                        disabled={!draft || loading}
+                        disabled={!draft || loading || !numeric}
                         checked={draft?.editable ?? false}
                         onChange={(event) =>
                           update(column.columnId, { editable: event.target.checked })
                         }
                       />
                     </td>
-                    <td>
-                      <select
-                        aria-label={`${column.name} non-time aggregation`}
-                        disabled={!draft || loading}
-                        value={draft?.nonTime ?? ''}
-                        onChange={(event) =>
-                          update(column.columnId, {
-                            nonTime: event.target.value as TransactionMeasureDraft['nonTime'],
-                          })
-                        }
-                      >
-                        <option value="">Choose…</option>
-                        {aggregations.map(([value, label]) => (
-                          <option key={value} value={value}>
-                            {label}
-                          </option>
-                        ))}
-                      </select>
-                    </td>
-                    <td>
-                      <select
-                        aria-label={`${column.name} time aggregation`}
-                        disabled={!draft || loading}
-                        value={draft?.time ?? ''}
-                        onChange={(event) =>
-                          update(column.columnId, {
-                            time: event.target.value as TransactionMeasureDraft['time'],
-                          })
-                        }
-                      >
-                        <option value="">Choose…</option>
-                        {[...aggregations, ['first', 'First'], ['last', 'Last']].map(
-                          ([value, label]) => (
-                            <option key={value} value={value}>
-                              {label}
-                            </option>
-                          ),
-                        )}
-                      </select>
-                    </td>
-                    <td>
-                      <select
-                        aria-label={`${column.name} dis-aggregation policy`}
-                        disabled={!draft || loading}
-                        value={draft?.allocation.mode ?? 'weighted_by_self'}
-                        onChange={(event) =>
-                          update(column.columnId, {
-                            allocation: {
-                              mode: event.target.value as RefDefinition['allocation']['mode'],
-                            },
-                          })
-                        }
-                      >
-                        <option value="weighted_by_self">Weighted by self</option>
-                        <option value="none">None — Repeat values</option>
-                        <option value="equal">Equal</option>
-                        <option value="weighted">Weighted by measure</option>
-                      </select>
-                      {draft?.allocation.mode === 'weighted' && (
+                    {!numeric ? (
+                      <td colSpan={2}>
                         <select
-                          aria-label={`${column.name} weight measure`}
-                          value={draft.allocation.basisMeasureId ?? ''}
+                          aria-label={`${column.name} aggregation`}
+                          disabled={!draft || loading || kind === 'string'}
+                          value={kind === 'string' ? 'single_value' : (draft?.nonTime ?? '')}
                           onChange={(event) =>
                             update(column.columnId, {
-                              allocation: {
-                                mode: 'weighted',
-                                basisMeasureId: event.target.value || null,
-                              },
+                              nonTime: event.target.value as TransactionMeasureDraft['nonTime'],
+                              time: event.target.value as TransactionMeasureDraft['time'],
                             })
                           }
                         >
-                          <option value="">Choose measure…</option>
-                          {measures.map((measure) => (
-                            <option key={measure.objectId} value={measure.objectId}>
-                              {measure.name}
+                          {kind !== 'string' && <option value="">Choose…</option>}
+                          {aggregationOptions(kind).map(({ value, label }) => (
+                            <option key={value} value={value}>
+                              {label}
                             </option>
                           ))}
                         </select>
+                      </td>
+                    ) : (
+                      <>
+                        <td>
+                          <small>Non-time</small>
+                          <select
+                            aria-label={`${column.name} non-time aggregation`}
+                            disabled={!draft || loading}
+                            value={draft?.nonTime ?? ''}
+                            onChange={(event) =>
+                              update(column.columnId, {
+                                nonTime: event.target.value as TransactionMeasureDraft['nonTime'],
+                              })
+                            }
+                          >
+                            <option value="">Choose…</option>
+                            {aggregationOptions(kind).map(({ value, label }) => (
+                              <option key={value} value={value}>
+                                {label}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                        <td>
+                          <small>Time</small>
+                          <select
+                            aria-label={`${column.name} time aggregation`}
+                            disabled={!draft || loading}
+                            value={draft?.time ?? ''}
+                            onChange={(event) =>
+                              update(column.columnId, {
+                                time: event.target.value as TransactionMeasureDraft['time'],
+                              })
+                            }
+                          >
+                            <option value="">Choose…</option>
+                            {aggregationOptions(kind, true).map(({ value, label }) => (
+                              <option key={value} value={value}>
+                                {label}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                      </>
+                    )}
+                    <td>
+                      {!numeric ? (
+                        <span className="meta-hint">Not applicable</span>
+                      ) : (
+                        <>
+                          <select
+                            aria-label={`${column.name} dis-aggregation policy`}
+                            disabled={!draft || loading}
+                            value={draft?.allocation.mode ?? 'weighted_by_self'}
+                            onChange={(event) =>
+                              update(column.columnId, {
+                                allocation: {
+                                  mode: event.target.value as NonNullable<
+                                    RefDefinition['allocation']
+                                  >['mode'],
+                                },
+                              })
+                            }
+                          >
+                            <option value="weighted_by_self">Weighted by self</option>
+                            <option value="none">None — Repeat values</option>
+                            <option value="equal">Equal</option>
+                            <option value="weighted">Weighted by measure</option>
+                          </select>
+                          {draft?.allocation.mode === 'weighted' && (
+                            <select
+                              aria-label={`${column.name} weight measure`}
+                              value={draft.allocation.basisMeasureId ?? ''}
+                              onChange={(event) =>
+                                update(column.columnId, {
+                                  allocation: {
+                                    mode: 'weighted',
+                                    basisMeasureId: event.target.value || null,
+                                  },
+                                })
+                              }
+                            >
+                              <option value="">Choose measure…</option>
+                              {measures.map((measure) => (
+                                <option key={measure.objectId} value={measure.objectId}>
+                                  {measure.name}
+                                </option>
+                              ))}
+                            </select>
+                          )}
+                        </>
                       )}
                     </td>
                   </tr>

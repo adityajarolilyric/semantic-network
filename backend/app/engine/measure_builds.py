@@ -260,6 +260,11 @@ class MeasureBuildHandler:
                     for c in outcome["columns"]
                     if c.get("coverageFor")
                 },
+                "mixedColumns": {
+                    c["mixedFor"]: c.get("storageName", c["name"])
+                    for c in outcome["columns"]
+                    if c.get("mixedFor")
+                },
                 "unavailable": unavailable,
                 "populationArtifactId": populations[planning_level_id]["artifactId"],
                 "compilerVersion": compiled.compiler_version,

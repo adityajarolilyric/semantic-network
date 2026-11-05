@@ -7,7 +7,9 @@ from .formulas import Formula
 
 
 class ResultType(Schema):
-    type: Literal["decimal", "number", "integer"] = "number"
+    type: Literal["decimal", "number", "integer", "string", "date", "boolean"] = (
+        "number"
+    )
     precision: int | None = Field(default=None, ge=1, le=76)
     scale: int | None = Field(default=None, ge=0, le=76)
     nullable: bool = True
@@ -30,9 +32,29 @@ class ResultType(Schema):
 
 class Aggregation(Schema):
     order: Literal["nonTimeThenTime", "timeThenNonTime"] = "nonTimeThenTime"
-    nonTime: Literal["sum", "avg", "min", "max", "count", "count_distinct"]
+    nonTime: Literal[
+        "sum",
+        "avg",
+        "min",
+        "max",
+        "count",
+        "count_distinct",
+        "single_value",
+        "any_true",
+        "all_true",
+    ]
     time: Literal[
-        "sum", "first", "last", "avg", "min", "max", "count", "count_distinct"
+        "sum",
+        "first",
+        "last",
+        "avg",
+        "min",
+        "max",
+        "count",
+        "count_distinct",
+        "single_value",
+        "any_true",
+        "all_true",
     ]
     nullInputPolicy: Literal["ignore", "propagate"] = "ignore"
     allNullResult: Literal["null", "zero"] = "null"
@@ -74,7 +96,7 @@ class ReferencedMeasureDefinition(Schema):
         return "preserve" if value == "reject" else value
 
     overflowPolicy: Literal["error"] = "error"
-    allocation: Allocation = Field(default_factory=Allocation)
+    allocation: Allocation | None = Field(default_factory=Allocation)
 
     @field_validator("allocation", mode="before")
     @classmethod

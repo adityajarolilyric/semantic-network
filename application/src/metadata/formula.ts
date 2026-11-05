@@ -1,21 +1,31 @@
 import type { Expression, Measure } from './types'
+export type FormulaAttribute = {
+  label: string
+  key: string
+  reference: Extract<Expression, { type: 'attributeRef' }>
+  valueType: string
+  aliases?: string[]
+}
 // Small semantic grammar, never JavaScript or SQL execution.
+/** Legacy parser retained for AST compatibility tests. Authoring uses backend Lark validation. */
 export function parseFormula(
   text: string,
   measures: Pick<Measure, 'objectId' | 'name'>[],
   grainColumns: { grainColumnId: string; name: string }[] = [],
+  attributes: FormulaAttribute[] = [],
 ): Expression {
   if (!text.trim() || text.length > 4000) throw new Error('Enter a formula of 1–4,000 characters.')
-  const tokens: { value: string; id: boolean }[] = []
+  const tokens: { value: string; id: boolean; string?: boolean }[] = []
   const pattern =
-    /\s*(?:\[([^\[\]\r\n]+)\]|([A-Za-z_][A-Za-z0-9_]*|(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?|[()+*/,\-]))/gy
+    /\s*(?:\[([^\[\]\r\n]+)\]|("(?:[^"\\]|\\.)*")|([A-Za-z_][A-Za-z0-9_]*|(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?|>=|<=|!=|<>|[=<>()[\]+*/,\-]))/gy
+
   let pos = 0
   while (pos < text.length) {
     if (!text.slice(pos).trim()) break
     pattern.lastIndex = pos
     const match = pattern.exec(text)
     if (!match) throw new Error('Unexpected character near ' + text.slice(pos, pos + 20))
-    tokens.push({ value: match[1] ?? match[2], id: !!match[1] })
+    tokens.push({ value: match[1] ?? match[2] ?? match[3], id: !!match[1], string: !!match[2] })
     pos = pattern.lastIndex
   }
   let i = 0
@@ -39,12 +49,15 @@ export function parseFormula(
       }
       if (peek() === '(') {
         i++
-        const e = sum()
+        const e = comparison()
         take(')')
         return e
       }
       const t = tokens[i++]
       if (!t) throw new Error('Formula is incomplete.')
+      if (t.string) return { type: 'literal', value: JSON.parse(t.value) as string }
+      if (!t.id && /^(true|false)$/i.test(t.value))
+        return { type: 'literal', value: t.value.toLowerCase() === 'true' }
       if (!t.id && /^\d|^\./.test(t.value)) {
         const value = Number(t.value)
         if (!Number.isFinite(value)) throw new Error('Numeric literal must be finite.')
@@ -52,6 +65,17 @@ export function parseFormula(
       }
       if (!t.id && peek() === '(') {
         i++
+        if (t.value.toLowerCase() === 'attr') {
+          const name = tokens[i++]?.value
+          if (!name) throw new Error('ATTR needs an attribute name.')
+          take(')')
+          const matches = attributes.filter(
+            (attribute) => attribute.label === name || attribute.key === name,
+          )
+          if (matches.length !== 1)
+            throw new Error('Choose an available, unique attribute from the suggestions.')
+          return matches[0].reference
+        }
         if (t.value.toLowerCase() === 'grain') {
           const id = tokens[i++]?.value
           if (!id) throw new Error('GRAIN needs a column name.')
@@ -62,23 +86,47 @@ export function parseFormula(
           return { type: 'grainRef', grainColumnId: columns[0]?.grainColumnId ?? id }
         }
         const fn = t.value.toLowerCase()
-        if (!['abs', 'round', 'coalesce', 'min', 'max'].includes(fn))
+        if (
+          ![
+            'abs',
+            'round',
+            'coalesce',
+            'min',
+            'max',
+            'if',
+            'and',
+            'or',
+            'not',
+            'concat',
+            'upper',
+            'lower',
+            'trim',
+            'date',
+            'add_days',
+            'days_between',
+            'is_null',
+          ].includes(fn)
+        )
           throw new Error('Unsupported function ' + t.value)
         const args: Expression[] = []
-        args.push(sum())
+        args.push(comparison())
         while (peek() === ',') {
           i++
-          args.push(sum())
+          args.push(comparison())
         }
         take(')')
         if (args.length > 16) throw new Error('Functions accept at most 16 arguments.')
         return { type: 'call', function: fn as 'abs', arguments: args }
       }
       const candidates = measures.filter((m) => m.name === t.value || m.objectId === t.value)
-      if (candidates.length !== 1)
+      const fields = attributes.filter(
+        (attribute) => attribute.label === t.value || attribute.key === t.value,
+      )
+      if (candidates.length + fields.length !== 1)
         throw new Error(
           'Unknown or ambiguous measure ' + t.value + '. Choose a unique measure name.',
         )
+      if (fields.length) return fields[0].reference
       return { type: 'measureRef', measureId: candidates[0].objectId }
     } finally {
       depth--
@@ -102,7 +150,25 @@ export function parseFormula(
     }
     return e
   }
-  const expression = sum()
+  function comparison(): Expression {
+    let e = sum()
+    const operators: Record<string, Extract<Expression, { type: 'binary' }>['operator']> = {
+      '=': 'eq',
+      '!=': 'ne',
+      '<>': 'ne',
+      '>': 'gt',
+      '>=': 'gte',
+      '<': 'lt',
+      '<=': 'lte',
+    }
+    if (operators[peek()]) {
+      const operator = operators[peek()]
+      i++
+      e = { type: 'binary', operator, left: e, right: sum() }
+    }
+    return e
+  }
+  const expression = comparison()
   if (i !== tokens.length) throw new Error('Unexpected token ' + peek())
   return expression
 }
@@ -110,22 +176,43 @@ export function formatFormula(
   e: Expression,
   measures: Pick<Measure, 'objectId' | 'name'>[] = [],
   grainColumns: { grainColumnId: string; name: string }[] = [],
+  attributes: FormulaAttribute[] = [],
+  grainOwner?: { objectId: string; name: string },
 ): string {
-  const format = (node: Expression): string => formatFormula(node, measures, grainColumns)
+  const format = (node: Expression): string =>
+    formatFormula(node, measures, grainColumns, attributes, grainOwner)
   if (e.type === 'measureRef') {
     const name = measures.find((m) => m.objectId === e.measureId)?.name ?? e.measureId
     return `[${name}]`
   }
+  if (e.type === 'grainRef' && grainOwner)
+    return `[${grainOwner.name}.${grainColumns.find((c) => c.grainColumnId === e.grainColumnId)?.name ?? e.grainColumnId}]`
   if (e.type === 'grainRef')
     return `GRAIN([${grainColumns.find((c) => c.grainColumnId === e.grainColumnId)?.name ?? e.grainColumnId}])`
-  if (e.type === 'literal') return String(e.value)
-  if (e.type === 'call')
+  if (e.type === 'attributeRef') {
+    const key = (e.dimensionId ?? e.planningLevelId) + '.' + e.columnId
+    return `[${attributes.find((attribute) => attribute.key === key)?.label ?? key}]`
+  }
+  if (e.type === 'literal')
+    return typeof e.value === 'string' ? JSON.stringify(e.value) : String(e.value)
+  if (e.type === 'call' || e.type === 'count')
     return e.function.toUpperCase() + '(' + e.arguments.map(format).join(', ') + ')'
   return (
     '(' +
     format(e.left) +
     ' ' +
-    { add: '+', subtract: '-', multiply: '*', divide: '/' }[e.operator] +
+    {
+      add: '+',
+      subtract: '-',
+      multiply: '*',
+      divide: '/',
+      eq: '=',
+      ne: '!=',
+      gt: '>',
+      gte: '>=',
+      lt: '<',
+      lte: '<=',
+    }[e.operator] +
     ' ' +
     format(e.right) +
     ')'
@@ -140,9 +227,30 @@ export function formulaUnit(
   const unit = (node: Expression): string | null => {
     if (node.type === 'measureRef')
       return measures.find((m) => m.objectId === node.measureId)?.business.unit ?? null
-    if (node.type === 'literal' || node.type === 'grainRef') return null
-    if (node.type === 'call')
+    if (node.type === 'count') return null
+    if (node.type === 'literal' || node.type === 'grainRef' || node.type === 'attributeRef')
+      return null
+    if (node.type === 'call') {
+      if (
+        [
+          'and',
+          'or',
+          'not',
+          'is_null',
+          'concat',
+          'upper',
+          'lower',
+          'trim',
+          'date',
+          'add_days',
+          'days_between',
+        ].includes(node.function)
+      )
+        return null
+      if (node.function === 'if') return unit(node.arguments[1])
       return node.arguments.map(unit).find((value) => value !== null) ?? null
+    }
+    if (['eq', 'ne', 'gt', 'gte', 'lt', 'lte'].includes(node.operator)) return null
     const left = unit(node.left),
       right = unit(node.right)
     if (node.operator === 'add' || node.operator === 'subtract') return left ?? right

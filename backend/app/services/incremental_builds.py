@@ -7,7 +7,11 @@ from ..core.errors import Conflict, MetadataError
 from ..domain.measure_policies import MEASURE_TYPE_POLICY
 from ..engine.captured_inputs import CapturedRunInputs
 from ..engine.incremental import INCREMENTAL_POLICY, MaterialisationManifest, reusable
-from ..engine.measure_compiler import MEASURE_COMPILER_VERSION
+from ..engine.measure_compiler import (
+    MEASURE_COMPILER_VERSION,
+    LEGACY_MEASURE_COMPILER_VERSION,
+    TYPED_MEASURE_COMPILER_VERSION,
+)
 
 
 class IncrementalBuildCoordinator:
@@ -25,10 +29,13 @@ class IncrementalBuildCoordinator:
             )
 
     async def baseline(self, repo, artifact):
-        if (
-            artifact.get("numericPolicy") != MEASURE_TYPE_POLICY
-            or artifact.get("compilerVersion") != MEASURE_COMPILER_VERSION
-        ):
+        if artifact.get("numericPolicy") != MEASURE_TYPE_POLICY or artifact.get(
+            "compilerVersion"
+        ) not in {
+            MEASURE_COMPILER_VERSION,
+            LEGACY_MEASURE_COMPILER_VERSION,
+            TYPED_MEASURE_COMPILER_VERSION,
+        }:
             raise Conflict(
                 "A Full Refresh is required to establish a compatible incremental baseline. Existing values were preserved."
             )

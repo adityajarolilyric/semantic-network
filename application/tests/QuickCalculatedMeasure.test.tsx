@@ -2,9 +2,22 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, expect, it, vi } from 'vitest'
 import { QuickCalculatedMeasure } from '../src/metadata/QuickCalculatedMeasure'
+import { metadataApi } from '../src/metadata/api'
 import { emptySnapshot } from '../src/metadata/types'
 
 beforeEach(() => {
+  vi.spyOn(metadataApi, 'request').mockImplementation(async (path, _method, body) => {
+    if (path.endsWith('/formula/language')) return { functions: [] } as never
+    if (path.includes('/formula/attributes')) return [] as never
+    const text = (body as { displayText: string }).displayText
+    return {
+      valid: !text.endsWith('('),
+      containsCounts: false,
+      expression: { type: 'literal', value: 1 },
+      resultType: { type: 'number', nullable: true },
+      diagnostics: text.endsWith('(') ? [{ message: 'Incomplete function.' }] : [],
+    } as never
+  })
   HTMLDialogElement.prototype.showModal = function () {
     this.setAttribute('open', '')
   }
@@ -94,7 +107,7 @@ it('retains advanced settings when collapsed and reports save errors', async () 
   await user.type(screen.getByLabelText('Formula'), '1+2')
   await user.click(screen.getByRole('button', { name: 'Advanced settings' }))
   await user.selectOptions(screen.getByLabelText('Output Planning Level'), 'week')
-  await user.selectOptions(screen.getByLabelText('Calculation type'), 'CalculateFirst')
+  await user.click(screen.getByRole('radio', { name: 'Calculate first' }))
   await user.click(screen.getByRole('button', { name: 'Hide advanced settings' }))
   await user.click(screen.getByRole('button', { name: 'Save metadata' }))
   await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Name already exists.'))

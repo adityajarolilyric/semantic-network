@@ -33,6 +33,34 @@ class ViewRelationships(LevelRelationshipAnalyzer):
             f["id"]: replace(f["coordinate"], column_id=f["id"]) for f in fields
         }
 
+        # A displayed dimension key can determine its attributes without making
+        # those attributes part of the pivot grain.
+        bindings = []
+        for dimension in self.dimensions.values():
+            mappings = []
+            for key in dimension["definition"]["keyColumnIds"]:
+                matched = [
+                    field
+                    for field in fields
+                    if ("dimension", dimension["objectId"], key)
+                    in field["coordinate"].tokens
+                ]
+                if len(matched) != 1:
+                    break
+                mappings.append(
+                    {"grainColumnId": matched[0]["id"], "dimensionColumnId": key}
+                )
+            else:
+                if mappings:
+                    bindings.append(
+                        {
+                            "dimensionId": dimension["objectId"],
+                            "keyMappings": mappings,
+                            "selectedAttributeColumnIds": [],
+                        }
+                    )
+        self.levels[TARGET]["definition"]["dimensionBindings"] = bindings
+
     def resolve(self, source, target_coordinate):
         if source == TARGET:
             # Two displayed attributes can be proven aliases of the same source
@@ -42,7 +70,9 @@ class ViewRelationships(LevelRelationshipAnalyzer):
                 for c in self.outputs(TARGET).values()
                 if c.tokens & target_coordinate.tokens
             ]
-            return matches[0] if matches else None
+            if matches:
+                return matches[0]
+            return super().resolve(source, target_coordinate)
         return super().resolve(source, target_coordinate)
 
 
@@ -54,6 +84,7 @@ class ViewPlan:
     leaves: set
     explanation: str
     native_only: bool = False
+    count_source_levels: tuple = ()
 
 
 class PlanningViewPlanner:
@@ -162,8 +193,11 @@ class PlanningViewPlanner:
                     "The selected formula has a dependency cycle.",
                 )
             d = obj["definition"]
+            from ..formula_language.expressions import contains_counts
+
+            counted = contains_counts((d.get("formula") or {}).get("expression"))
             if d.get("calculationType") != "AggregateFirst" or (
-                exact and mid in artifact.get("measureColumns", {})
+                exact and mid in artifact.get("measureColumns", {}) and not counted
             ):
                 leaves.add(mid)
                 return
@@ -204,7 +238,41 @@ class PlanningViewPlanner:
 
     def plan(self, request, populations, values):
         fields = self.fields(request)
+        count_source_levels = set()
+        visited = set()
+
+        def collect_counts(mid):
+            if mid in visited:
+                return
+            visited.add(mid)
+            obj = self.objects.get(mid)
+            if not obj or obj["kind"] != "measure":
+                return
+            d = obj["definition"]
+            from ..formula_language.expressions import walk, contains_counts
+
+            expression = (d.get("formula") or {}).get("expression")
+            if contains_counts(expression):
+                count_source_levels.add(d["nativePlanningLevelId"])
+            for node in walk(expression):
+                if node["type"] == "measureRef":
+                    collect_counts(node["measureId"])
+
+        for mid in request.measures:
+            collect_counts(mid)
         relationships = ViewRelationships(list(self.objects.values()), fields)
+        for counting in count_source_levels:
+            if (
+                counting not in populations
+                or counting not in values
+                or any(
+                    not relationships.resolve(counting, f["coordinate"]) for f in fields
+                )
+            ):
+                raise MetadataError(
+                    "counting_view_unavailable",
+                    "The measure’s Output Planning Level must be built and determine every selected pivot attribute.",
+                )
         base_outputs = relationships.outputs(self.base_id)
         removed = [
             c
@@ -244,12 +312,23 @@ class PlanningViewPlanner:
                     "A required measure or formula input is not materialised here."
                 )
                 continue
-            if connected and lid != self.base_id and not self.complete_projection(lid):
+            typed_native = bool(leaves) and all(
+                self.objects[mid]["definition"]["resultType"]["type"]
+                in {"string", "date", "boolean"}
+                and self.objects[mid]["definition"]["nativePlanningLevelId"] == lid
+                for mid in leaves
+            )
+            if (
+                connected
+                and lid != self.base_id
+                and not typed_native
+                and not self.complete_projection(lid)
+            ):
                 rejected[lid] = (
                     "Population coverage is not proven to be a complete projection of Base."
                 )
                 continue
-            if connected and lid != self.base_id and not exact:
+            if connected and lid != self.base_id and not exact and not typed_native:
                 safe = True
                 for mid in leaves:
                     policy = self.objects[mid]["definition"]["aggregation"]
@@ -257,7 +336,14 @@ class PlanningViewPlanner:
                         policy["time"] if c.is_time else policy["nonTime"]
                         for c in removed
                     }
-                    if len(methods) > 1 or not methods <= {"sum", "min", "max"}:
+                    if len(methods) > 1 or not methods <= {
+                        "sum",
+                        "min",
+                        "max",
+                        "single_value",
+                        "any_true",
+                        "all_true",
+                    }:
                         safe = False
                     if (
                         policy["nullInputPolicy"] == "ignore"
@@ -271,7 +357,15 @@ class PlanningViewPlanner:
                     )
                     continue
             candidates.append(
-                ViewPlan(lid, exact, fields, leaves, "", native_only=not connected)
+                ViewPlan(
+                    lid,
+                    exact,
+                    fields,
+                    leaves,
+                    "",
+                    native_only=not connected,
+                    count_source_levels=tuple(sorted(count_source_levels)),
+                )
             )
         if not candidates:
             raise MetadataError(
@@ -313,6 +407,7 @@ class PlanningViewCompiler(MeasureCompiler):
             base_id,
         )
         self.relationships = ViewRelationships(objects, plan.fields)
+        self.levels[TARGET] = self.relationships.levels[TARGET]
         self.values, self.view = values, plan
         self.view_population = None
 
@@ -322,20 +417,26 @@ class PlanningViewCompiler(MeasureCompiler):
         if not self.view.fields:
             return "SELECT 1 AS __global"
         if self.view_population is None:
-            source = self.view.level_id
-            seed = self.cte(
-                f"SELECT {', '.join(q(k) for k in self.keys(source))}, 0 AS {q(VALUE)} FROM ({self.population(source)})"
-            )
-            data = self.enrich(
-                seed,
-                source,
-                {
-                    f["id"]: self.relationships.resolve(source, f["coordinate"])
-                    for f in self.view.fields
-                },
-            )
+            projections = []
+            for source in dict.fromkeys(
+                [self.view.level_id, *self.view.count_source_levels]
+            ):
+                seed = self.cte(
+                    f"SELECT {', '.join(q(k) for k in self.keys(source))}, 0 AS {q(VALUE)} FROM ({self.population(source)})"
+                )
+                data = self.enrich(
+                    seed,
+                    source,
+                    {
+                        f["id"]: self.relationships.resolve(source, f["coordinate"])
+                        for f in self.view.fields
+                    },
+                )
+                projections.append(
+                    f"SELECT {', '.join(q(f['id']) for f in self.view.fields)} FROM ({data})"
+                )
             self.view_population = self.cte(
-                f"SELECT DISTINCT {', '.join(q(f['id']) for f in self.view.fields)} FROM ({data})"
+                "SELECT DISTINCT * FROM (" + " UNION ALL ".join(projections) + ")"
             )
         return "SELECT * FROM " + q(self.view_population)
 
@@ -372,7 +473,10 @@ class PlanningViewCompiler(MeasureCompiler):
             result = self.cte(f"SELECT {', '.join(selected)} FROM ({data})")
             if query in self.coverage_nodes:
                 self.coverage_nodes[result] = True
+            if query in self.mixed_nodes:
+                self.mixed_nodes.add(result)
             return result
+        has_mixed = query in self.mixed_nodes
         policy = measure["definition"]["aggregation"]
         order = (
             self.ordering(source)
@@ -403,12 +507,29 @@ class PlanningViewCompiler(MeasureCompiler):
             )
             groups = list(dict.fromkeys([*self.keys(TARGET), *extra]))
             value = self.aggregate(
-                q(VALUE), policy[stage], policy, q("__time_order") if order else None
+                "aggregation_input." + q(VALUE),
+                policy[stage],
+                policy,
+                q("__time_order") if order else None,
+                "aggregation_input." + q(COMPLETE) if has_mixed else None,
             )
+            from .value_states import mixed_group
+
+            conflict = (
+                mixed_group(
+                    policy[stage],
+                    "aggregation_input." + q(VALUE),
+                    "aggregation_input." + q(COMPLETE),
+                    q("__time_order") if order else None,
+                )
+                if has_mixed or policy[stage] == "single_value"
+                else "0"
+            )
+            has_mixed = has_mixed or policy[stage] == "single_value"
             selected = [
                 *(q(k) for k in groups),
-                f"if(min(aggregation_input.{q(COMPLETE)}),{value},NULL) AS {q(VALUE)}",
-                f"min(aggregation_input.{q(COMPLETE)}) AS {q(COMPLETE)}",
+                f"if(({conflict}) OR min(aggregation_input.{q(COMPLETE)})=0,NULL,{value}) AS {q(VALUE)}",
+                f"if({conflict},toUInt8(2),min(aggregation_input.{q(COMPLETE)})) AS {q(COMPLETE)}",
             ]
             if order and stage == "nonTime" and pending["time"]:
                 selected.append("min(__time_order) AS __time_order")
@@ -420,11 +541,41 @@ class PlanningViewCompiler(MeasureCompiler):
         result = self.cte(f"SELECT {', '.join(selected)} FROM ({data})")
         if query in self.coverage_nodes:
             self.coverage_nodes[result] = True
+        if has_mixed:
+            self.mixed_nodes.add(result)
         return result
 
     def compile_measure_at_level(self, measure_id, target):
         if target != TARGET:
-            return super().compile_measure_at_level(measure_id, target)
+            key = (measure_id, target)
+            if key in self.cache:
+                return self.cache[key]
+            if measure_id in self.values.get(target, {}).get("measureColumns", {}):
+                result = self.stored_value(measure_id, target)
+                self.cache[key] = result
+                return result
+            if key in self.visiting:
+                raise MetadataError(
+                    "measure_dependency_cycle",
+                    "The selected formula contains a dependency cycle.",
+                )
+            if (
+                self.measures[measure_id]["definition"].get("calculationType")
+                == "AggregateFirst"
+            ):
+                self.visiting.add(key)
+                try:
+                    result = self.compile_calculated_measure(
+                        self.measures[measure_id], target
+                    )
+                    self.cache[key] = result
+                    return result
+                finally:
+                    self.visiting.remove(key)
+            raise MetadataError(
+                "counting_input_unavailable",
+                "A count argument is not materialised at the the measure’s Output Planning Level. Build the Semantic Network first.",
+            )
         key = (measure_id, target)
         if key in self.cache:
             return self.cache[key]
@@ -438,10 +589,9 @@ class PlanningViewCompiler(MeasureCompiler):
             measure = self.measures[measure_id]
             if measure_id not in self.view.leaves:
                 # AggregateFirst inputs are resolved at the requested pivot grain.
+                evaluation_level = measure["definition"]["nativePlanningLevelId"]
                 if (
-                    self.relationships.analyze(
-                        measure["definition"]["nativePlanningLevelId"], TARGET
-                    )["relationship"]
+                    self.relationships.analyze(evaluation_level, TARGET)["relationship"]
                     == "incompatible"
                 ):
                     if self.relationships.analyze(
@@ -480,11 +630,16 @@ class PlanningViewCompiler(MeasureCompiler):
         body = f"FROM {self.table(source['physicalName'])} WHERE {q(GENERATION)}={lit(token(source))}"
         coverage = source.get("coverageColumns", {}).get(measure_id)
         flag = q(coverage) if coverage else "toUInt8(1)"
+        mixed = source.get("mixedColumns", {}).get(measure_id)
+        if mixed:
+            flag = f"if(coalesce({q(mixed)},0),toUInt8(2),{flag})"
         query = self.cte(
             f"SELECT {', '.join(keys)}, {column_sql(column)} AS {q(VALUE)}, {flag} AS {q(COMPLETE)} {body}"
         )
         if coverage:
             self.coverage_nodes[query] = True
+        if mixed:
+            self.mixed_nodes.add(query)
         return query
 
     def compile(self, measure_ids):
@@ -497,6 +652,10 @@ class PlanningViewCompiler(MeasureCompiler):
             )
             value, _ = self.cast_node_value(alias, node, self.measures[mid])
             selected.append(value + " AS " + q(f"value_{index}"))
+        for index, mid in enumerate(measure_ids):
+            selected.append(
+                f"toUInt8(coalesce(v{index}.{q(COMPLETE)},1)=2) AS {q('__mixed_' + str(index))}"
+            )
         sql = self.with_sql(
             f"SELECT {', '.join(selected)} FROM ({self.population(TARGET)}) p {' '.join(joins)}"
         )

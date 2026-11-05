@@ -2,12 +2,21 @@
 
 from copy import deepcopy
 
+from ..formula_language.expressions import contains_counts
+
 from ..core.errors import MetadataError
-from ..domain.measure_policies import MEASURE_TYPE_POLICY, normalize_measure
+from ..domain.measure_policies import (
+    MEASURE_TYPE_POLICY,
+    TYPED_MEASURE_TYPE_POLICY,
+    normalize_measure,
+)
+from ..domain.typed_values import uses_typed_features
 from .contracts import digest
 from .measure_compiler import (
     MATERIALISATION_POLICY,
     MEASURE_COMPILER_VERSION,
+    LEGACY_MEASURE_COMPILER_VERSION,
+    TYPED_MEASURE_COMPILER_VERSION,
     MeasureCompiler,
     MeasureNode,
 )
@@ -72,9 +81,28 @@ class MaterialisationManifest:
             d.pop("editable", None)
             if d.get("formula"):
                 d["formula"] = {"expression": d["formula"]["expression"]}
+            # Retain the v6 evaluation fingerprint for semantically identical
+            # saved counts, preserving existing manually edited dependencies.
+            if contains_counts((d.get("formula") or {}).get("expression")):
+                d["countingPlanningLevelId"] = d["nativePlanningLevelId"]
             measures[dep] = d
             native = d["nativePlanningLevelId"]
             levels.add(native)
+            self.find_dimensions(d, dimensions)
+
+            def attribute_levels(node):
+                if isinstance(node, dict):
+                    if node.get("type") == "attributeRef" and node.get(
+                        "planningLevelId"
+                    ):
+                        levels.add(node["planningLevelId"])
+                    for child in node.values():
+                        attribute_levels(child)
+                elif isinstance(node, list):
+                    for child in node:
+                        attribute_levels(child)
+
+            attribute_levels(d)
             if (
                 self.relationships.analyze(native, self.base)["relationship"]
                 != "incompatible"
@@ -105,14 +133,28 @@ class MaterialisationManifest:
                 "incremental_input_missing",
                 "Incremental evaluation inputs are incomplete.",
             )
+        typed = any(
+            uses_typed_features(self.measures[dep]) for dep in self.closure(mid)
+        )
         return digest(
             {
                 "policy": [
                     INCREMENTAL_POLICY,
                     STORAGE_POLICY,
                     MATERIALISATION_POLICY,
-                    MEASURE_TYPE_POLICY,
-                    MEASURE_COMPILER_VERSION,
+                    TYPED_MEASURE_TYPE_POLICY if typed else MEASURE_TYPE_POLICY,
+                    MEASURE_COMPILER_VERSION
+                    if any(
+                        contains_counts(
+                            (self.measures[dep]["definition"].get("formula") or {}).get(
+                                "expression"
+                            )
+                        )
+                        for dep in self.closure(mid)
+                    )
+                    else TYPED_MEASURE_COMPILER_VERSION
+                    if typed
+                    else LEGACY_MEASURE_COMPILER_VERSION,
                 ],
                 "base": self.base,
                 "measures": measures,

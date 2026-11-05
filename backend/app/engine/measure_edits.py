@@ -34,6 +34,12 @@ class MeasureEditPlanner:
             reason = "Published revisions are read-only."
         elif d["measureType"] != "referenced":
             reason = "Calculated measures are derived; edit an input measure instead."
+        elif d.get("resultType", {"type": "number"})["type"] not in {
+            "number",
+            "decimal",
+            "integer",
+        }:
+            reason = "String, Date and Boolean measures are read-only."
         elif not d.get("editable"):
             reason = "This measure is not marked editable."
         elif self.relationships.analyze(native, TARGET)["relationship"] not in allowed:
@@ -90,6 +96,7 @@ class MeasureEditCompiler(MeasureCompiler):
             snapshots[base_id],
         )
         self.relationships = ViewRelationships(objects, fields)
+        self.levels[TARGET] = self.relationships.levels[TARGET]
         self.snapshots, self.edit, self.fields = snapshots, edit, fields
         self.write_id = MeasureEditPlanner(objects, base_id, fields).capability(
             edit.measureId, snapshots
@@ -193,7 +200,7 @@ class MeasureEditCompiler(MeasureCompiler):
             return {node["measureId"]}
         if node["type"] == "binary":
             return self.references(node["left"]) | self.references(node["right"])
-        if node["type"] == "call":
+        if node["type"] in {"call", "count"}:
             return set().union(*(self.references(c) for c in node["arguments"]))
         return set()
 

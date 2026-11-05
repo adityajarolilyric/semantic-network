@@ -184,31 +184,75 @@ export type Transaction = Semantic & {
   }
 }
 export type Expression =
+  | {
+      type: 'count'
+      function: 'count' | 'count_distinct' | 'count_if' | 'count_rows'
+      arguments: Expression[]
+    }
   | { type: 'measureRef'; measureId: string }
   | { type: 'grainRef'; grainColumnId: string }
-  | { type: 'literal'; value: number }
+  | { type: 'attributeRef'; dimensionId?: string; planningLevelId?: string; columnId: string }
+  | { type: 'literal'; value: number | string | boolean }
   | {
       type: 'binary'
-      operator: 'add' | 'subtract' | 'multiply' | 'divide'
+      operator:
+        'add' | 'subtract' | 'multiply' | 'divide' | 'eq' | 'ne' | 'gt' | 'gte' | 'lt' | 'lte'
       left: Expression
       right: Expression
     }
   | {
       type: 'call'
-      function: 'abs' | 'round' | 'coalesce' | 'min' | 'max'
+      function:
+        | 'abs'
+        | 'round'
+        | 'coalesce'
+        | 'min'
+        | 'max'
+        | 'if'
+        | 'and'
+        | 'or'
+        | 'not'
+        | 'concat'
+        | 'upper'
+        | 'lower'
+        | 'trim'
+        | 'date'
+        | 'add_days'
+        | 'days_between'
+        | 'is_null'
       arguments: Expression[]
     }
 export type Aggregation = {
   order?: 'nonTimeThenTime' | 'timeThenNonTime'
-  nonTime: 'sum' | 'avg' | 'min' | 'max' | 'count' | 'count_distinct'
-  time: 'sum' | 'avg' | 'min' | 'max' | 'count' | 'count_distinct' | 'first' | 'last'
+  nonTime:
+    | 'sum'
+    | 'avg'
+    | 'min'
+    | 'max'
+    | 'count'
+    | 'count_distinct'
+    | 'single_value'
+    | 'any_true'
+    | 'all_true'
+  time:
+    | 'sum'
+    | 'avg'
+    | 'min'
+    | 'max'
+    | 'count'
+    | 'count_distinct'
+    | 'first'
+    | 'last'
+    | 'single_value'
+    | 'any_true'
+    | 'all_true'
   nullInputPolicy: 'ignore' | 'propagate'
   allNullResult: 'null' | 'zero'
 }
 export type MeasureCommon = {
   nativePlanningLevelId: string
   resultType: {
-    type: 'number' | 'integer' | 'decimal'
+    type: 'number' | 'integer' | 'decimal' | 'string' | 'date' | 'boolean'
     precision?: number | null
     scale?: number | null
     nullable: boolean
@@ -226,12 +270,17 @@ export type RefDefinition = MeasureCommon & {
   allocation: {
     mode: 'none' | 'equal' | 'weighted' | 'weighted_by_self'
     basisMeasureId?: string | null
-  }
+  } | null
 }
 export type CalcDefinition = MeasureCommon & {
   measureType: 'calculated'
   calculationType: 'AggregateFirst' | 'CalculateFirst'
-  formula: { displayText: string; expression: Expression }
+  formula: {
+    displayText: string
+    expression: Expression
+    languageVersion?: 'planning-v1'
+    astVersion?: 1 | 2
+  }
   aggregation?: Aggregation | null
   allocation?: RefDefinition['allocation'] | null
   nullInputPolicy?: 'propagate'

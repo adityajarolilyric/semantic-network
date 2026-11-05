@@ -151,6 +151,16 @@ class ClickHouseWarehouseRepository(WarehouseRepository):
             except Exception as exc:
                 for marker, code, message in [
                     (
+                        "SEMANTIC_INVALID_DATE",
+                        "invalid_formula_date",
+                        "DATE requires a valid ISO date within the supported Date32 range.",
+                    ),
+                    (
+                        "SEMANTIC_DATE_INTEGER_DAYS",
+                        "invalid_formula_days",
+                        "ADD_DAYS requires a whole-number day count within the supported range.",
+                    ),
+                    (
                         "SEMANTIC_CONFLICTING_RETAINED",
                         "conflicting_retained_values",
                         "Retained columns have conflicting values for the same record keys.",

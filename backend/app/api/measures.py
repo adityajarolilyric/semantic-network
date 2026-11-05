@@ -1,3 +1,4 @@
+from ..schemas.formulas import FormulaValidationInput
 from fastapi import Depends, Response, Header
 
 from ..core.http import expected_version
@@ -12,6 +13,15 @@ class MeasureAPI(RevisionResourceAPI):
         super().__init__(service, "measures", MeasureDocument)
         self.builds = builds
         self.router.add_api_route(
+            "/formula/language", self.formula_language, methods=["GET"]
+        )
+        self.router.add_api_route(
+            "/formula/validate", self.validate_formula, methods=["POST"]
+        )
+        self.router.add_api_route(
+            "/formula/attributes", self.formula_attributes, methods=["GET"]
+        )
+        self.router.add_api_route(
             "/execution/base-visibility", self.base_visibility, methods=["GET"]
         )
         self.router.add_api_route(
@@ -22,6 +32,26 @@ class MeasureAPI(RevisionResourceAPI):
         )
         self.router.add_api_route(
             "/{resource_id}/capabilities", self.capabilities, methods=["GET"]
+        )
+
+    async def formula_language(self, model_id: Identifier, revision_id: Identifier):
+        from ..formula_language.service import FormulaLanguage
+
+        return FormulaLanguage.catalog()
+
+    async def validate_formula(
+        self,
+        model_id: Identifier,
+        revision_id: Identifier,
+        payload: "FormulaValidationInput",
+    ):
+        return await self.service.validate_formula(model_id, revision_id, payload)
+
+    async def formula_attributes(
+        self, model_id: Identifier, revision_id: Identifier, planningLevelId: Identifier
+    ):
+        return await self.service.formula_attributes(
+            model_id, revision_id, planningLevelId
         )
 
     async def base_visibility(

@@ -14,7 +14,11 @@ from .table_storage import GENERATION, column_sql, token
 
 VALUE = "__value"
 COMPLETE = "__complete"
-MEASURE_COMPILER_VERSION = "measure-v4-aggregation-derived-round6-sqlglot-27.28.1"
+LEGACY_MEASURE_COMPILER_VERSION = (
+    "measure-v4-aggregation-derived-round6-sqlglot-27.28.1"
+)
+TYPED_MEASURE_COMPILER_VERSION = "measure-v5-typed-formulas-native-only"
+MEASURE_COMPILER_VERSION = "measure-v6-planning-language-counts"
 MATERIALISATION_POLICY = "aggregation-derived-disaggregation-v1-round6"
 
 
@@ -61,6 +65,7 @@ class MeasureCompiler(PlanningLevelCompiler):
         self.ctes = self.context.ctes
         self.cache, self.visiting, self.nodes = {}, set(), []
         self.coverage_nodes = {}
+        self.mixed_nodes = set()
         self.assertions = self.input_checks
         self.max_nodes = 1024
         self._lookup_checks = set()
@@ -84,10 +89,15 @@ class MeasureCompiler(PlanningLevelCompiler):
         body = f"FROM {self.table(artifact['physicalName'])} WHERE {q(GENERATION)}={lit(token(artifact))}"
         coverage = artifact.get("coverageColumns", {}).get(mid)
         flag = q(coverage) if coverage else "toUInt8(1)"
+        mixed_column = artifact.get("mixedColumns", {}).get(mid)
+        if mixed_column:
+            flag = f"if(coalesce({q(mixed_column)},0),toUInt8(2),{flag})"
         selected.append(flag + " AS " + q(COMPLETE))
         result = self.cte(f"SELECT {', '.join(selected)} {body}")
         if coverage:
             self.coverage_nodes[result] = True
+        if mixed_column:
+            self.mixed_nodes.add(result)
         return result
 
     def keys(self, level):
@@ -112,6 +122,8 @@ class MeasureCompiler(PlanningLevelCompiler):
 
     def widen(self, expression, measure):
         dtype = measure["definition"]["resultType"]
+        if dtype["type"] in {"string", "date", "boolean"}:
+            return expression
         if dtype["type"] == "integer":
             return f"toInt256({expression})"
         if dtype["type"] == "decimal":
@@ -119,12 +131,12 @@ class MeasureCompiler(PlanningLevelCompiler):
         return f"toFloat64({expression})"
 
     def divide(self, left, right, measure):
-        if measure["definition"]["resultType"]["type"] == "number":
+        if measure["definition"]["resultType"]["type"] != "decimal":
             return f"({left}) / nullIf(({right}),0)"
         scale = min(60, max(18, measure["definition"]["resultType"].get("scale") or 0))
         return f"divideDecimal(toDecimal256({left},{scale}), nullIf(toDecimal256({right},{scale}),0), {scale})"
 
-    def aggregate(self, expression, method, policy, ordering=None):
+    def aggregate(self, expression, method, policy, ordering=None, state=None):
         if method in ("first", "last"):
             if not ordering:
                 raise MetadataError(
@@ -132,7 +144,14 @@ class MeasureCompiler(PlanningLevelCompiler):
                     "First/last aggregation requires an explicit Time ordering mapping.",
                 )
             function = "argMinIf" if method == "first" else "argMaxIf"
-            inner = f"tupleElement({function}(tuple({expression}), {ordering}, isNotNull({expression})),1)"
+            eligible = f"isNotNull({expression})" + (
+                f" OR ({state})=2" if state else ""
+            )
+            inner = f"tupleElement({function}(tuple({expression}), {ordering}, {eligible}),1)"
+        elif method == "single_value":
+            inner = f"singleValueOrNull({expression})"
+        elif method in {"any_true", "all_true"}:
+            inner = f"{'max' if method == 'any_true' else 'min'}({expression})"
         elif method == "count_distinct":
             inner = f"uniqExact({expression})"
         elif method == "count":
@@ -140,9 +159,13 @@ class MeasureCompiler(PlanningLevelCompiler):
         else:
             inner = f"{method}({expression})"
         empty = "0" if policy["allNullResult"] == "zero" else "NULL"
-        result = f"if(countIf(isNotNull({expression}))=0,{empty},{inner})"
+        eligible_count = f"isNotNull({expression})" + (
+            f" OR ({state})=2" if state and method in {"first", "last"} else ""
+        )
+        result = f"if(countIf({eligible_count})=0,{empty},{inner})"
         if policy["nullInputPolicy"] == "propagate":
-            result = f"if(countIf(isNull({expression}))>0,NULL,{result})"
+            null = f"isNull({expression})" + (f" AND ({state})!=2" if state else "")
+            result = f"if(countIf({null})>0,NULL,{result})"
         return result
 
     def resolve_transaction(self, transaction_id):
@@ -234,6 +257,12 @@ class MeasureCompiler(PlanningLevelCompiler):
         agg = self.aggregate(
             self.widen(value, measure), d["aggregation"]["nonTime"], d["aggregation"]
         )
+        typed = d["resultType"]["type"] in {"string", "date", "boolean"}
+        mixed = (
+            f"toUInt8(uniqExact({self.widen(value, measure)})>1)"
+            if typed and d["aggregation"]["nonTime"] == "single_value"
+            else "toUInt8(0)"
+        )
         grouped = None
         if tx.get("mappingMode") == "resolve_multi_grain" or (
             tx.get("calendarResolution") or tx.get("pivot") or tx.get("filters")
@@ -245,7 +274,7 @@ class MeasureCompiler(PlanningLevelCompiler):
             ).compile()
         if grouped is None:
             grouped = self.cte(
-                f"SELECT {selected}, {agg} AS {q(VALUE)}, toUInt8(1) AS __present FROM {table} GROUP BY {group}"
+                f"SELECT {selected}, {agg} AS {q(VALUE)}, {mixed} AS __mixed, toUInt8(1) AS __present FROM {table} GROUP BY {group}"
             )
         self.assertions.append(
             Check(
@@ -254,15 +283,23 @@ class MeasureCompiler(PlanningLevelCompiler):
             )
         )
         absent = "0" if d["missingTransactionValue"] == "zero" else "NULL"
-        return self.cte(
-            f"SELECT {', '.join('p.' + q(k) + ' AS ' + q(k) for k in self.keys(level))}, if(coalesce(a.__present,0)=0,{absent},a.{q(VALUE)}) AS {q(VALUE)} FROM ({self.population(level)}) p LEFT JOIN {q(grouped)} a ON {self.join_keys('p', 'a', level)}"
+        result = self.cte(
+            f"SELECT {', '.join('p.' + q(k) + ' AS ' + q(k) for k in self.keys(level))}, if(coalesce(a.__present,0)=0,{absent},a.{q(VALUE)}) AS {q(VALUE)}{', if(coalesce(a.__mixed,0),toUInt8(2),toUInt8(1)) AS ' + q(COMPLETE) if typed else ''} FROM ({self.population(level)}) p LEFT JOIN {q(grouped)} a ON {self.join_keys('p', 'a', level)}"
         )
+
+        if typed:
+            self.mixed_nodes.add(result)
+        return result
 
     def enrich(self, query, level, coordinates):
         """Map logical coordinates without requiring dimension attributes to be exposed."""
         selected = ["r." + q(k) + " AS " + q(k) for k in self.keys(level)] + [
             "r." + q(VALUE) + " AS " + q(VALUE),
-            ("r." + q(COMPLETE) if query in self.coverage_nodes else "toUInt8(1)")
+            (
+                "r." + q(COMPLETE)
+                if query in self.coverage_nodes or query in self.mixed_nodes
+                else "toUInt8(1)"
+            )
             + " AS "
             + q(COMPLETE),
         ]
@@ -390,6 +427,7 @@ class MeasureCompiler(PlanningLevelCompiler):
         time_removed = any(source_outputs[k].is_time for k in removed)
         non_time_removed = any(not source_outputs[k].is_time for k in removed)
         policy = measure["definition"]["aggregation"]
+        has_mixed = query in self.mixed_nodes
         order_symbol = (
             self.ordering(source)
             if time_removed and policy["time"] in ("first", "last")
@@ -420,28 +458,46 @@ class MeasureCompiler(PlanningLevelCompiler):
             )
             groups = list(dict.fromkeys([*target_ids, *extra]))
             value = self.aggregate(
-                q(VALUE),
+                "aggregation_input." + q(VALUE),
                 policy[stage],
                 policy,
                 q("__time_order") if order_symbol else None,
+                "aggregation_input." + q(COMPLETE) if has_mixed else None,
             )
             order_extra = (
                 ", min(__time_order) AS __time_order"
                 if order_symbol and stage == "nonTime" and pending["time"]
                 else ""
             )
-            data = f"SELECT {', '.join(q(k) for k in groups)}, if(min(aggregation_input.{q(COMPLETE)}),{value},NULL) AS {q(VALUE)}, min(aggregation_input.{q(COMPLETE)}) AS {q(COMPLETE)}{order_extra} FROM ({data}) AS aggregation_input GROUP BY {', '.join(q(k) for k in groups)}"
+            from .value_states import mixed_group
+
+            conflict = (
+                mixed_group(
+                    policy[stage],
+                    "aggregation_input." + q(VALUE),
+                    "aggregation_input." + q(COMPLETE),
+                    q("__time_order") if order_symbol else None,
+                )
+                if has_mixed or policy[stage] == "single_value"
+                else "0"
+            )
+            has_mixed = has_mixed or policy[stage] == "single_value"
+            flag = f"if({conflict},toUInt8(2),min(aggregation_input.{q(COMPLETE)}))"
+            data = f"SELECT {', '.join(q(k) for k in groups)}, if(({conflict}) OR min(aggregation_input.{q(COMPLETE)})=0,NULL,{value}) AS {q(VALUE)}, {flag} AS {q(COMPLETE)}{order_extra} FROM ({data}) AS aggregation_input GROUP BY {', '.join(q(k) for k in groups)}"
+
         mapped = self.cte(
             f"SELECT {', '.join(q('__target_' + k) + ' AS ' + q(k) for k in self.keys(target))}, {q(VALUE)}, {q(COMPLETE)} FROM ({data})"
         )
         if query in self.coverage_nodes:
             self.coverage_nodes[mapped] = True
+        if has_mixed:
+            self.mixed_nodes.add(mapped)
         return self.align(mapped, target)
 
     def align(self, query, level):
         flag = (
             f"coalesce(r.{q(COMPLETE)},1)"
-            if query in self.coverage_nodes
+            if query in self.coverage_nodes or query in self.mixed_nodes
             else "toUInt8(1)"
         )
         result = self.cte(
@@ -449,6 +505,8 @@ class MeasureCompiler(PlanningLevelCompiler):
         )
         if query in self.coverage_nodes:
             self.coverage_nodes[result] = True
+        if query in self.mixed_nodes:
+            self.mixed_nodes.add(result)
         return result
 
     def disaggregate(self, parent, measure, source, target):
@@ -527,61 +585,35 @@ class MeasureCompiler(PlanningLevelCompiler):
         return result
 
     def compile_formula(self, node, measure, target, refs):
-        kind = node["type"]
-        if kind == "literal":
-            return self.literal(node["value"])
-        if kind == "measureRef":
-            return refs[node["measureId"]] + "." + q(VALUE)
-        if kind == "grainRef":
-            coordinate = self.relationships.outputs(
-                measure["definition"]["nativePlanningLevelId"]
-            ).get(node["grainColumnId"])
-            resolved = (
-                self.relationships.resolve(target, coordinate) if coordinate else None
-            )
-            if not resolved or not resolved.column_id:
-                raise MetadataError(
-                    "formula_grain_unavailable",
-                    "A formula grain reference is unavailable at the requested level.",
-                )
-            return "p." + q(resolved.column_id)
-        if kind == "binary":
-            left = self.compile_formula(node["left"], measure, target, refs)
-            right = self.compile_formula(node["right"], measure, target, refs)
-            if node["operator"] == "divide":
-                return self.divide(left, right, measure)
-            op = {"add": "+", "subtract": "-", "multiply": "*"}[node["operator"]]
-            return f"({left}) {op} ({right})"
-        args = [
-            self.compile_formula(arg, measure, target, refs)
-            for arg in node["arguments"]
-        ]
-        fn = {
-            "abs": "abs",
-            "round": "roundBankers",
-            "coalesce": "coalesce",
-            "min": "least",
-            "max": "greatest",
-        }[node["function"]]
-        # ClickHouse least/greatest can ignore NULLs; formula null semantics are propagate.
-        value = fn + "(" + ", ".join(args) + ")"
-        if node["function"] in ("min", "max"):
-            value = (
-                "if("
-                + " OR ".join("isNull(" + a + ")" for a in args)
-                + ",NULL,"
-                + value
-                + ")"
-            )
-        return value
+        from ..formula_language.sql import FormulaSqlCompiler
+
+        return (
+            FormulaSqlCompiler(self, measure, target, refs)
+            .compile(node)
+            .sql(dialect="clickhouse")
+        )
 
     def compile_calculated_measure(self, measure, target):
         expression = measure["definition"]["formula"]["expression"]
         refs = {}
+        attributes = {}
+        counts = {}
 
         def collect(node):
             if node["type"] == "measureRef":
                 refs.setdefault(node["measureId"], "d" + str(len(refs)))
+            elif node["type"] == "count":
+                from ..formula_language.expressions import count_key
+
+                key = count_key(node)
+                counts[key] = node
+                refs.setdefault(key, "d" + str(len(refs)))
+            elif node["type"] == "attributeRef":
+                from .typed_formulas import attribute_alias, attribute_coordinate
+
+                attributes[attribute_alias(node)] = attribute_coordinate(
+                    self, node, target
+                )
             elif node["type"] == "binary":
                 collect(node["left"])
                 collect(node["right"])
@@ -591,27 +623,64 @@ class MeasureCompiler(PlanningLevelCompiler):
 
         collect(expression)
         joins = []
+        dependencies = {}
         for mid, alias in refs.items():
-            dep = self.compile_measure_at_level(mid, target)
+            if mid in counts:
+                from .counting import CountCompiler
+
+                count_cache_key = (
+                    mid,
+                    measure["definition"]["nativePlanningLevelId"],
+                    target,
+                )
+                if count_cache_key not in self.cache:
+                    self.cache[count_cache_key] = CountCompiler(self).compile(
+                        counts[mid], measure, target
+                    )
+                dep = self.cache[count_cache_key]
+            else:
+                dep = self.compile_measure_at_level(mid, target)
+            dependencies[mid] = dep
             joins.append(
                 f"LEFT JOIN {q(dep)} {alias} ON " + self.join_keys("p", alias, target)
             )
+        population = self.population(target)
+        if attributes:
+            seed = self.cte(
+                f"SELECT {', '.join(q(key) for key in self.keys(target)) + ', ' if self.keys(target) else ''}NULL AS {q(VALUE)} FROM ({population})"
+            )
+            population = self.enrich(seed, target, attributes)
         value = self.compile_formula(expression, measure, target, refs)
         flags = [
-            f"coalesce({alias}.{q(COMPLETE)},0)"
+            f"coalesce({alias}.{q(COMPLETE)},{1 if mid in counts else 0})"
             for mid, alias in refs.items()
-            if self.compile_measure_at_level(mid, target) in self.coverage_nodes
+            if dependencies[mid] in self.coverage_nodes
         ]
+        mixed_flags = [
+            f"coalesce({alias}.{q(COMPLETE)},1)=2"
+            for mid, alias in refs.items()
+            if dependencies[mid] in self.mixed_nodes
+        ]
+        mixed = " OR ".join(mixed_flags) if mixed_flags else "0"
         flag = " AND ".join(flags) if flags else "1"
         if flags:
             value = f"if({flag},{value},NULL)"
+        if mixed_flags:
+            value = f"if({mixed},NULL,{value})"
+        flag = f"if({mixed},toUInt8(2),toUInt8({flag}))"
         keys = ", ".join("p." + q(k) + " AS " + q(k) for k in self.keys(target))
         keys = keys + ", " if keys else ""
         result = self.cte(
-            f"SELECT {keys}{value} AS {q(VALUE)}, toUInt8({flag}) AS {q(COMPLETE)} FROM ({self.population(target)}) p {' '.join(joins)}"
+            f"SELECT {keys}{value} AS {q(VALUE)}, toUInt8({flag}) AS {q(COMPLETE)} FROM ({population}) p {' '.join(joins)}"
         )
         if flags:
             self.coverage_nodes[result] = True
+        if mixed_flags or measure["definition"]["resultType"]["type"] in {
+            "string",
+            "date",
+            "boolean",
+        }:
+            self.mixed_nodes.add(result)
         return result
 
     def compile_seed_measure(self, measure_id):
@@ -654,6 +723,18 @@ class MeasureCompiler(PlanningLevelCompiler):
             native = d["nativePlanningLevelId"]
             relation = self.relationships.analyze(native, target)["relationship"]
             if d.get("calculationType") == "AggregateFirst":
+                from ..formula_language.expressions import contains_counts
+
+                if contains_counts(d["formula"]["expression"]):
+                    counting = d["nativePlanningLevelId"]
+                    if not counting or self.relationships.analyze(counting, target)[
+                        "relationship"
+                    ] not in {"same", "equivalent", "roll_up"}:
+                        raise MetadataError(
+                            "measure_path_unavailable",
+                            "Counts can only recalculate at the measure’s Output Planning Level or coarser.",
+                        )
+                    relation = "same"
                 via_base = all(
                     self.relationships.analyze(self.base_id, lid)["relationship"]
                     in ("same", "equivalent", "roll_up")
@@ -666,6 +747,20 @@ class MeasureCompiler(PlanningLevelCompiler):
                     )
                 result = self.compile_calculated_measure(measure, target)
                 operation = "recalculate"
+            elif d["resultType"]["type"] in {"string", "date", "boolean"}:
+                if target == native:
+                    result = self.compile_seed_measure(measure_id)
+                    operation = "native_typed"
+                elif relation in {"same", "equivalent", "roll_up"}:
+                    result = self.rollup(
+                        self.compile_seed_measure(measure_id), measure, native, target
+                    )
+                    operation = "aggregate_typed"
+                else:
+                    raise MetadataError(
+                        "measure_path_unavailable",
+                        "String, Date and Boolean results cannot be distributed to finer levels.",
+                    )
             elif target == self.base_id:
                 if native == target:
                     result = self.compile_seed_measure(measure_id)
@@ -731,6 +826,8 @@ class MeasureCompiler(PlanningLevelCompiler):
 
     def rounded_value(self, expression, measure):
         dtype = measure["definition"]["resultType"]
+        if dtype["type"] in {"string", "date", "boolean"}:
+            return expression
         if dtype["type"] == "decimal":
             return f"roundBankers({expression},{min(6, dtype['scale'])})"
         number = f"toFloat64({expression})"
@@ -744,15 +841,30 @@ class MeasureCompiler(PlanningLevelCompiler):
         selected.append(
             self.rounded_value("r." + q(VALUE), measure) + " AS " + q(VALUE)
         )
-        flag = "r." + q(COMPLETE) if query in self.coverage_nodes else "toUInt8(1)"
+        flag = (
+            "r." + q(COMPLETE)
+            if query in self.coverage_nodes or query in self.mixed_nodes
+            else "toUInt8(1)"
+        )
         selected.append(flag + " AS " + q(COMPLETE))
         result = self.cte(f"SELECT {', '.join(selected)} FROM {q(query)} r")
         if query in self.coverage_nodes:
             self.coverage_nodes[result] = True
+        if query in self.mixed_nodes:
+            self.mixed_nodes.add(result)
         return result
 
     def cast_value(self, expression, measure):
         dtype = measure["definition"]["resultType"]
+        if dtype["type"] in {"string", "date", "boolean"}:
+            typ = {"string": "String", "date": "Date32", "boolean": "Bool"}[
+                dtype["type"]
+            ]
+            converted = f"accurateCastOrNull({expression},{self.literal(typ)})"
+            guard = f"throwIf(isNotNull({expression}) AND isNull({converted}),'SEMANTIC_MEASURE_OVERFLOW')"
+            if not dtype["nullable"]:
+                guard += f" + throwIf(isNull({expression}),'SEMANTIC_MEASURE_NULL')"
+            return f"if(({guard})=0,{converted},NULL)", typ
         if dtype["type"] == "decimal":
             typ = f"Decimal({dtype['precision']},{dtype['scale']})"
             rounded = self.rounded_value(expression, measure)
@@ -785,7 +897,7 @@ class MeasureCompiler(PlanningLevelCompiler):
 
     def cast_node_value(self, alias, node, measure):
         expression = alias + "." + q(VALUE)
-        if node not in self.coverage_nodes:
+        if node not in self.coverage_nodes and node not in self.mixed_nodes:
             return self.cast_value(expression, measure)
         # Unavailable finer cells are separate from the native NULL contract.
         # Preserve the guard on complete cells; unknown distributions may be NULL.
@@ -810,6 +922,7 @@ class MeasureCompiler(PlanningLevelCompiler):
                 set(self._lookup_checks),
                 list(self.nodes),
                 dict(self.coverage_nodes),
+                set(self.mixed_nodes),
             )
             try:
                 available[mid] = self.compile_measure_at_level(mid, target)
@@ -827,6 +940,7 @@ class MeasureCompiler(PlanningLevelCompiler):
                     self._lookup_checks,
                     self.nodes,
                     self.coverage_nodes,
+                    self.mixed_nodes,
                 ) = checkpoint
                 unavailable[mid] = {"code": exc.code, "message": exc.message}
                 if measure["definition"]["nativePlanningLevelId"] == target:
@@ -883,6 +997,26 @@ class MeasureCompiler(PlanningLevelCompiler):
                     "nullable": False,
                     "role": "coverage",
                     "coverageFor": mid,
+                }
+            )
+        for index, (mid, node) in enumerate(available.items()):
+            if node not in self.mixed_nodes:
+                continue
+            name = "__mixed_" + mid
+            while name in used:
+                name += "_"
+            used.add(name)
+            selected.append(
+                f"toUInt8(coalesce(v{index}.{q(COMPLETE)},1)=2) AS {q(name)}"
+            )
+            columns.append(
+                {
+                    "columnId": "mixed_" + mid,
+                    "name": name,
+                    "physicalType": "UInt8",
+                    "nullable": False,
+                    "role": "mixed",
+                    "mixedFor": mid,
                 }
             )
         sql = self.with_sql(

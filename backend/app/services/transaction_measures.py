@@ -1,7 +1,7 @@
 """Derive referenced measure definitions from a transaction creation command."""
 
 from ..core.errors import MetadataError
-from ..domain.measure_policies import referenced_result_type
+from ..domain.typed_values import result_type as referenced_result_type
 from ..engine.calendar_resolution import CalendarResolutionPlanner
 from ..engine.contracts import digest
 from ..schemas.measures import MeasureInput
@@ -38,22 +38,29 @@ class TransactionMeasureFactory:
                 value["sourceColumnId"] for value in definition["resolution"]["values"]
             }
             columns = [
-                {**column, "physicalType": "Float64"}
+                {
+                    **column,
+                    "physicalType": "Float64"
+                    if column["columnId"] in resolved_values
+                    else column["physicalType"],
+                }
                 for column in columns
                 if column["columnId"] in resolved_values
+                or column["columnId"]
+                in definition["resolution"].get("passthroughColumnIds", [])
             ]
-        numeric_columns = {
+        eligible_columns = {
             column["columnId"]: column
             for column in columns
             if referenced_result_type(column["physicalType"], True)
         }
         documents = []
         for selection in selections:
-            column = numeric_columns.get(selection.valueColumnId)
+            column = eligible_columns.get(selection.valueColumnId)
             if column is None:
                 raise MetadataError(
                     "invalid_measure_column",
-                    "Select a numeric value column from the transformed transaction output.",
+                    "Select a supported value column from the transformed transaction output.",
                 )
             measure = MeasureInput.model_validate(
                 {
@@ -76,7 +83,9 @@ class TransactionMeasureFactory:
                         "nativePlanningLevelId": definition["planningLevelId"],
                         "editable": selection.editable,
                         "aggregation": selection.aggregation.model_dump(),
-                        "allocation": selection.allocation.model_dump(),
+                        "allocation": selection.allocation.model_dump()
+                        if selection.allocation
+                        else None,
                         "missingTransactionValue": "null",
                         "sourceNullPolicy": "preserve",
                         "resultType": {"type": "number", "nullable": True},

@@ -177,7 +177,13 @@ class PlanningViewService(Service):
             read_id, artifact_ids, "Planning View read lease expired. Retry the query."
         ) as heartbeat:
             await self.builds.storage.ensure_inputs(
-                [populations[plan.level_id], values[plan.level_id]]
+                [
+                    artifact
+                    for level in dict.fromkeys(
+                        [plan.level_id, *plan.count_source_levels]
+                    )
+                    for artifact in (populations[level], values[level])
+                ]
             )
             compiler = PlanningViewCompiler(
                 self.settings.clickhouse_database,
@@ -233,6 +239,15 @@ class PlanningViewService(Service):
                     "planning_view_limit",
                     "This pivot would be too wide or too large to display. Move an attribute from columns to rows, or select fewer fields.",
                 )
+            width = n_rows + n_columns + len(request.measures)
+            cell_states = [
+                [
+                    "mixed" if str(flag).lower() in {"1", "true"} else None
+                    for flag in row[width:]
+                ]
+                for row in rows
+            ]
+            rows = [row[:width] for row in rows]
             by_id = {o["objectId"]: o for o in objects}
             return {
                 "fields": [
@@ -243,6 +258,7 @@ class PlanningViewService(Service):
                     {
                         "measureId": mid,
                         "name": by_id[mid]["name"],
+                        "valueType": by_id[mid]["definition"]["resultType"]["type"],
                         **MeasureEditPlanner(objects, base_id, plan.fields).capability(
                             mid, values, draft
                         ),
@@ -262,6 +278,7 @@ class PlanningViewService(Service):
                     if values[plan.level_id].get("incompleteMeasures", {}).get(mid)
                 ],
                 "rows": rows,
+                "cellStates": cell_states,
                 "plan": {
                     "planningLevelId": plan.level_id,
                     "planningLevelName": by_id[plan.level_id]["name"],

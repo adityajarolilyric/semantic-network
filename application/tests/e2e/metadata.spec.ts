@@ -250,13 +250,51 @@ test('manage from the source grid and capture PLT/PT metadata without visible in
   await page.getByLabel('Output Planning Level', { exact: true }).selectOption({ label: 'PT' })
   const formula = page.getByLabel('Formula', { exact: true })
   await formula.fill('ABS(')
+  await expect(formula).toHaveAttribute('aria-invalid', 'true')
+  await expect(page.locator('.formula-feedback.is-error')).toHaveCSS('color', 'rgb(156, 44, 60)')
+  await expect(formula).toHaveCSS('border-top-color', 'rgb(156, 44, 60)')
+  await formula.fill('')
+
+  await page.getByRole('tab', { name: 'Functions', exact: true }).click()
+  await page.getByLabel('Search formula inputs').fill('absolute')
+  await page.getByRole('button', { name: 'Insert ABS', exact: true }).click()
+  await expect(formula).toHaveValue('ABS()')
+  await page.getByRole('tab', { name: 'Measures', exact: true }).click()
   await page.getByRole('button', { name: 'FQTY', exact: true }).click()
   await expect(formula).toBeFocused()
   await page.keyboard.type('-')
   await page.getByRole('button', { name: 'SQTY', exact: true }).click()
   await expect(formula).toBeFocused()
-  await page.keyboard.type(')')
   await expect(formula).toHaveValue('ABS([FQTY]-[SQTY])')
+  const alignment = await page.evaluate(() => {
+    const editor = document
+      .querySelector<HTMLTextAreaElement>('.formula-workspace textarea')!
+      .getBoundingClientRect()
+    const library = document.querySelector<HTMLElement>('.formula-library')!.getBoundingClientRect()
+    const controls = document.querySelector<HTMLElement>('.measure-definition-controls')!
+    const rectangles = [...controls.children].map((element) => element.getBoundingClientRect())
+    return {
+      editorTop: editor.top,
+      editorBottom: editor.bottom,
+      libraryTop: library.top,
+      libraryBottom: library.bottom,
+      controlTops: rectangles.map((rect) => rect.top),
+      controlOrder: [...controls.children].map((element) =>
+        element.classList.contains('measure-output-level')
+          ? 'Output Planning Level'
+          : element.querySelector('legend')?.textContent?.trim(),
+      ),
+    }
+  })
+  expect(Math.abs(alignment.editorTop - alignment.libraryTop)).toBeLessThan(2)
+  expect(Math.abs(alignment.editorBottom - alignment.libraryBottom)).toBeLessThan(2)
+  expect(Math.max(...alignment.controlTops) - Math.min(...alignment.controlTops)).toBeLessThan(2)
+  expect(alignment.controlOrder).toEqual([
+    'Measure type',
+    'Calculation type',
+    'Output Planning Level',
+  ])
+  await page.screenshot({ path: 'test-results/formula-builder.png', fullPage: true })
   await save(page)
   await page.reload()
   await expect(page.locator('.meta-object-card')).toHaveCount(3)

@@ -4,7 +4,12 @@ import { expect, it, vi } from 'vitest'
 import { MeasureEditor, defaultAggregation } from '../src/metadata/editors/MeasureEditor'
 import { referencedResultType } from '../src/metadata/measureTypes'
 import { emptySnapshot, type Measure } from '../src/metadata/types'
-function setup(resolved = false, baseLevelId?: string, withReferences = false) {
+function setup(
+  resolved = false,
+  baseLevelId?: string,
+  withReferences = false,
+  physicalType?: string,
+) {
   const data = emptySnapshot()
   const envelope = { modelId: 'm', revisionId: 'r', version: 1, createdAt: '', updatedAt: '' }
   data.sources = [
@@ -31,6 +36,7 @@ function setup(resolved = false, baseLevelId?: string, withReferences = false) {
       },
     },
   ]
+  if (physicalType) data.sources[0].definition.columns[0].physicalType = physicalType
   data.transactions = [
     {
       ...envelope,
@@ -128,6 +134,10 @@ it('places transaction/value below measure type, hides numeric types and moves d
   expect(screen.getByRole('radio', { name: 'Reference' })).toBeChecked()
   expect(screen.getByRole('radio', { name: 'Calculated' })).not.toBeChecked()
   expect(screen.getByRole('group', { name: 'Output Planning Level' })).toBeVisible()
+  expect(
+    column.compareDocumentPosition(screen.getByRole('group', { name: 'Output Planning Level' })) &
+      Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy()
   expect(
     screen
       .getByLabelText('Editable measure')
@@ -230,9 +240,9 @@ it('defaults new reference and CalculateFirst definitions to Weighted by self', 
   // Existing saved choices remain visible until a new definition is selected.
   expect(screen.getByLabelText('Dis-aggregation policy')).toHaveValue('none')
   await user.click(screen.getByRole('radio', { name: 'Calculated' }))
-  await user.selectOptions(screen.getByLabelText('Calculation type'), 'CalculateFirst')
+  await user.click(screen.getByRole('radio', { name: 'Calculate first' }))
   expect(screen.getByLabelText('Dis-aggregation policy')).toHaveValue('weighted_by_self')
-  await user.selectOptions(screen.getByLabelText('Calculation type'), 'AggregateFirst')
+  await user.click(screen.getByRole('radio', { name: 'Aggregate first' }))
   expect(screen.queryByLabelText('Dis-aggregation policy')).not.toBeInTheDocument()
   await user.click(screen.getByRole('radio', { name: 'Reference' }))
   expect(screen.getByLabelText('Dis-aggregation policy')).toHaveValue('weighted_by_self')
@@ -242,7 +252,7 @@ it('hides disaggregation for Base-native calculated measures and restores it at 
   const { user } = setup(false, 'pt')
   expect(screen.getByLabelText('Dis-aggregation policy')).toBeVisible()
   await user.click(screen.getByRole('radio', { name: 'Calculated' }))
-  await user.selectOptions(screen.getByLabelText('Calculation type'), 'CalculateFirst')
+  await user.click(screen.getByRole('radio', { name: 'Calculate first' }))
   await user.selectOptions(screen.getByLabelText('Output Planning Level'), 'pt')
   expect(
     screen.queryByRole('heading', { name: 'Dis-Aggregation policies' }),
@@ -303,4 +313,38 @@ it('collapses the selection after inserting the same selected measure token', as
   expect(formula.selectionEnd).toBe(10)
   await user.keyboard('+1')
   expect(formula).toHaveValue('ABS([FQTY]+1)')
+})
+
+it('shows disabled None as the only String aggregation', async () => {
+  const { user, save } = setup(false, undefined, false, 'String')
+  expect(screen.getByLabelText('Aggregation')).toBeDisabled()
+  expect(screen.getByLabelText('Aggregation')).toHaveDisplayValue('None')
+  expect(screen.queryByLabelText('Time aggregation')).not.toBeInTheDocument()
+  expect(screen.queryByLabelText('Non-time aggregation')).not.toBeInTheDocument()
+  expect(screen.queryByLabelText('Aggregation order')).not.toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'Save metadata' }))
+  expect(save).toHaveBeenCalledWith(
+    expect.objectContaining({
+      definition: expect.objectContaining({
+        aggregation: expect.objectContaining({ nonTime: 'single_value', time: 'single_value' }),
+      }),
+    }),
+  )
+})
+
+it.each([
+  ['Date', 'max'],
+  ['Bool', 'any_true'],
+])('applies one %s policy to both axes', async (kind, policy) => {
+  const { user, save } = setup(false, undefined, false, kind)
+  expect(screen.queryByLabelText('Time aggregation')).not.toBeInTheDocument()
+  await user.selectOptions(screen.getByLabelText('Aggregation'), policy)
+  await user.click(screen.getByRole('button', { name: 'Save metadata' }))
+  expect(save).toHaveBeenCalledWith(
+    expect.objectContaining({
+      definition: expect.objectContaining({
+        aggregation: expect.objectContaining({ nonTime: policy, time: policy }),
+      }),
+    }),
+  )
 })

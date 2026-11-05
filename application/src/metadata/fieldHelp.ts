@@ -1,5 +1,8 @@
 /** Reviewed UI vocabulary; no API/schema dependency or persisted help state. */
 const help: Record<string, string> = {
+  Aggregation:
+    'For String, Date and Boolean values, one policy applies across all grouped rows, including Time. String None returns the single distinct value; conflicting values show Mixed. Date can select earliest/latest, and Boolean can select any true/all true.',
+
   'Record keys for separate attribute rows (optional)':
     'Choose retained columns identifying one record when its attributes arrive on separate rows, such as Customer ID for Channel and Sold To. Leave empty when each row contains its attribute/value pairs, such as Brand and Zone in a forecast. This is independent of the optional output primary key.',
   'Retained columns':
@@ -76,7 +79,7 @@ const help: Record<string, string> = {
   'Attribute column':
     'Contains the values that become column names. Example: metric contains Forecast and Sales.',
   'Value column':
-    'The column containing the values to use. In a pivot, its values fill the new output columns. For a measure, choose the numeric transaction column.',
+    'The column containing the values to use. In a pivot, its values fill the new output columns. For a measure, choose a supported Number, String, Date or Boolean transaction column.',
   'Output columns': 'Choose which discovered attribute values become columns in the managed view.',
   'Optional managed output primary key':
     'Columns whose combined values must uniquely identify each output row. Duplicate key combinations fail the build.',
@@ -137,13 +140,13 @@ const help: Record<string, string> = {
   'Editable measure':
     'Declares that this measure may be edited at its native or a supported coarser level. Planning View permits edits at native or proven coarser grains. Changes go to Base where reachable, otherwise native, and compatible coarser values are recomputed.',
   'Calculation type':
-    'AggregateFirst recalculates the formula from inputs at each requested level. CalculateFirst calculates at native grain, then aggregates or disaggregates that result.',
+    'AggregateFirst recalculates the formula from inputs at each requested level. CalculateFirst calculates at native grain, then aggregates its result. Only numeric results can be distributed to finer grains.',
   Formula:
-    'An expression using measure names. Example: ABS(FQTY - SQTY). NULL inputs produce NULL unless the formula explicitly handles them, for example with COALESCE.',
+    'Type an expression or search Measures, Columns and Functions in the input library. Click an item to insert it at the cursor; functions show syntax and examples. Types are inferred. Mixed inputs stay Mixed; missing inputs stay NULL unless explicitly handled.',
   'Nullable result':
     'Allows the calculated result to be missing or unknown. NULL is different from zero.',
   'Non-time aggregation':
-    'How values combine across non-time dimensions. Example: SUM across Locations, or AVG when an average is required. COUNT counts usable values; COUNT DISTINCT counts different values.',
+    'How values combine across non-time dimensions. Numbers support SUM/AVG and other numeric methods; dates support Earliest/Latest, Booleans Any true/All true, and text None (single distinct value). Conflicting single-value groups display Mixed.',
   'Time aggregation':
     'How values combine across time. Example: SUM daily quantities or take the Last inventory value. First and Last use the Time dimension’s ordering column.',
   'Aggregation order':

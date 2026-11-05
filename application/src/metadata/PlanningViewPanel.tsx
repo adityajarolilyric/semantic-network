@@ -30,12 +30,14 @@ export type PlanningViewResult = {
     measureId: string
     name: string
     calculation: string
+    valueType?: string
     editable?: boolean
     editReason?: string | null
     writeLevelName?: string
   }[]
   editContext?: { generationId: string; revisionVersion: number }
   warnings?: { measureId: string; message: string }[]
+  cellStates?: (string | null)[][]
   rows: (string | null)[][]
   groupCount: number
   plan: { planningLevelName: string; usesBase: boolean; explanation: string; nativeOnly?: boolean }
@@ -137,12 +139,15 @@ export function PlanningPivot({
   const rowKeys = new Map<string, (string | null)[]>()
   const columnKeys = new Map<string, (string | null)[]>()
   const cells = new Map<string, (string | null)[]>()
-  for (const record of result.rows) {
+  const states = new Map<string, (string | null)[]>()
+  for (const [recordIndex, record] of result.rows.entries()) {
     const rows = record.slice(0, rowFields.length)
     const columns = record.slice(rowFields.length, rowFields.length + columnFields.length)
     rowKeys.set(JSON.stringify(rows), rows)
     columnKeys.set(JSON.stringify(columns), columns)
-    cells.set(JSON.stringify([rows, columns]), record.slice(rowFields.length + columnFields.length))
+    const key = JSON.stringify([rows, columns])
+    cells.set(key, record.slice(rowFields.length + columnFields.length))
+    states.set(key, result.cellStates?.[recordIndex] ?? [])
   }
   if (!result.rows.length)
     return (
@@ -243,6 +248,11 @@ export function PlanningPivot({
                     >
                       {!cell ? (
                         ''
+                      ) : states.get(JSON.stringify([values, columns]))?.[measureIndex] ===
+                        'mixed' ? (
+                        <span className="meta-hint" title="This group contains different values.">
+                          Mixed
+                        </span>
                       ) : measure.editable && onEdit ? (
                         <PlanningEditCell
                           value={cell[measureIndex]}
@@ -256,6 +266,15 @@ export function PlanningPivot({
                         />
                       ) : cell[measureIndex] === null ? (
                         '—'
+                      ) : measure.valueType === 'boolean' ? (
+                        ['1', 'true'].includes(cell[measureIndex]!.toLowerCase()) ? (
+                          'True'
+                        ) : (
+                          'False'
+                        )
+                      ) : measure.valueType &&
+                        !['number', 'integer', 'decimal'].includes(measure.valueType) ? (
+                        cell[measureIndex]
                       ) : (
                         formatNumericDisplay(cell[measureIndex]!)
                       )}

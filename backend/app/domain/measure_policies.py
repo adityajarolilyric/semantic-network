@@ -29,6 +29,7 @@ def referenced_result_type(physical_type: str, nullable: bool) -> dict | None:
 
 
 MEASURE_TYPE_POLICY = "float64-referenced-v3-preserve-source-nulls"
+TYPED_MEASURE_TYPE_POLICY = "typed-measures-v1-native-only-nonnumeric"
 
 
 def normalize_measure(document):
@@ -36,13 +37,19 @@ def normalize_measure(document):
     if document.get("kind") != "measure":
         return document
     definition = document["definition"]
+    from ..formula_language.compatibility import normalize_count_definition
+
+    definition = normalize_count_definition(definition)
+    document = {**document, "definition": definition}
     # Omitted policies in saved metadata meant Repeat before the authoring default changed.
     if (
         definition["measureType"] == "referenced"
         or definition.get("calculationType") == "CalculateFirst"
     ):
         allocation = definition.get("allocation")
-        if allocation is None:
+        if definition["resultType"]["type"] in {"string", "date", "boolean"}:
+            allocation = None
+        elif allocation is None:
             allocation = (
                 {"mode": "none"} if definition["measureType"] == "referenced" else None
             )
@@ -57,7 +64,10 @@ def normalize_measure(document):
         }
         definition = document["definition"]
     result = definition["resultType"]
-    if definition["measureType"] == "referenced" or result["type"] == "integer":
+    if result["type"] == "integer" or (
+        definition["measureType"] == "referenced"
+        and result["type"] in {"number", "decimal"}
+    ):
         return {
             **document,
             "definition": {

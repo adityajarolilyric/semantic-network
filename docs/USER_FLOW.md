@@ -4,6 +4,8 @@ Turn source tables into a reusable planning network, then explore and edit measu
 
 Read [Product requirements](PRD.md) for the complete rule catalogue, rationale, acceptance criteria and engineering constraints. Rule identifiers in this walkthrough refer to that catalogue. The demo's counts—nine source products, eight active products, 576 intersections and 154 promotion combinations—describe its fixture; they are not universal expected results.
 
+Calculated measures can return Number, String, Date or Boolean. First define referenced measures for Transaction inputs, including dates/statuses/flags; select Dimension/Planning Level attributes directly from formula suggestions. The engine infers types and restricts aggregations. Nonnumeric outputs are read-only, are not distributed to finer/Base grains, and distinguish conflicting **Mixed** values from missing data. See [typed measures](MEASURES.md#typed-measures-and-direct-attribute-formulas).
+
 ## 1. Understand the journey
 
 A semantic modeller can start from a Transaction table or prepare explicit Dimensions and Planning Levels before defining Transactions and Measures. An operator or modeller builds the network in Materialise. A planner consumes it in Planning View and edits eligible measures. These are user responsibilities, not implemented permission roles.
@@ -272,3 +274,21 @@ Master-data row editing, development-to-production promotion, query-time Plannin
 - Planning View retains ordered selections across successful network rebuilds. Fresh catalog validation drops removed references and fresh queries replace displayed values; only explicit Clear selections/browser cleanup resets the layout. **Why:** rebuilding data should not force users to repeat analysis setup.
 
 Materialise now offers incremental **Build Semantic Network** and explicit **Full Refresh**. Build reuses unchanged values/edits, computes changed measures and dependent formulas, and reports Already up to date when its generation can be retained. Full Refresh confirms once and reloads all source values, replacing edits. Registered source/population/semantic changes invalidate affected representations; direct external ClickHouse row changes need explicit refresh. Existing input snapshots establish pre-upgrade baselines only when provable; otherwise the user receives a safe Full Refresh requirement. Planning View keeps row-dimension and Measure columns pinned during horizontal scrolling.
+
+### Create a count formula
+
+In Measures (or Planning View → Create Measure), enter a formula such as `COUNT_IF([Qty] > 0)`. Choose **Output Planning Level** as the grain whose intersections should be counted. The editor validates with the backend and offers the registered functions and available attributes. Output Planning Level defines the individual intersections evaluated before grouping. Select coarser row/column attributes in Planning View to see higher-level counts. Save, then run an incremental Semantic Network build. Pivot counts recompute from saved counting-grain values, including edits; raw transaction record counts and distributing counts to finer-than-counting grains are not supported.
+
+Formula columns use one syntax: `[DimensionName.ColumnName]` or `[PlanningLevelName.ColumnName]`, including keys. Measures remain `[MeasureName]`. Attribute discovery lists grain-safe inputs; references must resolve uniquely at Output Planning Level. Legacy ATTR/GRAIN formulas remain compatible. Transaction columns first become referenced measures, preserving configured source aggregation.
+
+For String, Date and Boolean referenced/CalculateFirst measures, choose one Aggregation policy, shared across Time and Non-Time. String requires no choice: **None** is selected and disabled, preserving single-value/Mixed semantics. Transaction-side measure creation uses the same controls. Numeric measures retain separate Non-Time and Time policies.
+
+### Inline formula builder
+
+Calculated measures use an inline editor beside a searchable input library, rather than function/attribute dropdowns or a new modal. Switch between **Measures**, **Columns** (grouped by Dimension or Planning Level) and **Functions**. Click an input to insert it at the current caret or replace selected text; focus returns to the formula. Functions insert parentheses with the caret inside, while zero-argument functions leave it after the closing parenthesis. Function help shows syntax, explanation and an example. Validation and inferred result type come from the backend.
+
+Use Ctrl+Space to focus search, Enter to insert the first match, Down to focus results, Escape to return to the editor, and arrow keys to move between library tabs. Operator buttons are available in the full editor. The existing Planning View Create Measure modal reuses a compact single-line version; advanced settings stay below the library.
+
+For calculated measures, the full editor places Measure type, Calculation type and Output Planning Level in that order on one row, stacking responsively on smaller screens. For references, Output Planning Level remains read-only beneath Transaction and Value column selection. Formula input and the input-library panel share their top and bottom borders; operators and validation remain beneath the formula input. Quick Create retains its compact layout.
+
+Formula validation errors identify measures and output planning levels by their user-facing names. Invalid formulas show red diagnostic text and a red input border; the error styling clears when validation succeeds. Stable IDs remain in structured API diagnostic metadata for internal references.

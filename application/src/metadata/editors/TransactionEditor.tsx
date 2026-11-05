@@ -1,6 +1,6 @@
 import {
   TransactionMeasureEditor,
-  numericMeasureColumns,
+  measureValueColumns,
   transactionMeasuresComplete,
   transactionMeasureSelections,
   type TransactionMeasureDraft,
@@ -99,13 +99,22 @@ export function TransactionEditor({
   const pivotReady = !d.pivot?.enabled || pivotColumns !== null
   const inputColumns = d.pivot?.enabled ? (pivotColumns ?? []) : (source?.definition.columns ?? [])
   const grainColumns = d.calendarResolution ? calendarColumns : inputColumns
-  const measureColumns = numericMeasureColumns(
+  const measureColumns = measureValueColumns(
     !createGrain && d.mappingMode === 'resolve_multi_grain'
       ? grainColumns
-          .filter((column) =>
-            d.resolution?.values.some((value) => value.sourceColumnId === column.columnId),
+          .filter(
+            (column) =>
+              d.resolution?.values.some((value) => value.sourceColumnId === column.columnId) ||
+              !!d.resolution?.passthroughColumnIds.includes(column.columnId),
           )
-          .map((column) => ({ ...column, physicalType: 'Float64' }))
+          .map((column) => ({
+            ...column,
+            physicalType: d.resolution?.values.some(
+              (value) => value.sourceColumnId === column.columnId,
+            )
+              ? 'Float64'
+              : column.physicalType,
+          }))
       : grainColumns,
   )
   const measuresReady = editing || transactionMeasuresComplete(measureDrafts, measureColumns)

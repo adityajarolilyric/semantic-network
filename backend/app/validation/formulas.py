@@ -5,6 +5,20 @@ class FormulaRules:
     def __init__(self, context):
         self.context = context
 
+    def validate_counting(self, owner):
+        from ..formula_language.expressions import contains_counts
+
+        definition = owner["definition"]
+        if (
+            contains_counts(definition["formula"]["expression"])
+            and definition.get("calculationType") != "AggregateFirst"
+        ):
+            self.context.error(
+                owner,
+                "counting_calculation",
+                "Count formulas require AggregateFirst and recalculate at Output Planning Level or coarser.",
+            )
+
     def validate_expression(
         self, owner: dict, node: dict, level: dict | None, depth: int
     ):
@@ -20,12 +34,21 @@ class FormulaRules:
             )
             if target:
                 if not self.context.available(
-                    target, owner["definition"]["nativePlanningLevelId"]
+                    target,
+                    level["objectId"]
+                    if level
+                    else owner["definition"]["nativePlanningLevelId"],
                 ):
+                    level_name = level.get("name") if level else None
+                    at_level = (
+                        f'Output Planning Level "{level_name}"'
+                        if level_name
+                        else "this formula's Output Planning Level"
+                    )
                     self.context.error(
                         owner,
                         "measure_unavailable",
-                        f"{target['objectId']} is unavailable at this formula's output grain.",
+                        f'"{target["name"]}" is unavailable at {at_level}.',
                     )
                 if (
                     owner["definition"]["calculationType"] == "CalculateFirst"
@@ -47,23 +70,49 @@ class FormulaRules:
                     },
                     "definition.formula.expression",
                 )
-                dtype = self.context.grain_type(level, node["grainColumnId"])
-                if dtype and not self.context.numeric_type(dtype):
-                    self.context.error(
-                        owner,
-                        "non_numeric_formula_input",
-                        "Numeric formulas require numeric grain attributes.",
-                    )
+        elif kind == "attributeRef":
+            from ..engine.relationships import Coordinate, LevelRelationshipAnalyzer
+
+            owner_id = node.get("dimensionId") or node.get("planningLevelId")
+            owner_kind = "dimension" if node.get("dimensionId") else "planningLevel"
+            self.context.reference(
+                owner, owner_id, owner_kind, "definition.formula.expression"
+            )
+            analyzer = LevelRelationshipAnalyzer(list(self.context.objects.values()))
+            coordinate = (
+                Coordinate(frozenset({("dimension", owner_id, node["columnId"])}))
+                if node.get("dimensionId")
+                else analyzer.outputs(owner_id).get(node["columnId"])
+            )
+            if level and (
+                not coordinate or not analyzer.resolve(level["objectId"], coordinate)
+            ):
+                self.context.error(
+                    owner,
+                    "formula_attribute_unavailable",
+                    "This attribute is not determined by the formula output planning level.",
+                )
         elif kind == "binary":
             self.context.validate_expression(owner, node["left"], level, depth + 1)
             self.context.validate_expression(owner, node["right"], level, depth + 1)
+        elif kind == "count":
+            from ..formula_language.expressions import contains_counts
+
+            counting = self.context.objects.get(
+                owner["definition"]["nativePlanningLevelId"]
+            )
+            for child in node["arguments"]:
+                if contains_counts(child):
+                    self.context.error(
+                        owner, "nested_count", "Nested counts are not supported."
+                    )
+                self.context.validate_expression(owner, child, counting, depth + 1)
         elif kind == "call":
             n = len(node["arguments"])
-            valid = (
-                n == 1
-                if node["function"] == "abs"
-                else (n in {1, 2} if node["function"] == "round" else n >= 2)
-            )
+            from ..domain.formula_types import FUNCTIONS
+
+            low, high = FUNCTIONS[node["function"]]
+            valid = low <= n <= high
             if not valid:
                 self.context.error(
                     owner,
@@ -80,6 +129,8 @@ class FormulaRules:
             target = self.context.objects.get(node["measureId"])
             return target.get("business", {}).get("unit") if target else None
         if node["type"] == "binary":
+            if node["operator"] in {"eq", "ne", "gt", "gte", "lt", "lte"}:
+                return None
             left = self.context.expression_unit(owner, node["left"], depth + 1)
             right = self.context.expression_unit(owner, node["right"], depth + 1)
             if node["operator"] in {"add", "subtract"}:
@@ -96,6 +147,30 @@ class FormulaRules:
                 return "1" if left == right else f"{left}/{right}"
             return left if left else (f"1/{right}" if right else None)
         if node["type"] == "call":
+            if node["function"] in {
+                "and",
+                "or",
+                "not",
+                "is_null",
+                "concat",
+                "upper",
+                "lower",
+                "trim",
+                "date",
+                "add_days",
+                "days_between",
+            }:
+                return None
+            if node["function"] == "if":
+                left = self.expression_unit(owner, node["arguments"][1], depth + 1)
+                right = self.expression_unit(owner, node["arguments"][2], depth + 1)
+                if left and right and left != right:
+                    self.context.error(
+                        owner,
+                        "incompatible_units",
+                        "IF result branches require matching known units.",
+                    )
+                return left or right
             units = [
                 self.context.expression_unit(owner, arg, depth + 1)
                 for arg in node["arguments"]

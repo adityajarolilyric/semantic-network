@@ -235,5 +235,7 @@ class LevelRelationshipAnalyzer:
         relation = self.analyze(measure["definition"]["nativePlanningLevelId"], target)
         return bool(
             measure["definition"].get("editable")
+            and measure["definition"].get("resultType", {"type": "number"})["type"]
+            in {"number", "integer", "decimal"}
             and relation["relationship"] in ("same", "equivalent", "roll_up")
         )
