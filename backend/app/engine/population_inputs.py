@@ -1,8 +1,8 @@
 """Shared Pivot → Calendar input pipeline for distinct source populations."""
 
-from .calendar_resolution import CalendarResolutionPlanner, CalendarResolutionCompiler
-from .contracts import Check
 from ..warehouse.repository import quote_identifier as q
+from .calendar_resolution import CalendarResolutionCompiler, CalendarResolutionPlanner
+from .contracts import Check
 
 
 def population_owner(population):
@@ -23,14 +23,12 @@ def population_columns(population, objects, columns):
 
 def compile_population_input(database, pipeline):
     # Reuse the same input compilation, calendar checks and limits as Transactions.
-    from .measure_compiler import MeasureCompiler
+    from .compilation_context import CompilationContext
 
-    host = MeasureCompiler(
+    host = CompilationContext(
         database,
         pipeline["objects"],
-        {},
         pipeline["relations"],
-        None,
         resolution_max_rows=pipeline["maxRows"],
     )
     owner = pipeline["owner"]

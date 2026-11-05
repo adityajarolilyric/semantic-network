@@ -1,4 +1,5 @@
 from datetime import timedelta
+
 import pytest
 
 from backend.app.core.config import Settings
@@ -34,7 +35,8 @@ async def setup():
     managed.executor.warehouse = None
     builds = PlanningBuildService(store, Settings(_env_file=None), managed)
     builds.executor = FakePlanningExecutor()
-    managed.planning_builds = builds
+    worker.register("planningLevel", builds)
+    worker.register("planningLevelPreview", builds)
     payload = PlanningLevelInput.model_validate(
         {
             "objectId": "pl_main",
@@ -82,7 +84,7 @@ async def test_planning_idempotency_snapshots_and_fenced_recovery():
         {"runId": claimed["runId"]},
         {**claimed, "leaseUntil": now() - timedelta(seconds=1)},
     )
-    new_worker = EngineWorker(managed)
+    new_worker = EngineWorker(managed, handlers=worker.handlers)
     recovered = await new_worker.claim()
     assert recovered["artifactId"] != claimed["artifactId"]
     assert recovered["fence"] == claimed["fence"] + 1

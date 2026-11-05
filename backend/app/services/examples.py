@@ -1,5 +1,6 @@
+from ..repositories.metadata.records import RecordCategory
 from .records import RevisionRecordService
 
 
 class ExampleService(RevisionRecordService):
-    collection = "semantic_examples"
+    record_category = RecordCategory.EXAMPLE

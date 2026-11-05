@@ -1,5 +1,11 @@
 """Cross-process maintenance barrier for API requests and engine work."""
 
+from ..repositories.metadata import metadata_repositories
+from ..repositories.metadata.criteria import (
+    WorkspaceControlLookup,
+    WorkspaceLeaseLookup,
+)
+
 import asyncio
 from contextlib import asynccontextmanager, suppress
 from contextvars import ContextVar
@@ -19,7 +25,9 @@ class WorkspaceGate:
         store.transaction_guard = self.guard
 
     async def state(self, repo):
-        state = await repo.get("workspace_control", {"controlId": "workspace"})
+        state = await metadata_repositories(repo).workspace_control.find(
+            WorkspaceControlLookup(control_id="workspace")
+        )
         if not state:
             state = {
                 "controlId": "workspace",
@@ -29,7 +37,7 @@ class WorkspaceGate:
                 "owner": None,
                 "leaseUntil": now(),
             }
-            await repo.insert("workspace_control", state)
+            await metadata_repositories(repo).workspace_control.insert(state)
         return state
 
     async def internal(self, operation):
@@ -55,9 +63,8 @@ class WorkspaceGate:
                 "The workspace is being reset. Reload after it finishes.",
                 503,
             )
-        await repo.replace(
-            "workspace_control",
-            {"controlId": "workspace"},
+        await metadata_repositories(repo).workspace_control.replace(
+            WorkspaceControlLookup(control_id="workspace"),
             {**state, "sequence": state["sequence"] + 1},
         )
 
@@ -66,11 +73,12 @@ class WorkspaceGate:
             await asyncio.sleep(10)
 
             async def renew(repo):
-                lease = await repo.get("workspace_leases", {"leaseId": lease_id})
+                lease = await metadata_repositories(repo).workspace_leases.find(
+                    WorkspaceLeaseLookup(lease_id=lease_id)
+                )
                 if lease:
-                    await repo.replace(
-                        "workspace_leases",
-                        {"leaseId": lease_id},
+                    await metadata_repositories(repo).workspace_leases.replace(
+                        WorkspaceLeaseLookup(lease_id=lease_id),
                         {**lease, "expiresAt": now() + timedelta(seconds=180)},
                     )
 
@@ -88,18 +96,16 @@ class WorkspaceGate:
                     "Workspace reset is in progress or needs retrying from Sources.",
                     503,
                 )
-            await repo.replace(
-                "workspace_control",
-                {"controlId": "workspace"},
+            await metadata_repositories(repo).workspace_control.replace(
+                WorkspaceControlLookup(control_id="workspace"),
                 {**state, "sequence": state["sequence"] + 1},
             )
-            await repo.insert(
-                "workspace_leases",
+            await metadata_repositories(repo).workspace_leases.insert(
                 {
                     "leaseId": lease_id,
                     "epoch": state["epoch"],
                     "expiresAt": now() + timedelta(seconds=180),
-                },
+                }
             )
             return state["epoch"]
 
@@ -114,7 +120,9 @@ class WorkspaceGate:
                 await heartbeat
             workspace_epoch.reset(token)
             await self.internal(
-                lambda repo: repo.delete("workspace_leases", {"leaseId": lease_id})
+                lambda repo: metadata_repositories(repo).workspace_leases.delete(
+                    WorkspaceLeaseLookup(lease_id=lease_id)
+                )
             )
 
     async def begin_reset(self, owner):
@@ -126,9 +134,8 @@ class WorkspaceGate:
                 and state["leaseUntil"] > now()
             ):
                 raise Conflict("A workspace reset is already running.")
-            await repo.replace(
-                "workspace_control",
-                {"controlId": "workspace"},
+            await metadata_repositories(repo).workspace_control.replace(
+                WorkspaceControlLookup(control_id="workspace"),
                 {
                     **state,
                     "phase": "resetting",
@@ -156,9 +163,8 @@ class WorkspaceGate:
 
             async def renew(repo):
                 state = await self.require_owner(repo, owner)
-                await repo.replace(
-                    "workspace_control",
-                    {"controlId": "workspace"},
+                await metadata_repositories(repo).workspace_control.replace(
+                    WorkspaceControlLookup(control_id="workspace"),
                     {**state, "leaseUntil": now() + timedelta(seconds=180)},
                 )
 
@@ -166,8 +172,8 @@ class WorkspaceGate:
 
     async def drain(self):
         deadline = monotonic() + 130
-        while await self.store.repository.list(
-            "workspace_leases", {"expiresAt": {"$gt": now()}}, key="leaseId", limit=1
+        while await metadata_repositories(self.store.repository).workspace_leases.list(
+            WorkspaceLeaseLookup(expires_after=now()), order_by="leaseId", limit=1
         ):
             if monotonic() > deadline:
                 raise Conflict(

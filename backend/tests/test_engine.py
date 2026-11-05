@@ -155,7 +155,7 @@ async def test_idempotency_stale_inputs_cancel_and_recovery():
     recovered = await second_worker.claim()
     assert recovered["fence"] == claimed["fence"] + 1
     with pytest.raises(Conflict):
-        await worker.activate(claimed, {}, "", "")
+        await worker.handlers["managedTable"].activate(claimed, {}, "", "", worker)
     await second_worker.execute(recovered)
     assert (await service.run_status("default_model", "revision_1", run["runId"]))[
         "state"

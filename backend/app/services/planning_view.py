@@ -1,12 +1,17 @@
-import asyncio
-from contextlib import suppress
-from datetime import timedelta
+from ..repositories.metadata import metadata_repositories
+from ..repositories.metadata.criteria import (
+    ArtifactLookup,
+    BindingLookup,
+    RevisionLookup,
+    RunLookup,
+)
 from uuid import uuid4
 
 from ..core.errors import Conflict, MetadataError
-from ..engine.planning_view import PlanningViewPlanner, PlanningViewCompiler
 from ..engine.measure_edits import MeasureEditPlanner
-from .base import Service, now, scope
+from ..engine.planning_view import PlanningViewCompiler, PlanningViewPlanner
+from ..engine.read_leases import ArtifactReadLeases
+from .base import Service
 
 
 class PlanningViewService(Service):
@@ -15,14 +20,12 @@ class PlanningViewService(Service):
     def __init__(self, store, settings, builds):
         super().__init__(store, settings.max_objects_per_revision)
         self.settings, self.builds = settings, builds
+        self.read_leases = ArtifactReadLeases(store)
         self.executor, self.warehouse = builds.executor, builds.executor.warehouse
 
     async def options(self, model, revision):
-        await self.require(
-            self.store.repository,
-            "semantic_revisions",
-            scope(model, revision),
-            "Revision",
+        await metadata_repositories(self.store.repository).revisions.require(
+            RevisionLookup(model_id=model, revision_id=revision), "Revision"
         )
         objects = await self.objects(self.store.repository, model, revision)
         dimensions = []
@@ -44,16 +47,16 @@ class PlanningViewService(Service):
                     ],
                 }
             )
-        builds = await self.store.repository.list(
-            "engine_runs",
-            {
-                **scope(model, revision),
-                "resourceKind": "measureSet",
-                "state": "succeeded",
-                "isEdit": {"$in": [False, None]},
-            },
-            key="createdAt",
-            descending=True,
+        builds = await metadata_repositories(self.store.repository).runs.list(
+            RunLookup(
+                model_id=model,
+                revision_id=revision,
+                resource_kind="measureSet",
+                state="succeeded",
+                is_edit_in=[False, None],
+            ),
+            order_by="createdAt",
+            newest_first=True,
             limit=1,
         )
         return {
@@ -93,19 +96,20 @@ class PlanningViewService(Service):
             _,
             _,
             fingerprint,
-        ) = await self.builds.capture(repo, model, revision)
-        bindings = await repo.list(
-            "engine_artifact_bindings",
-            {**scope(model, revision), "resourceKind": "measureValues"},
-            key="resourceId",
+        ) = await self.builds.capture_build_inputs(repo, model, revision)
+        bindings = await metadata_repositories(repo).bindings.list(
+            BindingLookup(
+                model_id=model, revision_id=revision, resource_kind="measureValues"
+            ),
+            order_by="resourceId",
             limit=self.max_objects,
         )
         values = {}
         for binding in bindings:
             if binding["inputHash"] != fingerprint:
                 continue
-            artifact = await repo.get(
-                "engine_artifacts", {"artifactId": binding["artifactId"]}
+            artifact = await metadata_repositories(repo).artifacts.find(
+                ArtifactLookup(artifact_id=binding["artifactId"])
             )
             if (
                 artifact
@@ -134,28 +138,13 @@ class PlanningViewService(Service):
                 *managed.values(),
             ]
         }
-        for artifact in inputs.values():
-            current = await self.require(
-                repo,
-                "engine_artifacts",
-                {"artifactId": artifact["artifactId"]},
-                "Planning View input",
-            )
-            if current["state"] != "ready":
-                raise Conflict("A Planning View input was retired. Retry the query.")
-            await repo.replace(
-                "engine_artifacts",
-                {"artifactId": current["artifactId"]},
-                {**current, "pinVersion": current.get("pinVersion", 0) + 1},
-            )
-            await repo.insert(
-                "engine_read_leases",
-                {
-                    "readId": read_id,
-                    "artifactId": artifact["artifactId"],
-                    "expiresAt": now() + timedelta(seconds=180),
-                },
-            )
+        await self.read_leases.acquire(
+            repo,
+            read_id,
+            inputs.values(),
+            resource="Planning View input",
+            retired_message="A Planning View input was retired. Retry the query.",
+        )
         return (
             objects,
             populations,
@@ -167,26 +156,6 @@ class PlanningViewService(Service):
             rev["version"],
             rev["approvalStatus"] == "draft",
         )
-
-    async def renew(self, read_id, artifact_ids):
-        while True:
-            await asyncio.sleep(15)
-
-            async def operation(repo):
-                for aid in artifact_ids:
-                    identity = {"readId": read_id, "artifactId": aid}
-                    lease = await repo.get("engine_read_leases", identity)
-                    if not lease or lease["expiresAt"] <= now():
-                        raise Conflict(
-                            "Planning View read lease expired. Retry the query."
-                        )
-                    await repo.replace(
-                        "engine_read_leases",
-                        identity,
-                        {**lease, "expiresAt": now() + timedelta(seconds=180)},
-                    )
-
-            await self.store.transaction(operation)
 
     async def query(self, model, revision, request):
         read_id = "read_" + uuid4().hex
@@ -204,8 +173,9 @@ class PlanningViewService(Service):
             version,
             draft,
         ) = captured
-        heartbeat = asyncio.create_task(self.renew(read_id, artifact_ids))
-        try:
+        async with self.read_leases.hold(
+            read_id, artifact_ids, "Planning View read lease expired. Retry the query."
+        ) as heartbeat:
             await self.builds.storage.ensure_inputs(
                 [populations[plan.level_id], values[plan.level_id]]
             )
@@ -227,21 +197,11 @@ class PlanningViewService(Service):
                 )
             await self.executor.checks(compiled)
 
-            def execute(connect):
-                result = connect().query(
-                    f"SELECT * FROM ({compiled.sql}) ORDER BY ALL LIMIT {self.settings.planning_view_max_groups + 1}",
-                    settings=self.executor.execution_settings(),
-                )
-                if len(result.result_rows) > self.settings.planning_view_max_groups:
-                    raise MetadataError(
-                        "planning_view_limit",
-                        "This pivot has too many groups. Choose fewer attributes or a coarser grain.",
-                    )
-                return [
-                    [self.warehouse.cell(v) for v in row] for row in result.result_rows
-                ]
-
-            rows = await self.warehouse.run(execute)
+            rows = await self.warehouse.queries.planning_view(
+                compiled,
+                self.executor.execution_settings(),
+                self.settings.planning_view_max_groups,
+            )
             await self.executor.checks(compiled)
             if heartbeat.done():
                 heartbeat.result()
@@ -249,21 +209,19 @@ class PlanningViewService(Service):
             # Fence successful reads if metadata or the materialised generation changed
             # while executing. The pinned rows themselves remain an immutable snapshot.
             async def verify(repo):
-                rev = await self.require(
-                    repo, "semantic_revisions", scope(model, revision), "Revision"
+                rev = await metadata_repositories(repo).revisions.require(
+                    RevisionLookup(model_id=model, revision_id=revision), "Revision"
                 )
                 if rev["version"] != version:
                     raise Conflict(
                         "The semantic network changed while querying. Refresh Planning View."
                     )
-                for aid in artifact_ids:
-                    lease = await repo.get(
-                        "engine_read_leases", {"readId": read_id, "artifactId": aid}
-                    )
-                    if not lease or lease["expiresAt"] <= now():
-                        raise Conflict(
-                            "Planning View read lease expired. Retry the query."
-                        )
+                await self.read_leases.verify(
+                    repo,
+                    read_id,
+                    artifact_ids,
+                    "Planning View read lease expired. Retry the query.",
+                )
 
             await self.store.transaction(verify)
             n_rows, n_columns = len(request.rows), len(request.columns)
@@ -320,17 +278,3 @@ class PlanningViewService(Service):
                 "groupCount": len(rows),
                 "cellCount": cells,
             }
-        finally:
-            heartbeat.cancel()
-            with suppress(asyncio.CancelledError, Exception):
-                await heartbeat
-
-            async def release(repo):
-                for aid in artifact_ids:
-                    await repo.delete(
-                        "engine_read_leases", {"readId": read_id, "artifactId": aid}
-                    )
-
-            # Middleware's workspace lease keeps maintenance from draining until
-            # this finally block has completed.
-            await self.store.transaction(release)

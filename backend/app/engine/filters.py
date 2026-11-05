@@ -66,7 +66,8 @@ class FilterCompiler:
             for column in columns
         }
 
-    def compile(self, definition, columns):
+    @classmethod
+    def compile(cls, definition, columns):
         if not definition:
             return "1"
         try:
@@ -76,7 +77,7 @@ class FilterCompiler:
                 "invalid_filter",
                 "Complete every filter rule and keep groups within the supported limits.",
             ) from error
-        available = self.columns(columns)
+        available = cls.columns(columns)
 
         def visit(node):
             if node["type"] == "group":
@@ -107,7 +108,7 @@ class FilterCompiler:
             col = q(cid)
             if op in NULL_OPS:
                 return f"{col} IS {'NOT ' if op == 'is_not_null' else ''}NULL"
-            values = [self.literal(value, kind, typ) for value in node["values"]]
+            values = [cls.literal(value, kind, typ) for value in node["values"]]
             if op in EMPTY_OPS:
                 predicate = f"{col} {'!=' if op == 'is_not_empty' else '='} ''"
             elif op in {"in", "not_in"}:
@@ -171,9 +172,10 @@ class FilterCompiler:
                 "invalid_filter_value", f"Enter a valid {kind} value for this filter."
             ) from error
 
-    def apply(self, sql, definition, columns):
+    @classmethod
+    def apply(cls, sql, definition, columns):
         return (
-            f"SELECT * FROM ({sql}) WHERE {self.compile(definition, columns)}"
+            f"SELECT * FROM ({sql}) WHERE {cls.compile(definition, columns)}"
             if definition
             else sql
         )

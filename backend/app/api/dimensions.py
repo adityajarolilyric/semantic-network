@@ -2,8 +2,8 @@ from fastapi import Depends, Response
 
 from ..core.http import expected_version
 from ..schemas.common import Identifier
-from ..schemas.managed_tables import ObjectInputTransform
 from ..schemas.dimensions import DimensionDocument, DimensionInput
+from ..schemas.managed_tables import ObjectInputTransform
 from ..services.dimensions import DimensionService
 from .base import RevisionResourceAPI
 
@@ -32,16 +32,12 @@ class DimensionAPI(RevisionResourceAPI):
         revision_id: Identifier,
         payload: ObjectInputTransform,
     ):
-        return await self.inputs.preview(
-            model_id, revision_id, payload, input_only=True
-        )
+        return await self.inputs.preview_input(model_id, revision_id, payload)
 
     async def preview(
         self, model_id: Identifier, revision_id: Identifier, payload: DimensionInput
     ):
-        return await self.inputs.preview(
-            model_id, revision_id, payload, dimension_only=True
-        )
+        return await self.inputs.preview_dimension(model_id, revision_id, payload)
 
     async def create(
         self,

@@ -1,6 +1,7 @@
+from ..repositories.metadata.records import RecordCategory
 from .records import RevisionRecordService
 
 
 class EvidenceService(RevisionRecordService):
-    collection = "semantic_evidence"
+    record_category = RecordCategory.EVIDENCE
     allow_published = True

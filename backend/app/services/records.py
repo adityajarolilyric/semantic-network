@@ -1,3 +1,6 @@
+from ..repositories.metadata import metadata_repositories
+from ..repositories.metadata.criteria import ObjectLookup, RecordLookup, RevisionLookup
+from ..repositories.metadata.records import RecordCategory
 from ..core.errors import Conflict, MetadataError
 from .base import Service, now, scope
 
@@ -5,45 +8,49 @@ from .base import Service, now, scope
 class RevisionRecordService(Service):
     """Evidence can evolve after publication; examples belong to the frozen definition."""
 
-    collection: str
+    record_category: RecordCategory
     allow_published = False
 
     async def get(self, model_id, revision_id, record_id):
-        return await self.require(
-            self.store.repository,
-            self.collection,
-            {**scope(model_id, revision_id), "recordId": record_id},
-            "Record",
+        return (
+            await metadata_repositories(self.store.repository)
+            .records(self.record_category)
+            .require(
+                RecordLookup(
+                    model_id=model_id, revision_id=revision_id, record_id=record_id
+                ),
+                "Record",
+            )
         )
 
     async def list(self, model_id, revision_id, cursor, limit):
-        await self.require(
-            self.store.repository,
-            "semantic_revisions",
-            scope(model_id, revision_id),
-            "Revision",
+        await metadata_repositories(self.store.repository).revisions.require(
+            RevisionLookup(model_id=model_id, revision_id=revision_id), "Revision"
         )
-        return await self.page(
-            self.collection, scope(model_id, revision_id), "recordId", cursor, limit
+        return (
+            await metadata_repositories(self.store.repository)
+            .records(self.record_category)
+            .page(
+                RecordLookup(model_id=model_id, revision_id=revision_id), cursor, limit
+            )
         )
 
     async def validate_record(self, repo, model_id, revision_id, payload):
         for object_id in payload.objectIds:
-            await self.require(
-                repo,
-                "semantic_objects",
-                {**scope(model_id, revision_id), "objectId": object_id},
+            await metadata_repositories(repo).objects.require(
+                ObjectLookup(
+                    model_id=model_id, revision_id=revision_id, object_id=object_id
+                ),
                 "Referenced object",
             )
         for fixture in getattr(payload, "fixtures", []):
-            source = await self.require(
-                repo,
-                "semantic_objects",
-                {
-                    **scope(model_id, revision_id),
-                    "objectId": fixture.sourceId,
-                    "kind": "source",
-                },
+            source = await metadata_repositories(repo).objects.require(
+                ObjectLookup(
+                    model_id=model_id,
+                    revision_id=revision_id,
+                    object_id=fixture.sourceId,
+                    kind="source",
+                ),
                 "Fixture source",
             )
             names = {col["name"] for col in source["definition"]["columns"]}
@@ -58,25 +65,31 @@ class RevisionRecordService(Service):
             await self.touch_revision(
                 repo, model_id, revision_id, allow_published=self.allow_published
             )
-            existing = await repo.list(
-                self.collection,
-                scope(model_id, revision_id),
-                key="recordId",
-                limit=self.max_objects,
+            existing = (
+                await metadata_repositories(repo)
+                .records(self.record_category)
+                .list(
+                    RecordLookup(model_id=model_id, revision_id=revision_id),
+                    order_by="recordId",
+                    limit=self.max_objects,
+                )
             )
             if len(existing) >= self.max_objects:
                 raise Conflict("The revision has reached its record limit.")
             await self.validate_record(repo, model_id, revision_id, payload)
             timestamp = now()
-            return await repo.insert(
-                self.collection,
-                {
-                    **payload.model_dump(),
-                    **scope(model_id, revision_id),
-                    "version": 1,
-                    "createdAt": timestamp,
-                    "updatedAt": timestamp,
-                },
+            return (
+                await metadata_repositories(repo)
+                .records(self.record_category)
+                .insert(
+                    {
+                        **payload.model_dump(),
+                        **scope(model_id, revision_id),
+                        "version": 1,
+                        "createdAt": timestamp,
+                        "updatedAt": timestamp,
+                    }
+                )
             )
 
         return await self.store.transaction(operation)
@@ -91,8 +104,16 @@ class RevisionRecordService(Service):
             await self.touch_revision(
                 repo, model_id, revision_id, allow_published=self.allow_published
             )
-            query = {**scope(model_id, revision_id), "recordId": record_id}
-            document = await self.require(repo, self.collection, query, "Record")
+            document = (
+                await metadata_repositories(repo)
+                .records(self.record_category)
+                .require(
+                    RecordLookup(
+                        model_id=model_id, revision_id=revision_id, record_id=record_id
+                    ),
+                    "Record",
+                )
+            )
             self.check_version(document, expected)
             await self.validate_record(repo, model_id, revision_id, payload)
             updated = {
@@ -101,8 +122,18 @@ class RevisionRecordService(Service):
                 "version": expected + 1,
                 "updatedAt": now(),
             }
-            if not await repo.replace(
-                self.collection, {**query, "version": expected}, updated
+            if (
+                not await metadata_repositories(repo)
+                .records(self.record_category)
+                .replace(
+                    RecordLookup(
+                        model_id=model_id,
+                        revision_id=revision_id,
+                        record_id=record_id,
+                        version=expected,
+                    ),
+                    updated,
+                )
             ):
                 raise Conflict()
             return updated
@@ -114,10 +145,29 @@ class RevisionRecordService(Service):
             await self.touch_revision(
                 repo, model_id, revision_id, allow_published=self.allow_published
             )
-            query = {**scope(model_id, revision_id), "recordId": record_id}
-            document = await self.require(repo, self.collection, query, "Record")
+            document = (
+                await metadata_repositories(repo)
+                .records(self.record_category)
+                .require(
+                    RecordLookup(
+                        model_id=model_id, revision_id=revision_id, record_id=record_id
+                    ),
+                    "Record",
+                )
+            )
             self.check_version(document, expected)
-            if not await repo.delete(self.collection, {**query, "version": expected}):
+            if (
+                not await metadata_repositories(repo)
+                .records(self.record_category)
+                .delete(
+                    RecordLookup(
+                        model_id=model_id,
+                        revision_id=revision_id,
+                        record_id=record_id,
+                        version=expected,
+                    )
+                )
+            ):
                 raise Conflict()
 
         await self.store.transaction(operation)

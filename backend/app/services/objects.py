@@ -1,3 +1,10 @@
+from ..repositories.metadata import metadata_repositories
+from ..repositories.metadata.criteria import (
+    BindingLookup,
+    ManagedTableLookup,
+    ObjectLookup,
+    RevisionLookup,
+)
 from ..core.errors import Conflict, MetadataError
 from .base import Service, now, scope
 
@@ -6,26 +13,22 @@ class ObjectService(Service):
     kind: str
 
     async def get(self, model_id, revision_id, object_id):
-        query = {
-            **scope(model_id, revision_id),
-            "objectId": object_id,
-            "kind": self.kind,
-        }
-        return await self.require(
-            self.store.repository, "semantic_objects", query, self.kind
+        return await metadata_repositories(self.store.repository).objects.require(
+            ObjectLookup(
+                model_id=model_id,
+                revision_id=revision_id,
+                object_id=object_id,
+                kind=self.kind,
+            ),
+            self.kind,
         )
 
     async def list(self, model_id, revision_id, cursor, limit):
-        await self.require(
-            self.store.repository,
-            "semantic_revisions",
-            scope(model_id, revision_id),
-            "Revision",
+        await metadata_repositories(self.store.repository).revisions.require(
+            RevisionLookup(model_id=model_id, revision_id=revision_id), "Revision"
         )
-        return await self.page(
-            "semantic_objects",
-            {**scope(model_id, revision_id), "kind": self.kind},
-            "objectId",
+        return await metadata_repositories(self.store.repository).objects.page(
+            ObjectLookup(model_id=model_id, revision_id=revision_id, kind=self.kind),
             cursor,
             limit,
         )
@@ -62,7 +65,7 @@ class ObjectService(Service):
                 await self.effective(repo, model_id, revision_id, [*objects, document]),
                 revision["basePlanningLevelId"],
             )
-            return await repo.insert("semantic_objects", document)
+            return await metadata_repositories(repo).objects.insert(document)
 
         return await self.store.transaction(operation)
 
@@ -74,12 +77,15 @@ class ObjectService(Service):
 
         async def operation(repo):
             revision = await self.touch_revision(repo, model_id, revision_id)
-            query = {
-                **scope(model_id, revision_id),
-                "objectId": object_id,
-                "kind": self.kind,
-            }
-            document = await self.require(repo, "semantic_objects", query, self.kind)
+            document = await metadata_repositories(repo).objects.require(
+                ObjectLookup(
+                    model_id=model_id,
+                    revision_id=revision_id,
+                    object_id=object_id,
+                    kind=self.kind,
+                ),
+                self.kind,
+            )
             self.check_version(document, expected)
             if self.kind == "source":
                 old, new = document["definition"], payload.definition.model_dump()
@@ -119,8 +125,15 @@ class ObjectService(Service):
                 ),
                 revision["basePlanningLevelId"],
             )
-            if not await repo.replace(
-                "semantic_objects", {**query, "version": expected}, updated
+            if not await metadata_repositories(repo).objects.replace(
+                ObjectLookup(
+                    model_id=model_id,
+                    revision_id=revision_id,
+                    object_id=object_id,
+                    kind=self.kind,
+                    version=expected,
+                ),
+                updated,
             ):
                 raise Conflict()
             return updated
@@ -130,16 +143,22 @@ class ObjectService(Service):
     async def delete(self, model_id, revision_id, object_id, expected):
         async def operation(repo):
             revision = await self.touch_revision(repo, model_id, revision_id)
-            query = {
-                **scope(model_id, revision_id),
-                "objectId": object_id,
-                "kind": self.kind,
-            }
-            document = await self.require(repo, "semantic_objects", query, self.kind)
+            document = await metadata_repositories(repo).objects.require(
+                ObjectLookup(
+                    model_id=model_id,
+                    revision_id=revision_id,
+                    object_id=object_id,
+                    kind=self.kind,
+                ),
+                self.kind,
+            )
             self.check_version(document, expected)
-            if self.kind == "source" and await repo.get(
-                "semantic_managed_tables",
-                {**scope(model_id, revision_id), "sourceId": object_id},
+            if self.kind == "source" and await metadata_repositories(
+                repo
+            ).managed_tables.find(
+                ManagedTableLookup(
+                    model_id=model_id, revision_id=revision_id, source_id=object_id
+                )
             ):
                 raise Conflict(
                     "A managed source cannot be deleted; disable it to retain its revision history."
@@ -148,15 +167,12 @@ class ObjectService(Service):
                 raise Conflict(
                     "Choose or clear the revision's base planning level before deleting this level."
                 )
-            for collection in ("semantic_evidence", "semantic_examples"):
-                records = await repo.list(
-                    collection,
-                    {**scope(model_id, revision_id), "objectIds": object_id},
-                    key="recordId",
-                    limit=1,
-                )
-                if records:
-                    raise Conflict("This object is referenced by evidence or examples.")
+            await metadata_repositories(repo).ensure_object_unreferenced(
+                model_id,
+                revision_id,
+                object_id,
+                "This object is referenced by evidence or examples.",
+            )
             objects = await self.objects(repo, model_id, revision_id)
             self.validate(
                 await self.effective(
@@ -168,24 +184,30 @@ class ObjectService(Service):
                 revision["basePlanningLevelId"],
             )
             if self.kind == "planningLevel":
-                await repo.delete(
-                    "engine_artifact_bindings",
-                    {
-                        **scope(model_id, revision_id),
-                        "resourceKind": "planningLevel",
-                        "resourceId": object_id,
-                    },
+                await metadata_repositories(repo).bindings.delete(
+                    BindingLookup(
+                        model_id=model_id,
+                        revision_id=revision_id,
+                        resource_kind="planningLevel",
+                        resource_id=object_id,
+                    )
                 )
-                await repo.delete(
-                    "engine_artifact_bindings",
-                    {
-                        **scope(model_id, revision_id),
-                        "resourceKind": "measureValues",
-                        "resourceId": object_id,
-                    },
+                await metadata_repositories(repo).bindings.delete(
+                    BindingLookup(
+                        model_id=model_id,
+                        revision_id=revision_id,
+                        resource_kind="measureValues",
+                        resource_id=object_id,
+                    )
                 )
-            if not await repo.delete(
-                "semantic_objects", {**query, "version": expected}
+            if not await metadata_repositories(repo).objects.delete(
+                ObjectLookup(
+                    model_id=model_id,
+                    revision_id=revision_id,
+                    object_id=object_id,
+                    kind=self.kind,
+                    version=expected,
+                )
             ):
                 raise Conflict()
 

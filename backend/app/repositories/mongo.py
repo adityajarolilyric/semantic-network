@@ -76,6 +76,7 @@ class MongoMetadataStore(MetadataStore):
         self.settings = settings
         self.client = None
         self.database = None
+        self._read_repository = None
 
     async def open(self):
         self.client = AsyncMongoClient(
@@ -126,7 +127,9 @@ class MongoMetadataStore(MetadataStore):
     def repository(self):
         if self.database is None:
             raise RuntimeError("MongoDB store is not open")
-        return MongoRepository(self.database)
+        if self._read_repository is None:
+            self._read_repository = MongoRepository(self.database)
+        return self._read_repository
 
     async def create_indexes(self):
         definitions = {
@@ -264,3 +267,4 @@ class MongoMetadataStore(MetadataStore):
             await self.client.close()
             self.client = None
             self.database = None
+            self._read_repository = None

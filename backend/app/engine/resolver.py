@@ -1,6 +1,8 @@
+from ..repositories.metadata import metadata_repositories
+from ..repositories.metadata.criteria import ManagedTableLookup
 from copy import deepcopy
+
 from ..core.errors import MetadataError
-from ..services.base import scope
 
 
 class EffectiveSchemaResolver:
@@ -22,10 +24,9 @@ class EffectiveSchemaResolver:
 
     @classmethod
     async def load(cls, repo, model_id, revision_id, objects, limit=5000):
-        managed = await repo.list(
-            "semantic_managed_tables",
-            scope(model_id, revision_id),
-            key="sourceId",
+        managed = await metadata_repositories(repo).managed_tables.list(
+            ManagedTableLookup(model_id=model_id, revision_id=revision_id),
+            order_by="sourceId",
             limit=limit + 1,
         )
         if len(managed) > limit:

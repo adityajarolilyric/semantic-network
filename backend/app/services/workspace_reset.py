@@ -1,8 +1,9 @@
+from ..repositories.metadata import metadata_repositories
+from ..repositories.metadata.criteria import RunLookup, WorkspaceControlLookup
 import asyncio
 from contextlib import suppress
 from uuid import uuid4
 
-from ..db.schema import CollectionSchemas
 from .base import now
 
 
@@ -25,19 +26,17 @@ class WorkspaceResetService:
                 await self.gate.require_owner(repo, owner)
                 cursor = None
                 while True:
-                    runs = await repo.list(
-                        "engine_runs",
-                        {"state": {"$in": ["queued", "running"]}},
-                        key="runId",
+                    runs = await metadata_repositories(repo).runs.list(
+                        RunLookup(state_in=["queued", "running"]),
+                        order_by="runId",
                         after=cursor,
                         limit=100,
                     )
                     if not runs:
                         break
                     for run in runs:
-                        await repo.replace(
-                            "engine_runs",
-                            {"runId": run["runId"]},
+                        await metadata_repositories(repo).runs.replace(
+                            RunLookup(run_id=run["runId"]),
                             {
                                 **run,
                                 "state": "cancelled",
@@ -53,13 +52,10 @@ class WorkspaceResetService:
 
             async def clear(repo):
                 state = await self.gate.require_owner(repo, owner)
-                for collection in CollectionSchemas.REQUIRED:
-                    if collection != "workspace_control":
-                        await repo.delete_all(collection)
+                await metadata_repositories(repo).clear_workspace()
                 model = await self.workspace.initialize(repo)
-                await repo.replace(
-                    "workspace_control",
-                    {"controlId": "workspace"},
+                await metadata_repositories(repo).workspace_control.replace(
+                    WorkspaceControlLookup(control_id="workspace"),
                     {**state, "phase": "ready", "owner": None, "leaseUntil": now()},
                 )
                 return model
@@ -72,9 +68,8 @@ class WorkspaceResetService:
                 state = await self.gate.state(repo)
                 if state.get("owner") == owner:
                     # Keep maintenance active after partial failure; retry can finish safely.
-                    await repo.replace(
-                        "workspace_control",
-                        {"controlId": "workspace"},
+                    await metadata_repositories(repo).workspace_control.replace(
+                        WorkspaceControlLookup(control_id="workspace"),
                         {**state, "owner": None, "leaseUntil": now()},
                     )
 

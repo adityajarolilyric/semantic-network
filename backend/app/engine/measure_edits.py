@@ -1,10 +1,11 @@
 """Base-or-native writeback against a captured generation, without replay storage."""
 
 from ..core.errors import MetadataError
-from ..warehouse.repository import quote_identifier as q, quote_literal as lit
+from ..warehouse.repository import quote_identifier as q
+from ..warehouse.repository import quote_literal as lit
 from .contracts import Check
-from .measure_compiler import MeasureCompiler, VALUE, COMPLETE
-from .planning_view import PlanningViewPlanner, ViewRelationships, TARGET, virtual_level
+from .measure_compiler import COMPLETE, VALUE, MeasureCompiler
+from .planning_view import TARGET, PlanningViewPlanner, ViewRelationships, virtual_level
 from .table_storage import GENERATION, token
 
 
@@ -127,7 +128,7 @@ class MeasureEditCompiler(MeasureCompiler):
         weight_join = ""
         weight = None
         if mode == "weighted":
-            basis = self.node(policy["basisMeasureId"], target)
+            basis = self.compile_measure_at_level(policy["basisMeasureId"], target)
             weight_join = f"LEFT JOIN {q(basis)} w ON " + self.join_keys(
                 "c", "w", target
             )
@@ -199,7 +200,7 @@ class MeasureEditCompiler(MeasureCompiler):
     def stored(self, mid, level):
         return self.stored_measure(mid, level, self.snapshots)
 
-    def node(self, mid, target):
+    def compile_measure_at_level(self, mid, target):
         key = (mid, target)
         if key in self.cache:
             return self.cache[key]
@@ -214,7 +215,7 @@ class MeasureEditCompiler(MeasureCompiler):
                 in allowed
             ):
                 result = self.rollup(
-                    self.node(mid, self.write_id),
+                    self.compile_measure_at_level(mid, self.write_id),
                     self.measures[mid],
                     self.write_id,
                     target,
@@ -230,7 +231,7 @@ class MeasureEditCompiler(MeasureCompiler):
             ):
                 result = self.stored(mid, target)
             elif d.get("calculationType") == "AggregateFirst":
-                result = self.calculated(measure, target)
+                result = self.compile_calculated_measure(measure, target)
             else:
                 native = d["nativePlanningLevelId"]
                 if (
@@ -243,24 +244,24 @@ class MeasureEditCompiler(MeasureCompiler):
                         "measure_path_unavailable",
                         "A dependent CalculateFirst measure cannot be recalculated through the native write path.",
                     )
-                seed = self.seed(mid)
+                seed = self.compile_seed_measure(mid)
                 result = (
                     seed
                     if target == native
                     else self.rollup(seed, measure, native, target)
                 )
         else:
-            return super().node(mid, target)
+            return super().compile_measure_at_level(mid, target)
         result = self.quantize_node(result, self.measures[mid], target)
         self.cache[key] = result
         return result
 
-    def seed(self, mid):
+    def compile_seed_measure(self, mid):
         if self.measures[mid]["definition"]["measureType"] == "referenced":
             return self.stored(
                 mid, self.measures[mid]["definition"]["nativePlanningLevelId"]
             )
-        return super().seed(mid)
+        return super().compile_seed_measure(mid)
 
     def patch(self):
         mid = self.edit.measureId

@@ -1,10 +1,13 @@
 """Capture and atomically reuse a coherent values generation without source reload."""
 
+from ..repositories.metadata import metadata_repositories
+from ..repositories.metadata.criteria import ArtifactLookup, BindingLookup, RunLookup
+
 from ..core.errors import Conflict, MetadataError
-from ..engine.incremental import MaterialisationManifest, INCREMENTAL_POLICY, reusable
+from ..domain.measure_policies import MEASURE_TYPE_POLICY
+from ..engine.captured_inputs import CapturedRunInputs
+from ..engine.incremental import INCREMENTAL_POLICY, MaterialisationManifest, reusable
 from ..engine.measure_compiler import MEASURE_COMPILER_VERSION
-from ..services.measure_types import MEASURE_TYPE_POLICY
-from .base import now, scope
 
 
 class IncrementalBuildCoordinator:
@@ -33,24 +36,15 @@ class IncrementalBuildCoordinator:
         if manifest and manifest.get("policy") == INCREMENTAL_POLICY:
             return manifest
         # Reconstruct a pre-upgrade baseline only from its immutable captured inputs.
-        run = await repo.get("engine_runs", {"runId": artifact["runId"]})
-        docs = await repo.list(
-            "engine_run_inputs",
-            {"runId": artifact["runId"]},
-            key="inputId",
-            limit=self.builds.max_objects * 4 + 3,
+        run = await metadata_repositories(repo).runs.find(
+            RunLookup(run_id=artifact["runId"])
         )
-        objects = [d["document"] for d in docs if not d["inputId"].startswith("__")]
-        populations = {
-            d["inputId"][13:]: d["document"]
-            for d in docs
-            if d["inputId"].startswith("__population_")
-        }
-        managed = {
-            d["inputId"][10:]: d["document"]["artifact"]
-            for d in docs
-            if d["inputId"].startswith("__managed_")
-        }
+        captured_inputs = await CapturedRunInputs.load(
+            repo, artifact["runId"], self.builds.max_objects * 4 + 3
+        )
+        objects = captured_inputs.objects
+        populations = captured_inputs.populations
+        managed = captured_inputs.managed_artifacts
         if not run or not objects or artifact["levelId"] not in populations:
             raise Conflict(
                 "Captured inputs for incremental reuse are unavailable. Use Full Refresh; no existing values were changed."
@@ -71,21 +65,18 @@ class IncrementalBuildCoordinator:
         snapshots = {}
         if previous:
             for lid in populations:
-                binding = await repo.get(
-                    "engine_artifact_bindings",
-                    {
-                        **scope(model, revision),
-                        "resourceKind": "measureValues",
-                        "resourceId": lid,
-                    },
+                binding = await metadata_repositories(repo).bindings.find(
+                    BindingLookup(
+                        model_id=model,
+                        revision_id=revision,
+                        resource_kind="measureValues",
+                        resource_id=lid,
+                    )
                 )
                 if not binding:
                     continue
-                artifact = await self.builds.require(
-                    repo,
-                    "engine_artifacts",
-                    {"artifactId": binding["artifactId"]},
-                    "Current values",
+                artifact = await metadata_repositories(repo).artifacts.require(
+                    ArtifactLookup(artifact_id=binding["artifactId"]), "Current values"
                 )
                 if (
                     artifact["state"] != "ready"
@@ -98,10 +89,11 @@ class IncrementalBuildCoordinator:
                     **artifact,
                     "materialisationManifest": await self.baseline(repo, artifact),
                 }
-        active = await repo.list(
-            "engine_artifact_bindings",
-            {**scope(model, revision), "resourceKind": "measureValues"},
-            key="resourceId",
+        active = await metadata_repositories(repo).bindings.list(
+            BindingLookup(
+                model_id=model, revision_id=revision, resource_kind="measureValues"
+            ),
+            order_by="resourceId",
             limit=self.builds.max_objects + 1,
         )
         reuse_only = (
@@ -124,13 +116,13 @@ class IncrementalBuildCoordinator:
 
     async def check_snapshots(self, repo, run, snapshots):
         for lid, artifact in snapshots.items():
-            binding = await repo.get(
-                "engine_artifact_bindings",
-                {
-                    **scope(run["modelId"], run["revisionId"]),
-                    "resourceKind": "measureValues",
-                    "resourceId": lid,
-                },
+            binding = await metadata_repositories(repo).bindings.find(
+                BindingLookup(
+                    model_id=run["modelId"],
+                    revision_id=run["revisionId"],
+                    resource_kind="measureValues",
+                    resource_id=lid,
+                )
             )
             if not binding or binding["artifactId"] != artifact["artifactId"]:
                 raise Conflict(
@@ -149,7 +141,7 @@ class IncrementalBuildCoordinator:
 
         async def activate(repo):
             current = await worker.fenced(repo, run)
-            rev, *_, fingerprint = await self.builds.capture(
+            rev, *_, fingerprint = await self.builds.capture_build_inputs(
                 repo, run["modelId"], run["revisionId"]
             )
             self.builds.check_version(rev, run["revisionVersion"])
@@ -159,40 +151,40 @@ class IncrementalBuildCoordinator:
                 raise Conflict("Inputs changed during incremental reuse.")
             await self.check_snapshots(repo, run, snapshots)
             for lid, artifact in snapshots.items():
-                identity = {
-                    **scope(run["modelId"], run["revisionId"]),
-                    "resourceKind": "measureValues",
-                    "resourceId": lid,
-                }
-                binding = await repo.get("engine_artifact_bindings", identity)
-                await repo.replace(
-                    "engine_artifact_bindings",
-                    identity,
+                binding = await metadata_repositories(repo).bindings.find(
+                    BindingLookup(
+                        model_id=run["modelId"],
+                        revision_id=run["revisionId"],
+                        resource_kind="measureValues",
+                        resource_id=lid,
+                    )
+                )
+                await metadata_repositories(repo).bindings.replace(
+                    BindingLookup(
+                        model_id=run["modelId"],
+                        revision_id=run["revisionId"],
+                        resource_kind="measureValues",
+                        resource_id=lid,
+                    ),
                     {
                         **binding,
                         "inputHash": fingerprint,
                         "definitionHash": fingerprint,
                     },
                 )
-                await repo.replace(
-                    "engine_artifacts",
-                    {"artifactId": artifact["artifactId"]},
+                await metadata_repositories(repo).artifacts.replace(
+                    ArtifactLookup(artifact_id=artifact["artifactId"]),
                     {
                         **artifact,
                         "inputHash": fingerprint,
                         "materialisationManifest": manifests[lid],
                     },
                 )
-            await repo.replace(
-                "engine_runs",
-                {"runId": run["runId"], "fence": run["fence"]},
-                {
-                    **current,
-                    "state": "succeeded",
-                    "updatedAt": now(),
-                    "generationId": snapshots[run["resourceId"]]["generationId"],
-                    "reused": True,
-                },
+            await metadata_repositories(repo).activation.complete(
+                run,
+                current,
+                generationId=snapshots[run["resourceId"]]["generationId"],
+                reused=True,
             )
 
         await self.builds.store.transaction(activate)

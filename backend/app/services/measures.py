@@ -1,4 +1,4 @@
-from .measure_types import normalize_measure, referenced_result_type
+from ..domain.measure_policies import normalize_measure, referenced_result_type
 from .objects import ObjectService
 
 

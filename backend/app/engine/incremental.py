@@ -3,13 +3,13 @@
 from copy import deepcopy
 
 from ..core.errors import MetadataError
-from ..services.measure_types import normalize_measure, MEASURE_TYPE_POLICY
+from ..domain.measure_policies import MEASURE_TYPE_POLICY, normalize_measure
 from .contracts import digest
 from .measure_compiler import (
-    MeasureCompiler,
-    MeasureNode,
     MATERIALISATION_POLICY,
     MEASURE_COMPILER_VERSION,
+    MeasureCompiler,
+    MeasureNode,
 )
 from .relationships import LevelRelationshipAnalyzer
 from .table_storage import STORAGE_POLICY
@@ -196,9 +196,9 @@ class IncrementalMeasureCompiler(MeasureCompiler):
             self.snapshots.get(level, {}), self.manifests[level], mid
         )
 
-    def node(self, mid, target):
+    def compile_measure_at_level(self, mid, target):
         if not self.can_reuse(mid, target):
-            return super().node(mid, target)
+            return super().compile_measure_at_level(mid, target)
         key = (mid, target)
         if key not in self.cache:
             snapshot = self.snapshots[target]
@@ -209,10 +209,10 @@ class IncrementalMeasureCompiler(MeasureCompiler):
             self.nodes.append(MeasureNode(mid, target, "reuse"))
         return self.cache[key]
 
-    def seed(self, mid):
+    def compile_seed_measure(self, mid):
         native = self.measures[mid]["definition"]["nativePlanningLevelId"]
         if self.can_reuse(mid, native) and mid in self.snapshots[native].get(
             "measureColumns", {}
         ):
-            return self.node(mid, native)
-        return super().seed(mid)
+            return self.compile_measure_at_level(mid, native)
+        return super().compile_seed_measure(mid)

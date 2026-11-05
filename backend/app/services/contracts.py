@@ -1,3 +1,5 @@
+from ..repositories.metadata import metadata_repositories
+from ..repositories.metadata.criteria import ContractLookup
 from ..core.errors import Conflict, MetadataError
 from .base import Service, now
 
@@ -8,28 +10,26 @@ class ContractService(Service):
     async def create(self, payload):
         async def operation(repo):
             timestamp = now()
-            return await repo.insert(
-                "semantic_contracts",
+            return await metadata_repositories(repo).contracts.insert(
                 {
                     **payload.model_dump(),
                     "version": 1,
                     "createdAt": timestamp,
                     "updatedAt": timestamp,
-                },
+                }
             )
 
         return await self.store.transaction(operation)
 
     async def get(self, contract_id):
-        return await self.require(
-            self.store.repository,
-            "semantic_contracts",
-            {"contractId": contract_id},
-            "Contract",
+        return await metadata_repositories(self.store.repository).contracts.require(
+            ContractLookup(contract_id=contract_id), "Contract"
         )
 
     async def list(self, cursor, limit):
-        return await self.page("semantic_contracts", {}, "contractId", cursor, limit)
+        return await metadata_repositories(self.store.repository).contracts.page(
+            ContractLookup(), cursor, limit
+        )
 
     async def update(self, contract_id, payload, expected):
         if payload.contractId != contract_id:
@@ -38,8 +38,9 @@ class ContractService(Service):
             )
 
         async def operation(repo):
-            query = {"contractId": contract_id}
-            document = await self.require(repo, "semantic_contracts", query, "Contract")
+            document = await metadata_repositories(repo).contracts.require(
+                ContractLookup(contract_id=contract_id), "Contract"
+            )
             self.check_version(document, expected)
             updated = {
                 **document,
@@ -47,8 +48,8 @@ class ContractService(Service):
                 "version": expected + 1,
                 "updatedAt": now(),
             }
-            if not await repo.replace(
-                "semantic_contracts", {**query, "version": expected}, updated
+            if not await metadata_repositories(repo).contracts.replace(
+                ContractLookup(contract_id=contract_id, version=expected), updated
             ):
                 raise Conflict()
             return updated
@@ -57,11 +58,12 @@ class ContractService(Service):
 
     async def delete(self, contract_id, expected):
         async def operation(repo):
-            query = {"contractId": contract_id}
-            document = await self.require(repo, "semantic_contracts", query, "Contract")
+            document = await metadata_repositories(repo).contracts.require(
+                ContractLookup(contract_id=contract_id), "Contract"
+            )
             self.check_version(document, expected)
-            if not await repo.delete(
-                "semantic_contracts", {**query, "version": expected}
+            if not await metadata_repositories(repo).contracts.delete(
+                ContractLookup(contract_id=contract_id, version=expected)
             ):
                 raise Conflict()
 

@@ -1,16 +1,16 @@
-from .filters import dimension_filter_columns
-from .table_storage import GENERATION, column_sql, token
-from ..warehouse.repository import quote_literal as lit
-from ..services.measure_types import normalize_measure
 from dataclasses import dataclass
 
 from sqlglot import parse_one
 
 from ..core.errors import MetadataError
 from ..warehouse.repository import quote_identifier as q
+from ..warehouse.repository import quote_literal as lit
+from .compilation_context import CompilationContext
 from .contracts import Check, ExecutionPlan, RelationSchema
+from .filters import dimension_filter_columns
 from .planning_compiler import PlanningLevelCompiler
 from .relationships import Coordinate, LevelRelationshipAnalyzer
+from .table_storage import GENERATION, column_sql, token
 
 VALUE = "__value"
 COMPLETE = "__complete"
@@ -40,7 +40,11 @@ class MeasureCompiler(PlanningLevelCompiler):
         resolution_max_rows=1000000,
     ):
         super().__init__(database)
-        self.objects = {o["objectId"]: normalize_measure(o) for o in objects}
+        self.context = CompilationContext(
+            database, objects, managed, resolution_max_rows=resolution_max_rows
+        )
+        self.objects = self.context.objects
+        self.input_checks = self.context.input_checks
         self.measures = {
             k: v for k, v in self.objects.items() if v["kind"] == "measure"
         }
@@ -53,31 +57,17 @@ class MeasureCompiler(PlanningLevelCompiler):
         self.resolution_profiles = resolution_profiles or {}
         self.resolution_max_rows = resolution_max_rows
         self.transaction_relations = {}
-        self.object_inputs = {}
-        self.ctes, self.cache, self.visiting, self.nodes = {}, {}, set(), []
+        self.object_inputs = self.context.object_inputs
+        self.ctes = self.context.ctes
+        self.cache, self.visiting, self.nodes = {}, set(), []
         self.coverage_nodes = {}
         self.assertions = self.input_checks
         self.max_nodes = 1024
         self._lookup_checks = set()
 
     def object_input(self, owner, relation):
-        from .contracts import digest
-
-        pivot = owner["definition"].get("pivot")
-        if not pivot or not pivot.get("enabled", True):
-            return super().object_input(owner, relation)
-        identity = digest(
-            [
-                owner["objectId"],
-                pivot,
-                relation.get("artifactId", relation["physicalName"]),
-            ]
-        )
-        if identity not in self.object_inputs:
-            table, columns = super().object_input(owner, relation)
-            node = self.cte("SELECT * FROM " + table)
-            self.object_inputs[identity] = (q(node), columns)
-        return self.object_inputs[identity]
+        self.context.max_nodes = self.max_nodes
+        return self.context.object_input(owner, relation)
 
     def stored_measure(self, mid, level, snapshots):
         artifact = snapshots.get(level, {})
@@ -108,24 +98,11 @@ class MeasureCompiler(PlanningLevelCompiler):
         return f"SELECT {', '.join(column_sql(c) + ' AS ' + q(c['columnId']) for c in artifact['columns'])} FROM {self.table(artifact['physicalName'])} WHERE {q(GENERATION)}={lit(token(artifact))}"
 
     def cte(self, sql):
-        if len(self.ctes) >= self.max_nodes:
-            raise MetadataError(
-                "measure_graph_limit",
-                "Measure execution exceeds the configured dependency-node limit.",
-            )
-        name = "measure_node_" + str(len(self.ctes))
-        self.ctes[name] = sql
-        return name
+        self.context.max_nodes = self.max_nodes
+        return self.context.cte(sql)
 
     def with_sql(self, sql):
-        return (
-            "WITH "
-            + ", ".join(q(k) + " AS (" + v + ")" for k, v in self.ctes.items())
-            + " "
-            + sql
-            if self.ctes
-            else sql
-        )
+        return self.context.with_sql(sql)
 
     def join_keys(self, left, right, level):
         return " AND ".join(f"{left}.{q(k)} = {right}.{q(k)}" for k in self.keys(level))
@@ -219,17 +196,18 @@ class MeasureCompiler(PlanningLevelCompiler):
 
     def filter_transaction(self, transaction, resolved):
         from dataclasses import replace
+
         from .filters import FilterCompiler
 
         filters = transaction["definition"].get("filters")
         if not filters:
             return resolved
-        sql = FilterCompiler().apply(
+        sql = FilterCompiler.apply(
             "SELECT * FROM " + q(resolved.node), filters, resolved.columns
         )
         return replace(resolved, node=self.cte(sql), unfiltered_node=resolved.node)
 
-    def native(self, measure):
+    def compile_native_measure(self, measure):
         d = measure["definition"]
         level = d["nativePlanningLevelId"]
         tx = self.objects[d["transactionId"]]["definition"]
@@ -548,7 +526,7 @@ class MeasureCompiler(PlanningLevelCompiler):
         self.coverage_nodes[result] = True
         return result
 
-    def formula(self, node, measure, target, refs):
+    def compile_formula(self, node, measure, target, refs):
         kind = node["type"]
         if kind == "literal":
             return self.literal(node["value"])
@@ -568,13 +546,16 @@ class MeasureCompiler(PlanningLevelCompiler):
                 )
             return "p." + q(resolved.column_id)
         if kind == "binary":
-            left = self.formula(node["left"], measure, target, refs)
-            right = self.formula(node["right"], measure, target, refs)
+            left = self.compile_formula(node["left"], measure, target, refs)
+            right = self.compile_formula(node["right"], measure, target, refs)
             if node["operator"] == "divide":
                 return self.divide(left, right, measure)
             op = {"add": "+", "subtract": "-", "multiply": "*"}[node["operator"]]
             return f"({left}) {op} ({right})"
-        args = [self.formula(arg, measure, target, refs) for arg in node["arguments"]]
+        args = [
+            self.compile_formula(arg, measure, target, refs)
+            for arg in node["arguments"]
+        ]
         fn = {
             "abs": "abs",
             "round": "roundBankers",
@@ -594,7 +575,7 @@ class MeasureCompiler(PlanningLevelCompiler):
             )
         return value
 
-    def calculated(self, measure, target):
+    def compile_calculated_measure(self, measure, target):
         expression = measure["definition"]["formula"]["expression"]
         refs = {}
 
@@ -611,15 +592,15 @@ class MeasureCompiler(PlanningLevelCompiler):
         collect(expression)
         joins = []
         for mid, alias in refs.items():
-            dep = self.node(mid, target)
+            dep = self.compile_measure_at_level(mid, target)
             joins.append(
                 f"LEFT JOIN {q(dep)} {alias} ON " + self.join_keys("p", alias, target)
             )
-        value = self.formula(expression, measure, target, refs)
+        value = self.compile_formula(expression, measure, target, refs)
         flags = [
             f"coalesce({alias}.{q(COMPLETE)},0)"
             for mid, alias in refs.items()
-            if self.node(mid, target) in self.coverage_nodes
+            if self.compile_measure_at_level(mid, target) in self.coverage_nodes
         ]
         flag = " AND ".join(flags) if flags else "1"
         if flags:
@@ -633,7 +614,7 @@ class MeasureCompiler(PlanningLevelCompiler):
             self.coverage_nodes[result] = True
         return result
 
-    def seed(self, measure_id):
+    def compile_seed_measure(self, measure_id):
         key = (measure_id, "__native_seed")
         if key in self.cache:
             return self.cache[key]
@@ -646,9 +627,9 @@ class MeasureCompiler(PlanningLevelCompiler):
         try:
             measure = self.measures[measure_id]
             result = (
-                self.native(measure)
+                self.compile_native_measure(measure)
                 if measure["definition"]["measureType"] == "referenced"
-                else self.calculated(
+                else self.compile_calculated_measure(
                     measure, measure["definition"]["nativePlanningLevelId"]
                 )
             )
@@ -657,7 +638,7 @@ class MeasureCompiler(PlanningLevelCompiler):
         finally:
             self.visiting.remove(key)
 
-    def node(self, measure_id, target):
+    def compile_measure_at_level(self, measure_id, target):
         key = (measure_id, target)
         if key in self.cache:
             return self.cache[key]
@@ -683,19 +664,21 @@ class MeasureCompiler(PlanningLevelCompiler):
                         "measure_path_unavailable",
                         "No proven path to this calculation grain.",
                     )
-                result = self.calculated(measure, target)
+                result = self.compile_calculated_measure(measure, target)
                 operation = "recalculate"
             elif target == self.base_id:
                 if native == target:
-                    result = self.seed(measure_id)
+                    result = self.compile_seed_measure(measure_id)
                     operation = "native"
                 elif relation == "roll_down":
                     result = self.disaggregate(
-                        self.seed(measure_id), measure, native, target
+                        self.compile_seed_measure(measure_id), measure, native, target
                     )
                     operation = "disaggregate"
                 elif relation in ("same", "equivalent", "roll_up"):
-                    result = self.rollup(self.seed(measure_id), measure, native, target)
+                    result = self.rollup(
+                        self.compile_seed_measure(measure_id), measure, native, target
+                    )
                     operation = "aggregate_to_base"
                 else:
                     raise MetadataError(
@@ -712,22 +695,27 @@ class MeasureCompiler(PlanningLevelCompiler):
                 != "incompatible"
             ):
                 result = self.rollup(
-                    self.node(measure_id, self.base_id), measure, self.base_id, target
+                    self.compile_measure_at_level(measure_id, self.base_id),
+                    measure,
+                    self.base_id,
+                    target,
                 )
                 coverage = self.coverage_nodes.get(result)
                 if coverage:
                     fallback = None
                     if relation in ("same", "equivalent", "roll_up"):
-                        fallback = self.seed(measure_id)
+                        fallback = self.compile_seed_measure(measure_id)
                         if native != target:
                             fallback = self.rollup(fallback, measure, native, target)
                     result = self.with_coverage(result, coverage, target, fallback)
                 operation = "via_base"
             elif target == native:
-                result = self.seed(measure_id)
+                result = self.compile_seed_measure(measure_id)
                 operation = "native_without_base_path"
             elif relation in ("same", "equivalent", "roll_up"):
-                result = self.rollup(self.seed(measure_id), measure, native, target)
+                result = self.rollup(
+                    self.compile_seed_measure(measure_id), measure, native, target
+                )
                 operation = "aggregate_without_base_path"
             else:
                 raise MetadataError(
@@ -824,7 +812,7 @@ class MeasureCompiler(PlanningLevelCompiler):
                 dict(self.coverage_nodes),
             )
             try:
-                available[mid] = self.node(mid, target)
+                available[mid] = self.compile_measure_at_level(mid, target)
             except MetadataError as exc:
                 if exc.code not in (
                     "measure_path_unavailable",

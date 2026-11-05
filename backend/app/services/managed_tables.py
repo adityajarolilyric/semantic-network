@@ -1,3 +1,14 @@
+from ..engine.managed_inputs import ManagedInputVerifier
+from ..repositories.metadata import metadata_repositories
+from ..repositories.metadata.criteria import (
+    ArtifactLookup,
+    BindingLookup,
+    ManagedTableLookup,
+    ObjectLookup,
+    ReadLeaseLookup,
+    RevisionLookup,
+    RunLookup,
+)
 from datetime import timedelta
 from copy import deepcopy
 from uuid import uuid4
@@ -17,29 +28,28 @@ class ManagedTableService(Service):
     def __init__(self, store, settings, warehouse, registration):
         super().__init__(store, settings.max_objects_per_revision)
         self.registration = registration
-        self.planner = ManagedTablePlanner()
+        self.planner = ManagedTablePlanner
         self.compiler = ClickHouseCompiler(settings.clickhouse_database)
         self.executor = ClickHouseExecutor(warehouse)
+        self.input_verifier = ManagedInputVerifier(self)
 
     async def source(self, repo, model, revision, source):
-        return await self.require(
-            repo,
-            "semantic_objects",
-            {**scope(model, revision), "objectId": source, "kind": "source"},
+        return await metadata_repositories(repo).objects.require(
+            ObjectLookup(
+                model_id=model, revision_id=revision, object_id=source, kind="source"
+            ),
             "Source",
         )
 
     async def list(self, model, revision, cursor, limit):
-        rev = await self.require(
-            self.store.repository,
-            "semantic_revisions",
-            scope(model, revision),
-            "Revision",
+        rev = await metadata_repositories(self.store.repository).revisions.require(
+            RevisionLookup(model_id=model, revision_id=revision), "Revision"
         )
-        documents = await self.store.repository.list(
-            "semantic_managed_tables",
-            scope(model, revision),
-            key="sourceId",
+        documents = await metadata_repositories(
+            self.store.repository
+        ).managed_tables.list(
+            ManagedTableLookup(model_id=model, revision_id=revision),
+            order_by="sourceId",
             limit=self.max_objects,
         )
         if rev["metadataContractVersion"] == 1 and rev["approvalStatus"] == "published":
@@ -52,9 +62,10 @@ class ManagedTableService(Service):
                 ):
                     documents.append(self.legacy_identity(source))
         for document in documents:
-            binding = await self.store.repository.get(
-                "engine_artifact_bindings",
-                {**scope(model, revision), "sourceId": document["sourceId"]},
+            binding = await metadata_repositories(self.store.repository).bindings.find(
+                BindingLookup(
+                    model_id=model, revision_id=revision, source_id=document["sourceId"]
+                )
             )
             document["ready"] = bool(
                 binding and binding["definitionHash"] == document["definitionHash"]
@@ -84,30 +95,29 @@ class ManagedTableService(Service):
         }
 
     async def get(self, model, revision, source):
-        current = await self.store.repository.get(
-            "semantic_managed_tables", {**scope(model, revision), "sourceId": source}
+        current = await metadata_repositories(
+            self.store.repository
+        ).managed_tables.find(
+            ManagedTableLookup(model_id=model, revision_id=revision, source_id=source)
         )
         if current:
             return current
-        rev = await self.require(
-            self.store.repository,
-            "semantic_revisions",
-            scope(model, revision),
-            "Revision",
+        rev = await metadata_repositories(self.store.repository).revisions.require(
+            RevisionLookup(model_id=model, revision_id=revision), "Revision"
         )
         if rev["metadataContractVersion"] == 1 and rev["approvalStatus"] == "published":
             raw = await self.source(self.store.repository, model, revision, source)
             return self.legacy_identity(raw)
-        return await self.require(
-            self.store.repository,
-            "semantic_managed_tables",
-            {**scope(model, revision), "sourceId": source},
+        return await metadata_repositories(
+            self.store.repository
+        ).managed_tables.require(
+            ManagedTableLookup(model_id=model, revision_id=revision, source_id=source),
             "Managed table",
         )
 
     async def enable(self, model, revision, table, key):
-        replay = await self.store.repository.get(
-            "engine_runs", {**scope(model, revision), "idempotencyKey": key}
+        replay = await metadata_repositories(self.store.repository).runs.find(
+            RunLookup(model_id=model, revision_id=revision, idempotency_key=key)
         )
         if replay:
             if (
@@ -144,8 +154,13 @@ class ManagedTableService(Service):
                 source = await self.source(
                     self.store.repository, model, revision, source_id
                 )
-        query = {**scope(model, revision), "sourceId": source["objectId"]}
-        current = await self.store.repository.get("semantic_managed_tables", query)
+        current = await metadata_repositories(
+            self.store.repository
+        ).managed_tables.find(
+            ManagedTableLookup(
+                model_id=model, revision_id=revision, source_id=source["objectId"]
+            )
+        )
         definition = (
             self.input_definition(current["definition"])
             if current
@@ -188,8 +203,8 @@ class ManagedTableService(Service):
                 400,
             )
         request_hash = digest([source_id, payload.model_dump(), expected, repair])
-        previous = await self.store.repository.get(
-            "engine_runs", {**scope(model, revision), "idempotencyKey": key}
+        previous = await metadata_repositories(self.store.repository).runs.find(
+            RunLookup(model_id=model, revision_id=revision, idempotency_key=key)
         )
         if previous:
             if previous["requestHash"] != request_hash:
@@ -200,19 +215,25 @@ class ManagedTableService(Service):
 
         async def operation(repo):
             query = scope(model, revision)
-            previous = await repo.get("engine_runs", {**query, "idempotencyKey": key})
+            previous = await metadata_repositories(repo).runs.find(
+                RunLookup(model_id=model, revision_id=revision, idempotency_key=key)
+            )
             if previous:
                 if previous["requestHash"] != request_hash:
                     raise Conflict(
                         "This idempotency key was already used for another request."
                     )
                 return self.public_run(previous)
-            rev = await self.require(repo, "semantic_revisions", query, "Revision")
+            rev = await metadata_repositories(repo).revisions.require(
+                RevisionLookup(model_id=model, revision_id=revision), "Revision"
+            )
             if rev["approvalStatus"] != "draft" and not repair:
                 raise ImmutableRevision()
             source = await self.source(repo, model, revision, source_id)
-            current = await repo.get(
-                "semantic_managed_tables", {**query, "sourceId": source_id}
+            current = await metadata_repositories(repo).managed_tables.find(
+                ManagedTableLookup(
+                    model_id=model, revision_id=revision, source_id=source_id
+                )
             )
             if (current["version"] if current else 0) != expected:
                 raise Conflict()
@@ -230,8 +251,10 @@ class ManagedTableService(Service):
                     )
             plan = self.planner.plan(source, payload)
             objects = await self.objects(repo, model, revision)
-            managed = await repo.list(
-                "semantic_managed_tables", query, key="sourceId", limit=self.max_objects
+            managed = await metadata_repositories(repo).managed_tables.list(
+                ManagedTableLookup(model_id=model, revision_id=revision),
+                order_by="sourceId",
+                limit=self.max_objects,
             )
             candidate = {"sourceId": source_id, "definition": plan.definition}
             effective = EffectiveSchemaResolver.apply(
@@ -266,14 +289,12 @@ class ManagedTableService(Service):
                 "updatedAt": now(),
                 "error": None,
             }
-            await repo.insert("engine_runs", run)
+            await metadata_repositories(repo).runs.insert(run)
             for obj in objects:
-                await repo.insert(
-                    "engine_run_inputs",
-                    {"runId": run_id, "inputId": obj["objectId"], "document": obj},
+                await metadata_repositories(repo).inputs.insert(
+                    {"runId": run_id, "inputId": obj["objectId"], "document": obj}
                 )
-            await repo.insert(
-                "engine_artifacts",
+            await metadata_repositories(repo).artifacts.insert(
                 {
                     **query,
                     "sourceId": source_id,
@@ -284,7 +305,7 @@ class ManagedTableService(Service):
                     "columns": plan.definition["columns"],
                     "state": "candidate",
                     "createdAt": now(),
-                },
+                }
             )
             return self.public_run(run)
 
@@ -292,8 +313,8 @@ class ManagedTableService(Service):
             return await self.store.transaction(operation)
         except Conflict:
             # A competing API process may have committed this same request/key.
-            previous = await self.store.repository.get(
-                "engine_runs", {**scope(model, revision), "idempotencyKey": key}
+            previous = await metadata_repositories(self.store.repository).runs.find(
+                RunLookup(model_id=model, revision_id=revision, idempotency_key=key)
             )
             if previous and previous["requestHash"] == request_hash:
                 return self.public_run(previous)
@@ -316,18 +337,17 @@ class ManagedTableService(Service):
         return result
 
     async def run_status(self, model, revision, run_id):
-        run = await self.require(
-            self.store.repository,
-            "engine_runs",
-            {**scope(model, revision), "runId": run_id},
-            "Engine run",
+        run = await metadata_repositories(self.store.repository).runs.require(
+            RunLookup(model_id=model, revision_id=revision, run_id=run_id), "Engine run"
         )
         return self.public_run(run)
 
     async def cancel(self, model, revision, run_id):
         async def operation(repo):
-            query = {**scope(model, revision), "runId": run_id}
-            run = await self.require(repo, "engine_runs", query, "Engine run")
+            run = await metadata_repositories(repo).runs.require(
+                RunLookup(model_id=model, revision_id=revision, run_id=run_id),
+                "Engine run",
+            )
             if run["state"] in ("queued", "running"):
                 run = {
                     **run,
@@ -335,7 +355,9 @@ class ManagedTableService(Service):
                     "fence": run["fence"] + 1,
                     "updatedAt": now(),
                 }
-                await repo.replace("engine_runs", query, run)
+                await metadata_repositories(repo).runs.replace(
+                    RunLookup(model_id=model, revision_id=revision, run_id=run_id), run
+                )
             return self.public_run(run)
 
         return await self.store.transaction(operation)
@@ -344,10 +366,10 @@ class ManagedTableService(Service):
         async def operation(repo):
             rev = await self.touch_revision(repo, model, revision)
             source = await self.source(repo, model, revision, source_id)
-            managed = await self.require(
-                repo,
-                "semantic_managed_tables",
-                {**scope(model, revision), "sourceId": source_id},
+            managed = await metadata_repositories(repo).managed_tables.require(
+                ManagedTableLookup(
+                    model_id=model, revision_id=revision, source_id=source_id
+                ),
                 "Managed table",
             )
             self.check_version(managed, expected)
@@ -362,18 +384,19 @@ class ManagedTableService(Service):
                 [updated if o["objectId"] == source_id else o for o in objects],
             )
             self.validate(effective, rev["basePlanningLevelId"])
-            await repo.replace(
-                "semantic_objects",
-                {
-                    **scope(model, revision),
-                    "objectId": source_id,
-                    "version": source["version"],
-                },
+            await metadata_repositories(repo).objects.replace(
+                ObjectLookup(
+                    model_id=model,
+                    revision_id=revision,
+                    object_id=source_id,
+                    version=source["version"],
+                ),
                 updated,
             )
-            await repo.replace(
-                "semantic_managed_tables",
-                {**scope(model, revision), "sourceId": source_id},
+            await metadata_repositories(repo).managed_tables.replace(
+                ManagedTableLookup(
+                    model_id=model, revision_id=revision, source_id=source_id
+                ),
                 {**managed, "version": expected + 1, "updatedAt": now()},
             )
 
@@ -390,19 +413,20 @@ class ManagedTableService(Service):
         if payload is None:
             current = await self.get(model, revision, source_id)
             payload = self.input_definition(current["definition"])
-            binding = await self.require(
-                self.store.repository,
-                "engine_artifact_bindings",
-                {**scope(model, revision), "sourceId": source_id},
+            binding = await metadata_repositories(
+                self.store.repository
+            ).bindings.require(
+                BindingLookup(
+                    model_id=model, revision_id=revision, source_id=source_id
+                ),
                 "Active managed view; build this table first",
             )
             if binding["definitionHash"] != current["definitionHash"]:
                 raise Conflict("The managed view is not ready for this definition.")
-            artifact = await self.require(
-                self.store.repository,
-                "engine_artifacts",
-                {"artifactId": binding["artifactId"]},
-                "Artifact",
+            artifact = await metadata_repositories(
+                self.store.repository
+            ).artifacts.require(
+                ArtifactLookup(artifact_id=binding["artifactId"]), "Artifact"
             )
             table = artifact["physicalName"]
         await self.executor.inspect(source)
@@ -420,37 +444,32 @@ class ManagedTableService(Service):
 
         async def capture(repo):
             source = await self.source(repo, model, revision, source_id)
-            current = await self.require(
-                repo,
-                "semantic_managed_tables",
-                {**scope(model, revision), "sourceId": source_id},
+            current = await metadata_repositories(repo).managed_tables.require(
+                ManagedTableLookup(
+                    model_id=model, revision_id=revision, source_id=source_id
+                ),
                 "Managed definition",
             )
-            binding = await self.require(
-                repo,
-                "engine_artifact_bindings",
-                {**scope(model, revision), "sourceId": source_id},
+            binding = await metadata_repositories(repo).bindings.require(
+                BindingLookup(
+                    model_id=model, revision_id=revision, source_id=source_id
+                ),
                 "Saved managed view; save this table first",
             )
             if binding["definitionHash"] != current["definitionHash"]:
                 raise Conflict(
                     "Save and build the current managed view before discovering values."
                 )
-            artifact = await self.require(
-                repo,
-                "engine_artifacts",
-                {"artifactId": binding["artifactId"]},
-                "Managed view",
+            artifact = await metadata_repositories(repo).artifacts.require(
+                ArtifactLookup(artifact_id=binding["artifactId"]), "Managed view"
             )
             if artifact["state"] != "ready":
                 raise Conflict("The managed view is no longer ready. Retry discovery.")
-            await repo.replace(
-                "engine_artifacts",
-                {"artifactId": artifact["artifactId"]},
+            await metadata_repositories(repo).artifacts.replace(
+                ArtifactLookup(artifact_id=artifact["artifactId"]),
                 {**artifact, "pinVersion": artifact.get("pinVersion", 0) + 1},
             )
-            await repo.insert(
-                "engine_read_leases",
+            await metadata_repositories(repo).read_leases.insert(
                 {
                     "readId": read_id,
                     "artifactId": artifact["artifactId"],
@@ -462,12 +481,11 @@ class ManagedTableService(Service):
                             + 60,
                         )
                     ),
-                },
+                }
             )
             return source, current, artifact
 
         source, current, artifact = await self.store.transaction(capture)
-        identity = {"readId": read_id, "artifactId": artifact["artifactId"]}
         try:
             await self.executor.inspect(source)
             compiled = self.compiler.compile(
@@ -487,10 +505,13 @@ class ManagedTableService(Service):
             )
 
             async def verify(repo):
-                lease = await repo.get("engine_read_leases", identity)
-                binding = await repo.get(
-                    "engine_artifact_bindings",
-                    {**scope(model, revision), "sourceId": source_id},
+                lease = await metadata_repositories(repo).read_leases.find(
+                    ReadLeaseLookup(read_id=read_id, artifact_id=artifact["artifactId"])
+                )
+                binding = await metadata_repositories(repo).bindings.find(
+                    BindingLookup(
+                        model_id=model, revision_id=revision, source_id=source_id
+                    )
                 )
                 if (
                     not lease
@@ -503,13 +524,15 @@ class ManagedTableService(Service):
             await self.store.transaction(verify)
             return {**result, "artifactId": artifact["artifactId"]}
         finally:
-            await self.store.repository.delete("engine_read_leases", identity)
+            await metadata_repositories(self.store.repository).read_leases.delete(
+                ReadLeaseLookup(read_id=read_id, artifact_id=artifact["artifactId"])
+            )
 
     async def preflight(self, model, revision):
         """Check outside Mongo transaction, then publication must compare revision version."""
         repo = self.store.repository
-        rev = await self.require(
-            repo, "semantic_revisions", scope(model, revision), "Revision"
+        rev = await metadata_repositories(repo).revisions.require(
+            RevisionLookup(model_id=model, revision_id=revision), "Revision"
         )
         if rev["metadataContractVersion"] < 2:
             return rev["version"]
@@ -517,10 +540,10 @@ class ManagedTableService(Service):
             if source["kind"] != "source" or not source["definition"]["inScope"]:
                 continue
             current = await self.get(model, revision, source["objectId"])
-            binding = await self.require(
-                repo,
-                "engine_artifact_bindings",
-                {**scope(model, revision), "sourceId": source["objectId"]},
+            binding = await metadata_repositories(repo).bindings.require(
+                BindingLookup(
+                    model_id=model, revision_id=revision, source_id=source["objectId"]
+                ),
                 "Ready managed view",
             )
             if binding["definitionHash"] != current["definitionHash"]:
@@ -529,11 +552,8 @@ class ManagedTableService(Service):
             compiled = self.compiler.compile(
                 self.planner.plan(source, self.input_definition(current["definition"]))
             )
-            artifact = await self.require(
-                repo,
-                "engine_artifacts",
-                {"artifactId": binding["artifactId"]},
-                "Managed artifact",
+            artifact = await metadata_repositories(repo).artifacts.require(
+                ArtifactLookup(artifact_id=binding["artifactId"]), "Managed artifact"
             )
             await self.executor.verify(artifact, compiled)
             await self.executor.checks(compiled)
@@ -541,24 +561,28 @@ class ManagedTableService(Service):
 
     async def upgrade_contract(self, model, revision, expected):
         async def operation(repo):
-            rev = await self.require(
-                repo, "semantic_revisions", scope(model, revision), "Revision"
+            rev = await metadata_repositories(repo).revisions.require(
+                RevisionLookup(model_id=model, revision_id=revision), "Revision"
             )
             self.check_version(rev, expected)
             if rev["approvalStatus"] != "draft":
                 raise ImmutableRevision()
             for source in await self.objects(repo, model, revision):
                 if source["kind"] == "source" and source["definition"]["inScope"]:
-                    current = await self.require(
-                        repo,
-                        "semantic_managed_tables",
-                        {**scope(model, revision), "sourceId": source["objectId"]},
+                    current = await metadata_repositories(repo).managed_tables.require(
+                        ManagedTableLookup(
+                            model_id=model,
+                            revision_id=revision,
+                            source_id=source["objectId"],
+                        ),
                         "Initialized managed definition",
                     )
-                    binding = await self.require(
-                        repo,
-                        "engine_artifact_bindings",
-                        {**scope(model, revision), "sourceId": source["objectId"]},
+                    binding = await metadata_repositories(repo).bindings.require(
+                        BindingLookup(
+                            model_id=model,
+                            revision_id=revision,
+                            source_id=source["objectId"],
+                        ),
                         "Ready managed view",
                     )
                     if current["definitionHash"] != binding["definitionHash"]:
@@ -571,9 +595,8 @@ class ManagedTableService(Service):
                 "version": expected + 1,
                 "updatedAt": now(),
             }
-            await repo.replace(
-                "semantic_revisions",
-                {**scope(model, revision), "version": expected},
+            await metadata_repositories(repo).revisions.replace(
+                RevisionLookup(model_id=model, revision_id=revision, version=expected),
                 updated,
             )
             return updated

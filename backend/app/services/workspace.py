@@ -1,3 +1,5 @@
+from ..repositories.metadata import metadata_repositories
+from ..repositories.metadata.criteria import ModelLookup
 from .base import Service, now
 
 
@@ -8,7 +10,9 @@ class WorkspaceService(Service):
         return await self.store.transaction(self.initialize)
 
     async def initialize(self, repo):
-        models = await repo.list("semantic_models", {}, key="modelId", limit=1)
+        models = await metadata_repositories(repo).models.list(
+            ModelLookup(), order_by="modelId", limit=1
+        )
         if models:
             return models[0]
         timestamp = now()
@@ -24,9 +28,8 @@ class WorkspaceService(Service):
             "createdAt": timestamp,
             "updatedAt": timestamp,
         }
-        await repo.insert("semantic_models", model)
-        await repo.insert(
-            "semantic_revisions",
+        await metadata_repositories(repo).models.insert(model)
+        await metadata_repositories(repo).revisions.insert(
             {
                 "modelId": "default_model",
                 "revisionId": "revision_1",
@@ -40,6 +43,6 @@ class WorkspaceService(Service):
                 "createdAt": timestamp,
                 "updatedAt": timestamp,
                 "publishedAt": None,
-            },
+            }
         )
         return model

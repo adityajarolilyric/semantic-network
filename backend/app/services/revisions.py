@@ -1,23 +1,31 @@
+from ..repositories.metadata import metadata_repositories
+from ..repositories.metadata.records import RecordCategory
+from ..repositories.metadata.criteria import (
+    ManagedTableLookup,
+    ModelLookup,
+    RecordLookup,
+    RevisionLookup,
+)
 from ..core.errors import Conflict, ImmutableRevision
 from ..validation.graph import SemanticGraphValidator
-from .base import Service, now, scope
+from .base import Service, now
 
 
 class RevisionService(Service):
     async def create(self, model_id, payload):
         async def operation(repo):
-            model = await self.require(
-                repo, "semantic_models", {"modelId": model_id}, "Model"
+            model = await metadata_repositories(repo).models.require(
+                ModelLookup(model_id=model_id), "Model"
             )
             self.check_version(model, payload.expectedModelVersion)
             if model["draftRevisionId"] is not None:
                 raise Conflict("This model already has a draft revision.")
             parent_objects = []
             if payload.parentRevisionId:
-                parent = await self.require(
-                    repo,
-                    "semantic_revisions",
-                    scope(model_id, payload.parentRevisionId),
+                parent = await metadata_repositories(repo).revisions.require(
+                    RevisionLookup(
+                        model_id=model_id, revision_id=payload.parentRevisionId
+                    ),
                     "Parent revision",
                 )
                 if parent["approvalStatus"] != "published":
@@ -48,56 +56,63 @@ class RevisionService(Service):
                 "updatedAt": timestamp,
                 "publishedAt": None,
             }
-            await repo.insert("semantic_revisions", document)
+            await metadata_repositories(repo).revisions.insert(document)
             for obj in parent_objects:
-                await repo.insert(
-                    "semantic_objects",
+                await metadata_repositories(repo).objects.insert(
                     {
                         **obj,
                         "revisionId": payload.revisionId,
                         "version": 1,
                         "createdAt": timestamp,
                         "updatedAt": timestamp,
-                    },
+                    }
                 )
             if payload.parentRevisionId:
-                managed = await repo.list(
-                    "semantic_managed_tables",
-                    scope(model_id, payload.parentRevisionId),
-                    key="sourceId",
+                managed = await metadata_repositories(repo).managed_tables.list(
+                    ManagedTableLookup(
+                        model_id=model_id, revision_id=payload.parentRevisionId
+                    ),
+                    order_by="sourceId",
                     limit=self.max_objects,
                 )
                 for item in managed:
-                    await repo.insert(
-                        "semantic_managed_tables",
+                    await metadata_repositories(repo).managed_tables.insert(
                         {
                             **item,
                             "revisionId": payload.revisionId,
                             "version": 1,
                             "createdAt": timestamp,
                             "updatedAt": timestamp,
-                        },
+                        }
                     )
-                examples = await repo.list(
-                    "semantic_examples",
-                    scope(model_id, payload.parentRevisionId),
-                    key="recordId",
-                    limit=self.max_objects + 1,
+                examples = (
+                    await metadata_repositories(repo)
+                    .records(RecordCategory.EXAMPLE)
+                    .list(
+                        RecordLookup(
+                            model_id=model_id, revision_id=payload.parentRevisionId
+                        ),
+                        order_by="recordId",
+                        limit=self.max_objects + 1,
+                    )
                 )
                 if len(examples) > self.max_objects:
                     raise Conflict(
                         "Parent revision exceeds the configured example limit."
                     )
                 for example in examples:
-                    await repo.insert(
-                        "semantic_examples",
-                        {
-                            **example,
-                            "revisionId": payload.revisionId,
-                            "version": 1,
-                            "createdAt": timestamp,
-                            "updatedAt": timestamp,
-                        },
+                    await (
+                        metadata_repositories(repo)
+                        .records(RecordCategory.EXAMPLE)
+                        .insert(
+                            {
+                                **example,
+                                "revisionId": payload.revisionId,
+                                "version": 1,
+                                "createdAt": timestamp,
+                                "updatedAt": timestamp,
+                            }
+                        )
                     )
             updated = {
                 **model,
@@ -106,10 +121,8 @@ class RevisionService(Service):
                 "version": model["version"] + 1,
                 "updatedAt": timestamp,
             }
-            if not await repo.replace(
-                "semantic_models",
-                {"modelId": model_id, "version": model["version"]},
-                updated,
+            if not await metadata_repositories(repo).models.replace(
+                ModelLookup(model_id=model_id, version=model["version"]), updated
             ):
                 raise Conflict()
             return document
@@ -117,25 +130,23 @@ class RevisionService(Service):
         return await self.store.transaction(operation)
 
     async def get(self, model_id, revision_id):
-        return await self.require(
-            self.store.repository,
-            "semantic_revisions",
-            scope(model_id, revision_id),
-            "Revision",
+        return await metadata_repositories(self.store.repository).revisions.require(
+            RevisionLookup(model_id=model_id, revision_id=revision_id), "Revision"
         )
 
     async def list(self, model_id, cursor, limit):
-        await self.require(
-            self.store.repository, "semantic_models", {"modelId": model_id}, "Model"
+        await metadata_repositories(self.store.repository).models.require(
+            ModelLookup(model_id=model_id), "Model"
         )
-        return await self.page(
-            "semantic_revisions", {"modelId": model_id}, "revisionId", cursor, limit
+        return await metadata_repositories(self.store.repository).revisions.page(
+            RevisionLookup(model_id=model_id), cursor, limit
         )
 
     async def update(self, model_id, revision_id, payload, expected):
         async def operation(repo):
-            query = scope(model_id, revision_id)
-            revision = await self.require(repo, "semantic_revisions", query, "Revision")
+            revision = await metadata_repositories(repo).revisions.require(
+                RevisionLookup(model_id=model_id, revision_id=revision_id), "Revision"
+            )
             self.check_version(revision, expected)
             if revision["approvalStatus"] != "draft":
                 raise ImmutableRevision()
@@ -164,8 +175,11 @@ class RevisionService(Service):
                 "version": expected + 1,
                 "updatedAt": now(),
             }
-            if not await repo.replace(
-                "semantic_revisions", {**query, "version": expected}, updated
+            if not await metadata_repositories(repo).revisions.replace(
+                RevisionLookup(
+                    model_id=model_id, revision_id=revision_id, version=expected
+                ),
+                updated,
             ):
                 raise Conflict()
             return updated
@@ -174,8 +188,8 @@ class RevisionService(Service):
 
     async def validate_revision(self, model_id, revision_id):
         async def operation(repo):
-            revision = await self.require(
-                repo, "semantic_revisions", scope(model_id, revision_id), "Revision"
+            revision = await metadata_repositories(repo).revisions.require(
+                RevisionLookup(model_id=model_id, revision_id=revision_id), "Revision"
             )
             objects = await self.objects(repo, model_id, revision_id)
             return SemanticGraphValidator().validate(
@@ -196,13 +210,14 @@ class RevisionService(Service):
                 await self.planning_builds.preflight(model_id, revision_id)
 
         async def operation(repo):
-            query = scope(model_id, revision_id)
-            revision = await self.require(repo, "semantic_revisions", query, "Revision")
+            revision = await metadata_repositories(repo).revisions.require(
+                RevisionLookup(model_id=model_id, revision_id=revision_id), "Revision"
+            )
             self.check_version(revision, expected)
             if revision["approvalStatus"] != "draft":
                 raise ImmutableRevision()
-            model = await self.require(
-                repo, "semantic_models", {"modelId": model_id}, "Model"
+            model = await metadata_repositories(repo).models.require(
+                ModelLookup(model_id=model_id), "Model"
             )
             self.check_version(model, payload.expectedModelVersion)
             if model["draftRevisionId"] != revision_id:
@@ -225,9 +240,13 @@ class RevisionService(Service):
                 "updatedAt": timestamp,
                 "publishedAt": timestamp,
             }
-            if not await repo.replace(
-                "semantic_revisions",
-                {**query, "version": expected, "approvalStatus": "draft"},
+            if not await metadata_repositories(repo).revisions.replace(
+                RevisionLookup(
+                    model_id=model_id,
+                    revision_id=revision_id,
+                    version=expected,
+                    approval_status="draft",
+                ),
                 updated_revision,
             ):
                 raise Conflict()
@@ -238,10 +257,8 @@ class RevisionService(Service):
                 "version": model["version"] + 1,
                 "updatedAt": timestamp,
             }
-            if not await repo.replace(
-                "semantic_models",
-                {"modelId": model_id, "version": model["version"]},
-                updated_model,
+            if not await metadata_repositories(repo).models.replace(
+                ModelLookup(model_id=model_id, version=model["version"]), updated_model
             ):
                 raise Conflict()
             return updated_revision
@@ -250,29 +267,24 @@ class RevisionService(Service):
 
     async def delete(self, model_id, revision_id, expected):
         async def operation(repo):
-            query = scope(model_id, revision_id)
-            revision = await self.require(repo, "semantic_revisions", query, "Revision")
+            revision = await metadata_repositories(repo).revisions.require(
+                RevisionLookup(model_id=model_id, revision_id=revision_id), "Revision"
+            )
             self.check_version(revision, expected)
             if revision["approvalStatus"] != "draft":
                 raise ImmutableRevision()
-            for collection, key in [
-                ("semantic_objects", "objectId"),
-                ("semantic_managed_tables", "sourceId"),
-                ("semantic_evidence", "recordId"),
-                ("semantic_examples", "recordId"),
-            ]:
-                await self.ensure_empty(
-                    repo,
-                    collection,
-                    query,
-                    key,
-                    "Delete revision contents explicitly before deleting the draft.",
-                )
-            model = await self.require(
-                repo, "semantic_models", {"modelId": model_id}, "Model"
+            await metadata_repositories(repo).ensure_revision_empty(
+                model_id,
+                revision_id,
+                "Delete revision contents explicitly before deleting the draft.",
             )
-            if not await repo.delete(
-                "semantic_revisions", {**query, "version": expected}
+            model = await metadata_repositories(repo).models.require(
+                ModelLookup(model_id=model_id), "Model"
+            )
+            if not await metadata_repositories(repo).revisions.delete(
+                RevisionLookup(
+                    model_id=model_id, revision_id=revision_id, version=expected
+                )
             ):
                 raise Conflict()
             if model["draftRevisionId"] == revision_id:
@@ -282,10 +294,8 @@ class RevisionService(Service):
                     "version": model["version"] + 1,
                     "updatedAt": now(),
                 }
-                if not await repo.replace(
-                    "semantic_models",
-                    {"modelId": model_id, "version": model["version"]},
-                    updated,
+                if not await metadata_repositories(repo).models.replace(
+                    ModelLookup(model_id=model_id, version=model["version"]), updated
                 ):
                     raise Conflict()
 

@@ -4,10 +4,10 @@ from ..core.http import expected_version
 from ..schemas.common import Identifier
 from ..schemas.managed_tables import ObjectInputTransform
 from ..schemas.transactions import (
-    TransactionDocument,
-    TransactionInput,
     CalendarSchemaInput,
+    TransactionDocument,
     TransactionFromGrainInput,
+    TransactionInput,
 )
 from ..services.transactions import TransactionService
 from .base import RevisionResourceAPI
@@ -76,9 +76,7 @@ class TransactionAPI(RevisionResourceAPI):
         revision_id: Identifier,
         payload: ObjectInputTransform,
     ):
-        return await self.resolution.preview(
-            model_id, revision_id, payload, input_only=True
-        )
+        return await self.resolution.preview_input(model_id, revision_id, payload)
 
     async def calendar_schema(
         self,
@@ -94,9 +92,7 @@ class TransactionAPI(RevisionResourceAPI):
         revision_id: Identifier,
         payload: CalendarSchemaInput,
     ):
-        return await self.resolution.preview(
-            model_id, revision_id, payload, calendar_only=True
-        )
+        return await self.resolution.preview_calendar(model_id, revision_id, payload)
 
     async def options(
         self,

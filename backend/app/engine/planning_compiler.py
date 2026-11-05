@@ -20,7 +20,7 @@ class PlanningLevelCompiler(ClickHouseCompiler):
     def filter_sql(self, definition, available):
         from .filters import FilterCompiler
 
-        return FilterCompiler().compile(definition, available)
+        return FilterCompiler.compile(definition, available)
 
     def reduced_lookup(self, sql, keys, attributes):
         """Membership or functional enrichment, independent of raw member count."""
@@ -136,3 +136,16 @@ class PlanningLevelCompiler(ClickHouseCompiler):
             plan.schema,
             "planning-v4-plain-output-names-sqlglot-27.28.1",
         )
+
+
+class PlanningCompiler:
+    """Application-scoped facade; mutable compilation state stays operation-local."""
+
+    def __init__(self, database):
+        self.database = database
+
+    def compile(self, plan):
+        return PlanningLevelCompiler(self.database).compile(plan)
+
+    def render(self, node):
+        return PlanningLevelCompiler(self.database).render(node)

@@ -716,13 +716,7 @@ async def prepare_resolution_profiles(warehouse, objects, managed, limit, settin
         if compiler:
             sql = compiler.with_sql(sql)
 
-        def discover(connect):
-            return [
-                tuple(int(v) for v in row[0])
-                for row in connect().query(sql, settings=settings).result_rows
-            ]
-
-        profiles = await warehouse.run(discover)
+        profiles = await warehouse.queries.resolution_profiles(sql, settings)
         planner.validate_profiles(profiles, limit)
         result[tx["objectId"]] = profiles
     return result

@@ -16,15 +16,21 @@ app/
                    PlanningLevelAPI, TransactionAPI, MeasureAPI,
                    EvidenceAPI, ExampleAPI, ContractAPI, WarehouseSourcesAPI, HealthAPI
   schemas/         Typed Pydantic request/response models, one domain per module
-  services/        Context-specific classes and reusable CRUD invariants
+  services/        Capture intent, CRUD, build submission and read/query services
+  domain/          Measure normalisation and numeric/NULL policies
+  engine/          Plans, compilation contexts, job handlers, activation and storage
   validation/      Cross-document references, grain identity, formulas, lineage
-  repositories/    Persistence interfaces and asynchronous PyMongo implementation
-  warehouse/       CSV parser, source service, ClickHouse repository, response schemas
+  repositories/    Typed metadata repositories, transaction-scoped bindings and Mongo adapter
+  warehouse/       ClickHouse client, queries, execution/storage/retention adapters and CSV ingestion
   db/              MongoDB collection envelope validators
   core/            Configuration, preconditions, errors, authentication, logging
   container.py     Explicit service dependency wiring
   main.py          Application factory, lifespan, router and exception registration
 ```
+
+Backend module boundaries and compatibility guarantees are documented in [engine structure](../docs/ENGINE_AND_STORAGE.md#backend-module-boundaries).
+
+Services and engine coordinators consume repository/warehouse methods, with no clients, raw MongoDB selectors or SQL execution. Stateless dependencies are app-scoped; repositories are cached per read adapter or Mongo transaction attempt. Stateful compilation/validation stays operation-local. See [persistence boundaries and lifetimes](../docs/ENGINE_AND_STORAGE.md#persistence-boundaries-and-component-lifetimes).
 
 Each context's routes are registered by its own API class and module. `RevisionResourceAPI` shares pagination, ETags, and delete mechanics; its concrete subclasses declare resource-specific typed bodies. A router registry in `main.py` wires classes together and contains no CRUD handlers.
 

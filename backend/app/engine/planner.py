@@ -31,7 +31,8 @@ def pivot_operation(stage):
 class ManagedTablePlanner:
     """Allowlisted operators. Stable output identity excludes alias, order and revision."""
 
-    def plan(self, source, definition: ManagedDefinition):
+    @staticmethod
+    def plan(source, definition: ManagedDefinition):
         spec = definition.model_dump()
         # Omitted mode preserves historical definitions/hashes and merge semantics.
         for stage in spec["pipeline"]:

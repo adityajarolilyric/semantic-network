@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from functools import cached_property
 import asyncio
 from datetime import date, datetime
 from decimal import Decimal
@@ -32,6 +33,12 @@ class WarehouseUnavailable(MetadataError):
 
 
 class WarehouseRepository(ABC):
+    @cached_property
+    def queries(self):
+        from .query_execution import WarehouseQueryExecutor
+
+        return WarehouseQueryExecutor(self)
+
     @abstractmethod
     async def ping(self) -> None: ...
 

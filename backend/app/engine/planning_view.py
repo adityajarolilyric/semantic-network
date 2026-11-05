@@ -3,9 +3,10 @@
 from dataclasses import dataclass, replace
 
 from ..core.errors import MetadataError
-from ..warehouse.repository import quote_identifier as q, quote_literal as lit
+from ..warehouse.repository import quote_identifier as q
+from ..warehouse.repository import quote_literal as lit
 from .contracts import ExecutionPlan, RelationSchema
-from .measure_compiler import MeasureCompiler, VALUE, COMPLETE
+from .measure_compiler import COMPLETE, VALUE, MeasureCompiler
 from .relationships import Coordinate, LevelRelationshipAnalyzer
 from .table_storage import GENERATION, column_sql, token
 
@@ -421,9 +422,9 @@ class PlanningViewCompiler(MeasureCompiler):
             self.coverage_nodes[result] = True
         return result
 
-    def node(self, measure_id, target):
+    def compile_measure_at_level(self, measure_id, target):
         if target != TARGET:
-            return super().node(measure_id, target)
+            return super().compile_measure_at_level(measure_id, target)
         key = (measure_id, target)
         if key in self.cache:
             return self.cache[key]
@@ -450,7 +451,7 @@ class PlanningViewCompiler(MeasureCompiler):
                             "measure_path_unavailable",
                             "The calculation has no path to the requested grain.",
                         )
-                result = self.calculated(measure, TARGET)
+                result = self.compile_calculated_measure(measure, TARGET)
             else:
                 query = self.stored_value(measure_id, self.view.level_id)
                 result = self.aggregate_view(query, measure)
@@ -489,7 +490,7 @@ class PlanningViewCompiler(MeasureCompiler):
     def compile(self, measure_ids):
         joins, selected = [], ["p." + q(k) + " AS " + q(k) for k in self.keys(TARGET)]
         for index, mid in enumerate(measure_ids):
-            node = self.node(mid, TARGET)
+            node = self.compile_measure_at_level(mid, TARGET)
             alias = f"v{index}"
             joins.append(
                 f"LEFT JOIN {q(node)} {alias} ON " + self.join_keys("p", alias, TARGET)

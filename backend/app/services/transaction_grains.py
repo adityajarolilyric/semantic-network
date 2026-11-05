@@ -1,5 +1,8 @@
 """Transaction onboarding creates ordinary semantic objects, not a new mapping mode."""
 
+from ..repositories.metadata import metadata_repositories
+from ..repositories.metadata.criteria import RevisionLookup
+
 from ..core.errors import Conflict, ImmutableRevision, MetadataError
 from ..engine.contracts import digest
 from ..schemas.planning_levels import PlanningLevelInput
@@ -110,8 +113,8 @@ class TransactionGrainService(Service):
 
     async def create(self, model, revision, payload):
         async def operation(repo):
-            rev = await self.require(
-                repo, "semantic_revisions", scope(model, revision), "Revision"
+            rev = await metadata_repositories(repo).revisions.require(
+                RevisionLookup(model_id=model, revision_id=revision), "Revision"
             )
             if rev["approvalStatus"] != "draft":
                 raise ImmutableRevision()
@@ -155,11 +158,10 @@ class TransactionGrainService(Service):
                 await self.effective(repo, model, revision, [*objects, *docs]), base
             )
             for doc in docs:
-                await repo.insert("semantic_objects", doc)
+                await metadata_repositories(repo).objects.insert(doc)
             if base != rev["basePlanningLevelId"]:
-                await repo.replace(
-                    "semantic_revisions",
-                    scope(model, revision),
+                await metadata_repositories(repo).revisions.replace(
+                    RevisionLookup(model_id=model, revision_id=revision),
                     {**rev, "basePlanningLevelId": base},
                 )
             return {"planningLevel": docs[0], "transaction": docs[1]}

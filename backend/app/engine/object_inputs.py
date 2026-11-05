@@ -12,7 +12,7 @@ def input_plan(owner, columns, physical_name="input"):
         "objectId": owner["objectId"],
         "definition": {"tableName": physical_name, "columns": columns},
     }
-    return ManagedTablePlanner().plan(source, ManagedDefinition(pipeline=[pivot]))
+    return ManagedTablePlanner.plan(source, ManagedDefinition(pipeline=[pivot]))
 
 
 def input_columns(owner, columns):

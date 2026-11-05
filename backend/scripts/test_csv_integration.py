@@ -1,11 +1,11 @@
 """Test CSV ingestion with a disposable ClickHouse container and isolated databases."""
 
-from pathlib import Path
 import argparse
 import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 from urllib.request import urlopen
 from uuid import uuid4
 
@@ -87,14 +87,12 @@ def main():
                         ["backend/tests/integration/test_measures_clickhouse.py"]
                         if args.measures_only
                         else [
-                            "backend/tests/integration/test_csv_clickhouse.py",
-                            "backend/tests/integration/test_managed_clickhouse.py",
-                            "backend/tests/integration/test_planning_clickhouse.py",
-                            "backend/tests/integration/test_measures_clickhouse.py",
-                            "backend/tests/integration/test_planning_view_clickhouse.py",
-                            "backend/tests/integration/test_planning_draft_clickhouse.py",
-                            "backend/tests/integration/test_transaction_resolution_clickhouse.py",
-                            "backend/tests/integration/test_measure_edits_clickhouse.py",
+                            str(path.relative_to(root))
+                            for path in sorted(
+                                (root / "backend/tests/integration").glob(
+                                    "*_clickhouse.py"
+                                )
+                            )
                         ]
                     ),
                     "-m",

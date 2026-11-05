@@ -104,10 +104,11 @@ class MemoryStore(MetadataStore):
     def __init__(self):
         self.documents = {}
         self.lock = asyncio.Lock()
+        self._repository = MemoryRepository(self)
 
     @property
     def repository(self):
-        return MemoryRepository(self)
+        return self._repository
 
     async def transaction(self, operation):
         async with self.lock:

@@ -1,11 +1,21 @@
-from ..engine.table_storage import TableStorage, STORAGE_POLICY, owner, relation_sql
+from ..repositories.metadata import metadata_repositories
+from ..repositories.metadata.criteria import (
+    ArtifactLookup,
+    BindingLookup,
+    ObjectLookup,
+    ReadLeaseLookup,
+    RevisionLookup,
+    RunLookup,
+)
 from uuid import uuid4
 
 from ..core.errors import Conflict, ImmutableRevision, MetadataError
 from ..engine.contracts import digest
+from ..engine.managed_inputs import ManagedInputCapture
 from ..engine.planning import PlanningLevelPlanner
-from ..engine.planning_compiler import PlanningLevelCompiler
+from ..engine.planning_compiler import PlanningCompiler
 from ..engine.planning_executor import PlanningTableExecutor
+from ..engine.table_storage import STORAGE_POLICY, TableStorage
 from .base import Service, now, scope
 
 
@@ -13,17 +23,23 @@ class PlanningBuildService(Service):
     def __init__(self, store, settings, managed):
         super().__init__(store, settings.max_objects_per_revision)
         self.settings, self.managed = settings, managed
+        self.input_capture = ManagedInputCapture()
         self.planner = PlanningLevelPlanner(settings.resolution_max_rows)
-        self.compiler = PlanningLevelCompiler(settings.clickhouse_database)
+        self.compiler = PlanningCompiler(settings.clickhouse_database)
         self.storage = TableStorage(store, managed.executor.warehouse)
         self.executor = PlanningTableExecutor(managed.executor.warehouse, settings)
         self.executor.storage = self.storage
+        from ..engine.planning_builds import PlanningBuildHandler
+
+        self.handler = PlanningBuildHandler(self)
 
     @staticmethod
     def definition_hash(level):
         return digest({"name": level["name"], "definition": level["definition"]})
 
-    async def capture(self, repo, model, revision, level, objects, seen=None):
+    async def capture_population_inputs(
+        self, repo, model, revision, level, objects, seen=None
+    ):
         by_id = {o["objectId"]: o for o in objects}
         seen = set() if seen is None else seen
         if level["objectId"] in seen:
@@ -39,18 +55,16 @@ class PlanningBuildService(Service):
             source_ids |= {f["sourceId"] for f in population["factors"]}
         else:
             parent = by_id[population["sourcePlanningLevelId"]]
-            parent_capture = await self.capture(
+            parent_capture = await self.capture_population_inputs(
                 repo, model, revision, parent, objects, seen
             )
-            identity = {
-                **scope(model, revision),
-                "resourceKind": "planningLevel",
-                "resourceId": parent["objectId"],
-            }
-            binding = await self.require(
-                repo,
-                "engine_artifact_bindings",
-                identity,
+            binding = await metadata_repositories(repo).bindings.require(
+                BindingLookup(
+                    model_id=model,
+                    revision_id=revision,
+                    resource_kind="planningLevel",
+                    resource_id=parent["objectId"],
+                ),
                 "Ready parent planning table; build the parent first",
             )
             if (
@@ -58,10 +72,8 @@ class PlanningBuildService(Service):
                 or binding["inputHash"] != parent_capture["inputHash"]
             ):
                 raise Conflict("The parent planning table needs rebuilding first.")
-            artifact = await self.require(
-                repo,
-                "engine_artifacts",
-                {"artifactId": binding["artifactId"]},
+            artifact = await metadata_repositories(repo).artifacts.require(
+                ArtifactLookup(artifact_id=binding["artifactId"]),
                 "Parent table artifact",
             )
             if artifact["state"] != "ready":
@@ -78,35 +90,13 @@ class PlanningBuildService(Service):
             versions[dim["objectId"]] = dim["version"]
             source_ids.add(dim["definition"]["sourceId"])
         for sid in sorted(source_ids):
-            source = by_id[sid]
-            if not source["definition"]["inScope"]:
-                raise Conflict(
-                    "A population or dimension source is outside managed scope."
-                )
-            identity = {**scope(model, revision), "sourceId": sid}
-            managed = await self.require(
-                repo,
-                "semantic_managed_tables",
-                identity,
-                "Initialized managed definition",
+            source_snapshot = await self.input_capture.capture_source(
+                repo, model, revision, by_id[sid]
             )
-            binding = await self.require(
-                repo, "engine_artifact_bindings", identity, "Ready managed view"
-            )
-            if binding["definitionHash"] != managed["definitionHash"]:
-                raise Conflict("Build the input managed view first.")
-            artifact = await self.require(
-                repo,
-                "engine_artifacts",
-                {"artifactId": binding["artifactId"]},
-                "Managed artifact",
-            )
-            if artifact["state"] != "ready":
-                raise Conflict("The input managed view is not ready.")
-            relations[sid] = {**artifact, "columns": managed["definition"]["columns"]}
-            versions[sid] = source["version"]
-            bindings[sid] = binding
-            managed_inputs[sid] = managed
+            relations[sid] = source_snapshot.artifact
+            versions[sid] = source_snapshot.source_version
+            bindings[sid] = source_snapshot.binding
+            managed_inputs[sid] = source_snapshot.definition
         return {
             "relations": relations,
             "versions": versions,
@@ -138,18 +128,24 @@ class PlanningBuildService(Service):
 
         async def operation(repo):
             query = scope(model, revision)
-            previous = await repo.get("engine_runs", {**query, "idempotencyKey": key})
+            previous = await metadata_repositories(repo).runs.find(
+                RunLookup(model_id=model, revision_id=revision, idempotency_key=key)
+            )
             if previous:
                 if previous["requestHash"] != request_hash:
                     raise Conflict("This idempotency key belongs to another request.")
                 return self.managed.public_run(previous)
-            rev = await self.require(repo, "semantic_revisions", query, "Revision")
+            rev = await metadata_repositories(repo).revisions.require(
+                RevisionLookup(model_id=model, revision_id=revision), "Revision"
+            )
             if rev["approvalStatus"] != "draft":
                 raise ImmutableRevision()
             objects = await self.objects(repo, model, revision)
             if payload is not None:
-                current = await repo.get(
-                    "semantic_objects", {**query, "objectId": level_id}
+                current = await metadata_repositories(repo).objects.find(
+                    ObjectLookup(
+                        model_id=model, revision_id=revision, object_id=level_id
+                    )
                 )
                 if current and (
                     current["kind"] != "planningLevel" or current["version"] != expected
@@ -177,10 +173,13 @@ class PlanningBuildService(Service):
                 }
                 objects = [o for o in objects if o["objectId"] != level_id] + [level]
             else:
-                level = await self.require(
-                    repo,
-                    "semantic_objects",
-                    {**query, "objectId": level_id, "kind": "planningLevel"},
+                level = await metadata_repositories(repo).objects.require(
+                    ObjectLookup(
+                        model_id=model,
+                        revision_id=revision,
+                        object_id=level_id,
+                        kind="planningLevel",
+                    ),
                     "Planning level",
                 )
                 self.check_version(level, expected)
@@ -188,7 +187,9 @@ class PlanningBuildService(Service):
                 await self.effective(repo, model, revision, objects),
                 rev["basePlanningLevelId"],
             )
-            captured = await self.capture(repo, model, revision, level, objects)
+            captured = await self.capture_population_inputs(
+                repo, model, revision, level, objects
+            )
             self.planner.plan(level, objects, captured["relations"])
             run_id, artifact_id = "run_" + uuid4().hex, "artifact_" + uuid4().hex
             run = {
@@ -218,15 +219,13 @@ class PlanningBuildService(Service):
                 "updatedAt": now(),
                 "error": None,
             }
-            await repo.insert("engine_runs", run)
+            await metadata_repositories(repo).runs.insert(run)
             for obj in objects:
-                await repo.insert(
-                    "engine_run_inputs",
-                    {"runId": run_id, "inputId": obj["objectId"], "document": obj},
+                await metadata_repositories(repo).inputs.insert(
+                    {"runId": run_id, "inputId": obj["objectId"], "document": obj}
                 )
             for sid, relation in captured["relations"].items():
-                await repo.insert(
-                    "engine_run_inputs",
+                await metadata_repositories(repo).inputs.insert(
                     {
                         "runId": run_id,
                         "inputId": "__relation_" + sid,
@@ -235,10 +234,9 @@ class PlanningBuildService(Service):
                             "relation": relation,
                             "managed": captured["managed"].get(sid),
                         },
-                    },
+                    }
                 )
-            await repo.insert(
-                "engine_artifacts",
+            await metadata_repositories(repo).artifacts.insert(
                 await self.storage.reserve(
                     repo,
                     {
@@ -254,189 +252,55 @@ class PlanningBuildService(Service):
                         "createdAt": now(),
                     },
                     level["name"],
-                ),
+                )
             )
             for relation in captured["relations"].values():
-                artifact = await self.require(
-                    repo,
-                    "engine_artifacts",
-                    {"artifactId": relation["artifactId"]},
-                    "Input artifact",
+                artifact = await metadata_repositories(repo).artifacts.require(
+                    ArtifactLookup(artifact_id=relation["artifactId"]), "Input artifact"
                 )
                 if artifact["state"] != "ready":
                     raise Conflict("An input artifact was retired. Retry the build.")
                 # Shared write serializes retirement against acquisition of a read pin.
-                await repo.replace(
-                    "engine_artifacts",
-                    {"artifactId": artifact["artifactId"]},
+                await metadata_repositories(repo).artifacts.replace(
+                    ArtifactLookup(artifact_id=artifact["artifactId"]),
                     {**artifact, "pinVersion": artifact.get("pinVersion", 0) + 1},
                 )
-                await repo.insert(
-                    "engine_artifact_pins",
-                    {"runId": run_id, "artifactId": artifact["artifactId"]},
+                await metadata_repositories(repo).pins.insert(
+                    {"runId": run_id, "artifactId": artifact["artifactId"]}
                 )
             return self.managed.public_run(run)
 
         try:
             return await self.store.transaction(operation)
         except Conflict:
-            previous = await self.store.repository.get(
-                "engine_runs", {**scope(model, revision), "idempotencyKey": key}
+            previous = await metadata_repositories(self.store.repository).runs.find(
+                RunLookup(model_id=model, revision_id=revision, idempotency_key=key)
             )
             if previous and previous["requestHash"] == request_hash:
                 return self.managed.public_run(previous)
             raise
 
     async def execute_run(self, run, worker):
-        if run.get("storagePolicy") != STORAGE_POLICY:
-            raise Conflict(
-                "This build predates the table-storage upgrade. Submit a new build."
-            )
-        inputs = await self.store.repository.list(
-            "engine_run_inputs",
-            {"runId": run["runId"]},
-            key="inputId",
-            limit=self.max_objects * 2 + 1,
-        )
-        objects = [
-            i["document"] for i in inputs if not i["inputId"].startswith("__relation_")
-        ]
-        level = next(o for o in objects if o["objectId"] == run["resourceId"])
-        captured = {**run["capture"], "relations": {}, "managed": {}}
-        for item in inputs:
-            if item["inputId"].startswith("__relation_"):
-                doc = item["document"]
-                captured["relations"][doc["resourceId"]] = doc["relation"]
-                if doc["managed"]:
-                    captured["managed"][doc["resourceId"]] = doc["managed"]
-        by_id = {o["objectId"]: o for o in objects}
-        for sid, managed in captured["managed"].items():
-            source = by_id[sid]
-            await self.managed.executor.inspect(source)
-            compiled = self.managed.compiler.compile(
-                self.managed.planner.plan(
-                    source, self.managed.input_definition(managed["definition"])
-                )
-            )
-            await self.managed.executor.verify(captured["relations"][sid], compiled)
-            await self.managed.executor.checks(compiled)
-        await self.storage.ensure_inputs(captured["relations"].values())
-        plan = self.planner.plan(level, objects, captured["relations"])
-        compiled = self.compiler.compile(plan)
-        estimate = await self.executor.estimate(plan, self.compiler)
-        await worker.step(
-            run,
-            "compile",
-            "succeeded",
-            sql=compiled.sql,
-            planHash=digest(compiled.sql),
-            estimate=estimate,
-            compilerVersion=compiled.compiler_version,
-        )
-        await worker.step(run, "checks", "running")
-        await self.executor.checks(compiled)
-        await worker.step(run, "checks", "succeeded")
-        artifact = await self.require(
-            self.store.repository,
-            "engine_artifacts",
-            {"artifactId": run["artifactId"]},
-            "Candidate table",
-        )
-        await worker.step(run, "materialize", "running")
-        outcome = await self.executor.build(artifact, compiled, plan)
-        await self.executor.checks(compiled)
-        await worker.step(run, "materialize", "succeeded", rowCount=outcome["rowCount"])
-
-        async def activate(repo):
-            current_run = await worker.fenced(repo, run)
-            query = scope(run["modelId"], run["revisionId"])
-            revision = await self.require(repo, "semantic_revisions", query, "Revision")
-            self.check_version(revision, run["revisionVersion"])
-            if revision["approvalStatus"] != "draft":
-                raise ImmutableRevision()
-            current_objects = await self.objects(
-                repo, run["modelId"], run["revisionId"]
-            )
-            current = next(
-                (o for o in current_objects if o["objectId"] == run["resourceId"]), None
-            )
-            if run.get("previewOnly"):
-                if (current["version"] if current else None) != run["expectedVersion"]:
-                    raise Conflict(
-                        "The saved planning definition changed during preview."
-                    )
-                proposed = level
-                proposed_objects = [
-                    o for o in current_objects if o["objectId"] != proposed["objectId"]
-                ] + [proposed]
-                inputs = await self.capture(
-                    repo, run["modelId"], run["revisionId"], proposed, proposed_objects
-                )
-            else:
-                if not current or current["version"] != run["expectedVersion"]:
-                    raise Conflict()
-                inputs = await self.capture(
-                    repo, run["modelId"], run["revisionId"], current, current_objects
-                )
-            if inputs["inputHash"] != run["inputHash"]:
-                raise Conflict("Build dependencies changed during execution.")
-            identity = {
-                **query,
-                "resourceKind": "planningLevel",
-                "resourceId": run["resourceId"],
-            }
-            binding = {
-                **identity,
-                "artifactId": artifact["artifactId"],
-                "definitionHash": run["definitionHash"],
-                "inputHash": run["inputHash"],
-                "builtAt": now(),
-            }
-            if not run.get("previewOnly"):
-                if await repo.get("engine_artifact_bindings", identity):
-                    await repo.replace("engine_artifact_bindings", identity, binding)
-                else:
-                    await repo.insert("engine_artifact_bindings", binding)
-            await repo.replace(
-                "engine_artifacts",
-                {"artifactId": artifact["artifactId"]},
-                {
-                    **artifact,
-                    **outcome,
-                    "state": "ready",
-                    "compilerVersion": compiled.compiler_version,
-                    "dependencies": captured["bindings"],
-                    "builtAt": now(),
-                },
-            )
-            # Publication and competing materializations observe a common revision guard.
-            if not run.get("previewOnly"):
-                await self.touch_revision(repo, run["modelId"], run["revisionId"])
-            await repo.replace(
-                "engine_runs",
-                {"runId": run["runId"], "fence": run["fence"]},
-                {
-                    **current_run,
-                    "state": "succeeded",
-                    "updatedAt": now(),
-                    "rowCount": outcome["rowCount"],
-                },
-            )
-
-        await self.store.transaction(activate)
+        await self.handler.execute_run(run, worker)
 
     async def status(self, model, revision, level_id, *, preview=False):
         repo = self.store.repository
-        query = scope(model, revision)
-        level = await self.require(
-            repo,
-            "semantic_objects",
-            {**query, "objectId": level_id, "kind": "planningLevel"},
+        level = await metadata_repositories(repo).objects.require(
+            ObjectLookup(
+                model_id=model,
+                revision_id=revision,
+                object_id=level_id,
+                kind="planningLevel",
+            ),
             "Planning level",
         )
-        binding = await repo.get(
-            "engine_artifact_bindings",
-            {**query, "resourceKind": "planningLevel", "resourceId": level_id},
+        binding = await metadata_repositories(repo).bindings.find(
+            BindingLookup(
+                model_id=model,
+                revision_id=revision,
+                resource_kind="planningLevel",
+                resource_id=level_id,
+            )
         )
         result = {
             "state": "not_built",
@@ -445,34 +309,36 @@ class PlanningBuildService(Service):
             "rows": [],
             "builtAt": None,
         }
-        runs = await repo.list(
-            "engine_runs",
-            {**query, "resourceKind": "planningLevel", "resourceId": level_id},
-            key="createdAt",
+        runs = await metadata_repositories(repo).runs.list(
+            RunLookup(
+                model_id=model,
+                revision_id=revision,
+                resource_kind="planningLevel",
+                resource_id=level_id,
+            ),
+            order_by="createdAt",
             limit=1,
-            descending=True,
+            newest_first=True,
         )
         active = None
         for state in ("running", "queued"):
-            pending = await repo.list(
-                "engine_runs",
-                {
-                    **query,
-                    "resourceKind": "planningLevel",
-                    "resourceId": level_id,
-                    "state": state,
-                },
-                key="runId",
+            pending = await metadata_repositories(repo).runs.list(
+                RunLookup(
+                    model_id=model,
+                    revision_id=revision,
+                    resource_kind="planningLevel",
+                    resource_id=level_id,
+                    state=state,
+                ),
+                order_by="runId",
                 limit=1,
             )
             if pending:
                 active = pending[0]
                 break
         if binding:
-            artifact = await self.require(
-                repo,
-                "engine_artifacts",
-                {"artifactId": binding["artifactId"]},
+            artifact = await metadata_repositories(repo).artifacts.require(
+                ArtifactLookup(artifact_id=binding["artifactId"]),
                 "Planning table artifact",
             )
             result.update(
@@ -482,10 +348,14 @@ class PlanningBuildService(Service):
                 builtAt=binding["builtAt"],
             )
             objects = await self.objects(repo, model, revision)
-            rev = await self.require(repo, "semantic_revisions", query, "Revision")
+            rev = await metadata_repositories(repo).revisions.require(
+                RevisionLookup(model_id=model, revision_id=revision), "Revision"
+            )
             if rev["approvalStatus"] == "draft":
                 try:
-                    current = await self.capture(repo, model, revision, level, objects)
+                    current = await self.capture_population_inputs(
+                        repo, model, revision, level, objects
+                    )
                     if (
                         binding["definitionHash"] != self.definition_hash(level)
                         or binding["inputHash"] != current["inputHash"]
@@ -497,22 +367,9 @@ class PlanningBuildService(Service):
                 await self.storage.ensure_inputs([artifact])
                 warehouse = self.executor.warehouse
 
-                def read(connect):
-                    client = connect()
-                    info = warehouse.table_info(client, artifact["physicalName"])
-                    if not info or info[0] != "MergeTree" or info[1] != owner(artifact):
-                        raise Conflict(
-                            "The planning table is missing or changed. Build it again in a draft."
-                        )
-                    data = client.query(
-                        relation_sql(warehouse, artifact) + " ORDER BY ALL LIMIT 50",
-                        settings=self.executor.execution_settings(),
-                    )
-                    return [
-                        [warehouse.cell(v) for v in row] for row in data.result_rows
-                    ]
-
-                result["rows"] = await warehouse.run(read)
+                result["rows"] = await warehouse.queries.preview_population(
+                    artifact, self.executor.execution_settings()
+                )
         if active:
             result.update(state="building", runId=active["runId"])
         elif runs and runs[-1]["state"] in ("failed", "superseded", "cancelled"):
@@ -525,15 +382,17 @@ class PlanningBuildService(Service):
         """Analyze the proposed public output without building or saving it."""
 
         async def snapshot(repo):
-            await self.require(
-                repo, "semantic_revisions", scope(model, revision), "Revision"
+            await metadata_repositories(repo).revisions.require(
+                RevisionLookup(model_id=model, revision_id=revision), "Revision"
             )
             objects = await self.objects(repo, model, revision)
             candidate = {**payload.model_dump(), "version": 0}
             objects = [o for o in objects if o["objectId"] != candidate["objectId"]] + [
                 candidate
             ]
-            captured = await self.capture(repo, model, revision, candidate, objects)
+            captured = await self.capture_population_inputs(
+                repo, model, revision, candidate, objects
+            )
             return candidate, objects, captured
 
         candidate, objects, captured = await self.store.transaction(snapshot)
@@ -542,8 +401,8 @@ class PlanningBuildService(Service):
 
     async def preview(self, model, revision, payload):
         async def snapshot(repo):
-            rev = await self.require(
-                repo, "semantic_revisions", scope(model, revision), "Revision"
+            rev = await metadata_repositories(repo).revisions.require(
+                RevisionLookup(model_id=model, revision_id=revision), "Revision"
             )
             objects = await self.objects(repo, model, revision)
             candidate = {**payload.model_dump(), "version": 0}
@@ -554,7 +413,9 @@ class PlanningBuildService(Service):
                 await self.effective(repo, model, revision, candidates),
                 rev["basePlanningLevelId"],
             )
-            capture = await self.capture(repo, model, revision, candidate, candidates)
+            capture = await self.capture_population_inputs(
+                repo, model, revision, candidate, candidates
+            )
             return candidate, candidates, capture
 
         level, objects, captured = await self.store.transaction(snapshot)
@@ -583,36 +444,29 @@ class PlanningBuildService(Service):
         read_id = "read_" + uuid4().hex
 
         async def snapshot(repo):
-            run = await self.require(
-                repo,
-                "engine_runs",
-                {**scope(model, revision), "runId": run_id},
+            run = await metadata_repositories(repo).runs.require(
+                RunLookup(model_id=model, revision_id=revision, run_id=run_id),
                 "Preview build",
             )
             if not run.get("previewOnly") or run["state"] != "succeeded":
                 raise Conflict("The preview build is not ready.")
-            artifact = await self.require(
-                repo,
-                "engine_artifacts",
-                {"artifactId": run["artifactId"]},
-                "Preview generation",
+            artifact = await metadata_repositories(repo).artifacts.require(
+                ArtifactLookup(artifact_id=run["artifactId"]), "Preview generation"
             )
             if artifact["state"] != "ready":
                 raise Conflict(
                     "This preview has expired. Preview the configuration again."
                 )
-            await repo.replace(
-                "engine_artifacts",
-                {"artifactId": artifact["artifactId"]},
+            await metadata_repositories(repo).artifacts.replace(
+                ArtifactLookup(artifact_id=artifact["artifactId"]),
                 {**artifact, "pinVersion": artifact.get("pinVersion", 0) + 1},
             )
-            await repo.insert(
-                "engine_read_leases",
+            await metadata_repositories(repo).read_leases.insert(
                 {
                     "readId": read_id,
                     "artifactId": artifact["artifactId"],
                     "expiresAt": now() + timedelta(seconds=180),
-                },
+                }
             )
             return artifact
 
@@ -621,24 +475,18 @@ class PlanningBuildService(Service):
             await self.storage.ensure_inputs([artifact])
             warehouse = self.executor.warehouse
 
-            def read(connect):
-                result = connect().query(
-                    relation_sql(warehouse, artifact) + " ORDER BY ALL LIMIT 50",
-                    settings=self.executor.execution_settings(),
-                )
-                return [[warehouse.cell(v) for v in row] for row in result.result_rows]
-
             return {
                 "state": "preview",
                 "rowCount": artifact["rowCount"],
                 "columns": artifact["columns"],
-                "rows": await warehouse.run(read),
+                "rows": await warehouse.queries.preview_draft_population(
+                    artifact, self.executor.execution_settings()
+                ),
             }
         finally:
             await self.store.transaction(
-                lambda repo: repo.delete(
-                    "engine_read_leases",
-                    {"readId": read_id, "artifactId": artifact["artifactId"]},
+                lambda repo: metadata_repositories(repo).read_leases.delete(
+                    ReadLeaseLookup(read_id=read_id, artifact_id=artifact["artifactId"])
                 )
             )
 
@@ -646,11 +494,14 @@ class PlanningBuildService(Service):
         query = scope(model, revision)
 
         async def commit(repo):
-            rev = await self.require(repo, "semantic_revisions", query, "Revision")
+            rev = await metadata_repositories(repo).revisions.require(
+                RevisionLookup(model_id=model, revision_id=revision), "Revision"
+            )
             if rev["approvalStatus"] != "draft":
                 raise ImmutableRevision()
-            run = await self.require(
-                repo, "engine_runs", {**query, "runId": run_id}, "Preview build"
+            run = await metadata_repositories(repo).runs.require(
+                RunLookup(model_id=model, revision_id=revision, run_id=run_id),
+                "Preview build",
             )
             if (
                 not run.get("previewOnly")
@@ -661,8 +512,10 @@ class PlanningBuildService(Service):
                 raise Conflict(
                     "This built preview does not match the configuration. Preview it again before saving."
                 )
-            current = await repo.get(
-                "semantic_objects", {**query, "objectId": payload.objectId}
+            current = await metadata_repositories(repo).objects.find(
+                ObjectLookup(
+                    model_id=model, revision_id=revision, object_id=payload.objectId
+                )
             )
             if run.get("committedVersion"):
                 if current and current["version"] == run["committedVersion"]:
@@ -697,16 +550,15 @@ class PlanningBuildService(Service):
                 await self.effective(repo, model, revision, proposed),
                 rev["basePlanningLevelId"],
             )
-            inputs = await self.capture(repo, model, revision, document, proposed)
+            inputs = await self.capture_population_inputs(
+                repo, model, revision, document, proposed
+            )
             if inputs["inputHash"] != run["inputHash"]:
                 raise Conflict(
                     "Build dependencies changed. Preview the configuration again."
                 )
-            artifact = await self.require(
-                repo,
-                "engine_artifacts",
-                {"artifactId": run["artifactId"]},
-                "Built preview",
+            artifact = await metadata_repositories(repo).artifacts.require(
+                ArtifactLookup(artifact_id=run["artifactId"]), "Built preview"
             )
             if artifact["state"] != "ready":
                 raise Conflict(
@@ -714,17 +566,17 @@ class PlanningBuildService(Service):
                 )
             if changed:
                 if current:
-                    await repo.replace(
-                        "semantic_objects",
-                        {
-                            **query,
-                            "objectId": payload.objectId,
-                            "version": current["version"],
-                        },
+                    await metadata_repositories(repo).objects.replace(
+                        ObjectLookup(
+                            model_id=model,
+                            revision_id=revision,
+                            object_id=payload.objectId,
+                            version=current["version"],
+                        ),
                         document,
                     )
                 else:
-                    await repo.insert("semantic_objects", document)
+                    await metadata_repositories(repo).objects.insert(document)
             identity = {
                 **query,
                 "resourceKind": "planningLevel",
@@ -737,23 +589,36 @@ class PlanningBuildService(Service):
                 "inputHash": run["inputHash"],
                 "builtAt": artifact["builtAt"],
             }
-            if await repo.get("engine_artifact_bindings", identity):
-                await repo.replace("engine_artifact_bindings", identity, binding)
+            if await metadata_repositories(repo).bindings.find(
+                BindingLookup(
+                    model_id=model,
+                    revision_id=revision,
+                    resource_kind="planningLevel",
+                    resource_id=payload.objectId,
+                )
+            ):
+                await metadata_repositories(repo).bindings.replace(
+                    BindingLookup(
+                        model_id=model,
+                        revision_id=revision,
+                        resource_kind="planningLevel",
+                        resource_id=payload.objectId,
+                    ),
+                    binding,
+                )
             else:
-                await repo.insert("engine_artifact_bindings", binding)
+                await metadata_repositories(repo).bindings.insert(binding)
             # Serialize Save against collection and preserve the validated candidate.
-            await repo.replace(
-                "engine_artifacts",
-                {"artifactId": artifact["artifactId"]},
+            await metadata_repositories(repo).artifacts.replace(
+                ArtifactLookup(artifact_id=artifact["artifactId"]),
                 {
                     **artifact,
                     "pinVersion": artifact.get("pinVersion", 0) + 1,
                     "committedAt": now(),
                 },
             )
-            await repo.replace(
-                "engine_runs",
-                {"runId": run_id},
+            await metadata_repositories(repo).runs.replace(
+                RunLookup(run_id=run_id),
                 {**run, "committedVersion": document["version"], "committedAt": now()},
             )
             await self.touch_revision(repo, model, revision)

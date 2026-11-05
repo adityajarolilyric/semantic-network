@@ -1,29 +1,34 @@
-from ..engine.date_range_resolution import calendar_source_ids
-from ..engine.transaction_resolution import (
-    RESOLUTION_POLICY,
-    prepare_resolution_profiles,
-)
-from ..engine.table_storage import STORAGE_POLICY, owner, relation_sql
-from .measure_types import MEASURE_TYPE_POLICY
-from .incremental_builds import IncrementalBuildCoordinator
-from ..engine.incremental import (
-    MaterialisationManifest,
-    INCREMENTAL_POLICY,
-    IncrementalMeasureCompiler,
+from ..repositories.metadata import metadata_repositories
+from ..repositories.metadata.criteria import (
+    ArtifactLookup,
+    BindingLookup,
+    ObjectLookup,
+    RevisionLookup,
+    RunLookup,
 )
 from uuid import uuid4
-from time import perf_counter
 
 from ..core.errors import Conflict, ImmutableRevision, MetadataError
-from ..engine.contracts import PlanningPlan, digest
+from ..domain.measure_policies import MEASURE_TYPE_POLICY
+from ..engine.captured_inputs import MeasureBuildInputs
+from ..engine.contracts import digest
+from ..engine.date_range_resolution import calendar_source_ids
+from ..engine.incremental import (
+    INCREMENTAL_POLICY,
+    MaterialisationManifest,
+)
 from ..engine.measure_compiler import (
-    MeasureCompiler,
     MATERIALISATION_POLICY,
     MEASURE_COMPILER_VERSION,
 )
 from ..engine.planning_executor import PlanningTableExecutor
 from ..engine.relationships import LevelRelationshipAnalyzer
+from ..engine.table_storage import STORAGE_POLICY
+from ..engine.transaction_resolution import (
+    RESOLUTION_POLICY,
+)
 from .base import Service, now, scope
+from .incremental_builds import IncrementalBuildCoordinator
 
 
 class MeasureBuildService(Service):
@@ -36,10 +41,14 @@ class MeasureBuildService(Service):
         self.storage = planning.storage
         self.executor = PlanningTableExecutor(managed.executor.warehouse, settings)
         self.executor.storage = self.storage
+        from ..engine.measure_builds import MeasureBuildHandler
 
-    async def capture(self, repo, model, revision):
-        query = scope(model, revision)
-        rev = await self.require(repo, "semantic_revisions", query, "Revision")
+        self.handler = MeasureBuildHandler(self)
+
+    async def capture_build_inputs(self, repo, model, revision) -> MeasureBuildInputs:
+        rev = await metadata_repositories(repo).revisions.require(
+            RevisionLookup(model_id=model, revision_id=revision), "Revision"
+        )
         if not rev["basePlanningLevelId"]:
             raise MetadataError(
                 "base_required",
@@ -53,17 +62,16 @@ class MeasureBuildService(Service):
         levels = [o for o in objects if o["kind"] == "planningLevel"]
         populations, managed, managed_defs, bindings = {}, {}, {}, {}
         for level in levels:
-            captured = await self.planning.capture(
+            captured = await self.planning.capture_population_inputs(
                 repo, model, revision, level, objects
             )
-            binding = await self.require(
-                repo,
-                "engine_artifact_bindings",
-                {
-                    **query,
-                    "resourceKind": "planningLevel",
-                    "resourceId": level["objectId"],
-                },
+            binding = await metadata_repositories(repo).bindings.require(
+                BindingLookup(
+                    model_id=model,
+                    revision_id=revision,
+                    resource_kind="planningLevel",
+                    resource_id=level["objectId"],
+                ),
                 "Ready planning table; build all planning populations first",
             )
             if (
@@ -73,10 +81,8 @@ class MeasureBuildService(Service):
                 raise Conflict(
                     "A planning population needs rebuilding before measures can be built."
                 )
-            artifact = await self.require(
-                repo,
-                "engine_artifacts",
-                {"artifactId": binding["artifactId"]},
+            artifact = await metadata_repositories(repo).artifacts.require(
+                ArtifactLookup(artifact_id=binding["artifactId"]),
                 "Planning population artifact",
             )
             if artifact["state"] != "ready":
@@ -91,23 +97,14 @@ class MeasureBuildService(Service):
         for tx in (o for o in objects if o["kind"] == "transaction"):
             resolution_sources.add(tx["definition"]["sourceId"])
             resolution_sources.update(calendar_source_ids(objects, tx))
-        for sid in resolution_sources:
-            # Reuse managed-view readiness/snapshot resolution without adding semantic objects.
-            fake = {
-                "objectId": "capture",
-                "definition": {
-                    "population": {
-                        "operation": "source",
-                        "sourceId": sid,
-                    },
-                    "dimensionBindings": [],
-                },
-            }
-            captured = await self.planning.capture(repo, model, revision, fake, objects)
-            for sid, definition in captured["managed"].items():
-                managed_defs[sid] = definition
-                managed[sid] = captured["relations"][sid]
-                bindings["source:" + sid] = captured["bindings"][sid]
+        objects_by_id = {document["objectId"]: document for document in objects}
+        for source_id in resolution_sources:
+            source_snapshot = await self.planning.input_capture.capture_source(
+                repo, model, revision, objects_by_id[source_id]
+            )
+            managed_defs[source_id] = source_snapshot.definition
+            managed[source_id] = source_snapshot.artifact
+            bindings["source:" + source_id] = source_snapshot.binding
         fingerprint = digest(
             {
                 "resolutionPolicy": RESOLUTION_POLICY,
@@ -120,7 +117,9 @@ class MeasureBuildService(Service):
                 "managed": {k: v["definitionHash"] for k, v in managed_defs.items()},
             }
         )
-        return rev, objects, populations, managed, managed_defs, bindings, fingerprint
+        return MeasureBuildInputs(
+            rev, objects, populations, managed, managed_defs, bindings, fingerprint
+        )
 
     async def submit(self, model, revision, expected, key, edit=None, mode="full"):
         if mode not in ("full", "incremental"):
@@ -140,7 +139,9 @@ class MeasureBuildService(Service):
 
         async def operation(repo):
             query = scope(model, revision)
-            previous = await repo.get("engine_runs", {**query, "idempotencyKey": key})
+            previous = await metadata_repositories(repo).runs.find(
+                RunLookup(model_id=model, revision_id=revision, idempotency_key=key)
+            )
             if previous:
                 if previous["requestHash"] != request_hash:
                     raise Conflict("This idempotency key belongs to another request.")
@@ -153,7 +154,7 @@ class MeasureBuildService(Service):
                 defs,
                 bindings,
                 fingerprint,
-            ) = await self.capture(repo, model, revision)
+            ) = await self.capture_build_inputs(repo, model, revision)
             self.check_version(rev, expected)
             if rev["approvalStatus"] != "draft":
                 raise ImmutableRevision()
@@ -162,16 +163,18 @@ class MeasureBuildService(Service):
                     "no_measures", "Create measures before building values."
                 )
             run_id = "run_" + uuid4().hex
-            old = await repo.get(
-                "engine_artifact_bindings",
-                {
-                    **query,
-                    "resourceKind": "measureValues",
-                    "resourceId": rev["basePlanningLevelId"],
-                },
+            old = await metadata_repositories(repo).bindings.find(
+                BindingLookup(
+                    model_id=model,
+                    revision_id=revision,
+                    resource_kind="measureValues",
+                    resource_id=rev["basePlanningLevelId"],
+                )
             )
             previous_artifact = (
-                await repo.get("engine_artifacts", {"artifactId": old["artifactId"]})
+                await metadata_repositories(repo).artifacts.find(
+                    ArtifactLookup(artifact_id=old["artifactId"])
+                )
                 if old
                 else None
             )
@@ -204,16 +207,17 @@ class MeasureBuildService(Service):
                     objects, rev["basePlanningLevelId"]
                 ).fields(edit.view)
                 for lid in populations:
-                    binding = await self.require(
-                        repo,
-                        "engine_artifact_bindings",
-                        {**query, "resourceKind": "measureValues", "resourceId": lid},
+                    binding = await metadata_repositories(repo).bindings.require(
+                        BindingLookup(
+                            model_id=model,
+                            revision_id=revision,
+                            resource_kind="measureValues",
+                            resource_id=lid,
+                        ),
                         "Current values; build the network first",
                     )
-                    artifact = await self.require(
-                        repo,
-                        "engine_artifacts",
-                        {"artifactId": binding["artifactId"]},
+                    artifact = await metadata_repositories(repo).artifacts.require(
+                        ArtifactLookup(artifact_id=binding["artifactId"]),
                         "Current values",
                     )
                     if (
@@ -256,67 +260,60 @@ class MeasureBuildService(Service):
                 if previous_artifact
                 else None,
             }
-            await repo.insert("engine_runs", run)
+            await metadata_repositories(repo).runs.insert(run)
             # Keep manifests per level to stay below MongoDB's single-document limit
             # as the measure × planning-level matrix grows.
             for lid, manifest in manifests.items():
-                await repo.insert(
-                    "engine_run_inputs",
+                await metadata_repositories(repo).inputs.insert(
                     {
                         "runId": run_id,
                         "inputId": "__manifest_" + lid,
                         "document": manifest,
-                    },
+                    }
                 )
             for obj in objects:
-                await repo.insert(
-                    "engine_run_inputs",
-                    {"runId": run_id, "inputId": obj["objectId"], "document": obj},
+                await metadata_repositories(repo).inputs.insert(
+                    {"runId": run_id, "inputId": obj["objectId"], "document": obj}
                 )
             for lid, artifact in populations.items():
-                await repo.insert(
-                    "engine_run_inputs",
+                await metadata_repositories(repo).inputs.insert(
                     {
                         "runId": run_id,
                         "inputId": "__population_" + lid,
                         "document": artifact,
-                    },
+                    }
                 )
             for sid, artifact in managed.items():
-                await repo.insert(
-                    "engine_run_inputs",
+                await metadata_repositories(repo).inputs.insert(
                     {
                         "runId": run_id,
                         "inputId": "__managed_" + sid,
                         "document": {"artifact": artifact, "definition": defs[sid]},
-                    },
+                    }
                 )
             if previous_artifact:
-                await repo.insert(
-                    "engine_run_inputs",
+                await metadata_repositories(repo).inputs.insert(
                     {
                         "runId": run_id,
                         "inputId": "__previous",
                         "document": previous_artifact,
-                    },
+                    }
                 )
             if edit is not None:
-                await repo.insert(
-                    "engine_run_inputs",
+                await metadata_repositories(repo).inputs.insert(
                     {
                         "runId": run_id,
                         "inputId": "__edit",
                         "document": edit.model_dump(),
-                    },
+                    }
                 )
             for lid, snapshot in snapshots.items():
-                await repo.insert(
-                    "engine_run_inputs",
+                await metadata_repositories(repo).inputs.insert(
                     {
                         "runId": run_id,
                         "inputId": "__values_" + lid,
                         "document": snapshot,
-                    },
+                    }
                 )
             pinned = {
                 a["artifactId"]: a
@@ -328,395 +325,41 @@ class MeasureBuildService(Service):
                 ]
             }
             for aid in pinned:
-                artifact = await self.require(
-                    repo, "engine_artifacts", {"artifactId": aid}, "Input artifact"
+                artifact = await metadata_repositories(repo).artifacts.require(
+                    ArtifactLookup(artifact_id=aid), "Input artifact"
                 )
                 if artifact["state"] != "ready":
                     raise Conflict(
                         "A measure input was retired; reload before retrying."
                     )
-                await repo.replace(
-                    "engine_artifacts",
-                    {"artifactId": aid},
+                await metadata_repositories(repo).artifacts.replace(
+                    ArtifactLookup(artifact_id=aid),
                     {**artifact, "pinVersion": artifact.get("pinVersion", 0) + 1},
                 )
-                await repo.insert(
-                    "engine_artifact_pins", {"runId": run_id, "artifactId": aid}
+                await metadata_repositories(repo).pins.insert(
+                    {"runId": run_id, "artifactId": aid}
                 )
             return self.managed.public_run(run)
 
         try:
             return await self.store.transaction(operation)
         except Conflict:
-            previous = await self.store.repository.get(
-                "engine_runs", {**scope(model, revision), "idempotencyKey": key}
+            previous = await metadata_repositories(self.store.repository).runs.find(
+                RunLookup(model_id=model, revision_id=revision, idempotency_key=key)
             )
             if previous and previous["requestHash"] == request_hash:
                 return self.managed.public_run(previous)
             raise
 
     async def execute_run(self, run, worker):
-        if run.get("storagePolicy") != STORAGE_POLICY:
-            raise Conflict(
-                "This build predates the table-storage upgrade. Submit a new build."
-            )
-        self.incremental.validate_runtime_policy(run)
-        docs = await self.store.repository.list(
-            "engine_run_inputs",
-            {"runId": run["runId"]},
-            key="inputId",
-            limit=self.max_objects * 4 + 3,
-        )
-        objects = [d["document"] for d in docs if not d["inputId"].startswith("__")]
-        populations = {
-            d["inputId"][13:]: d["document"]
-            for d in docs
-            if d["inputId"].startswith("__population_")
-        }
-        managed = {
-            d["inputId"][10:]: d["document"]["artifact"]
-            for d in docs
-            if d["inputId"].startswith("__managed_")
-        }
-        defs = {
-            d["inputId"][10:]: d["document"]["definition"]
-            for d in docs
-            if d["inputId"].startswith("__managed_")
-        }
-        previous = next(
-            (d["document"] for d in docs if d["inputId"] == "__previous"), None
-        )
-        manifests = {
-            d["inputId"].removeprefix("__manifest_"): d["document"]
-            for d in docs
-            if d["inputId"].startswith("__manifest_")
-        }
-        manifests = manifests or run.get("materialisationManifests", {})
-        snapshots = {
-            d["inputId"][9:]: d["document"]
-            for d in docs
-            if d["inputId"].startswith("__values_")
-        }
-        if run.get("reuseOnly"):
-            await self.incremental.reuse(run, worker, snapshots, manifests)
-            return
-        needed_transactions = None
-        if run.get("buildMode") == "incremental":
-            needed_transactions = {
-                o["definition"]["transactionId"]
-                for o in objects
-                if o["kind"] == "measure"
-                and o["objectId"] in run["dirtyMeasures"]
-                and o["definition"]["measureType"] == "referenced"
-            }
-        required_sources = set(managed)
-        if needed_transactions is not None:
-            required_sources = {
-                o["definition"]["sourceId"] for o in objects if o["kind"] == "dimension"
-            }
-            for tx in objects:
-                if (
-                    tx["kind"] == "transaction"
-                    and tx["objectId"] in needed_transactions
-                ):
-                    required_sources.add(tx["definition"]["sourceId"])
-                    required_sources.update(calendar_source_ids(objects, tx))
-        by_id = {o["objectId"]: o for o in objects}
-        for sid, artifact in managed.items():
-            if sid not in required_sources:
-                continue
-            source = by_id[sid]
-            await self.managed.executor.inspect(source)
-            plan = self.managed.planner.plan(
-                source, self.managed.input_definition(defs[sid]["definition"])
-            )
-            compiled = self.managed.compiler.compile(plan)
-            await self.managed.executor.verify(artifact, compiled)
-            await self.managed.executor.checks(compiled)
-        await self.storage.ensure_inputs(
-            [
-                *populations.values(),
-                *snapshots.values(),
-            ]
-        )
-        edit_document = next(
-            (d["document"] for d in docs if d["inputId"] == "__edit"), None
-        )
-        if run.get("isEdit"):
-            from ..schemas.planning_view import PlanningViewEdit
-            from ..engine.measure_edits import MeasureEditCompiler
-
-            if edit_document is None:
-                raise Conflict(
-                    "The edit job context is missing. Refresh and submit a new edit."
-                )
-            await self.storage.ensure_inputs(list(snapshots.values()))
-            compiler = MeasureEditCompiler(
-                self.settings.clickhouse_database,
-                objects,
-                populations,
-                managed,
-                run["resourceId"],
-                snapshots,
-                PlanningViewEdit.model_validate(edit_document),
-            )
-        else:
-            resolution_profiles = await prepare_resolution_profiles(
-                self.executor.warehouse,
-                [
-                    o
-                    for o in objects
-                    if o["kind"] != "transaction"
-                    or needed_transactions is None
-                    or o["objectId"] in needed_transactions
-                ],
-                managed,
-                self.settings.resolution_max_profiles,
-                self.executor.execution_settings(),
-            )
-            compiler_class = (
-                IncrementalMeasureCompiler
-                if run.get("buildMode") == "incremental"
-                else MeasureCompiler
-            )
-            compiler = compiler_class(
-                self.settings.clickhouse_database,
-                objects,
-                populations,
-                managed,
-                run["resourceId"],
-                previous,
-                resolution_profiles,
-                self.settings.resolution_max_rows,
-                **(
-                    {
-                        "snapshots": snapshots,
-                        "manifests": manifests,
-                    }
-                    if run.get("buildMode") == "incremental"
-                    else {}
-                ),
-            )
-        compiler.max_nodes = self.settings.measure_max_nodes
-        outcomes = []
-        order = [
-            run["resourceId"],
-            *(lid for lid in populations if lid != run["resourceId"]),
-        ]
-        for lid in order:
-            level_started = perf_counter()
-            compiled, unavailable = compiler.compile_level(lid)
-            if (
-                run.get("isEdit")
-                and set(snapshots[lid].get("measureColumns", {})) & unavailable.keys()
-            ):
-                raise MetadataError(
-                    "edit_dependency_unavailable",
-                    "An existing measure cannot be recomputed at this level. No edit was activated.",
-                )
-            if len(compiled.sql.encode()) > self.settings.measure_max_sql_bytes:
-                raise MetadataError(
-                    "measure_sql_limit",
-                    "Compiled measure graph exceeds the configured SQL-size limit.",
-                )
-            compiled_at = perf_counter()
-            step = "values_" + lid
-            await worker.step(
-                run,
-                step,
-                "running",
-                planHash=digest(compiled.sql),
-                compilerVersion=compiled.compiler_version,
-                unavailable=unavailable,
-            )
-            prechecks_started = perf_counter()
-            await self.executor.checks(compiled)
-            prechecks_ms = (perf_counter() - prechecks_started) * 1000
-            aid = "artifact_" + uuid4().hex
-            artifact = {
-                **scope(run["modelId"], run["revisionId"]),
-                "artifactId": aid,
-                "runId": run["runId"],
-                "resourceKind": "measureValues",
-                "resourceId": lid,
-                "kind": "table",
-                "state": "candidate",
-                "createdAt": now(),
-                "inputHash": run["inputHash"],
-                "attempt": run["fence"],
-            }
-
-            async def record(repo):
-                await worker.fenced(repo, run)
-                artifact.update(
-                    await self.storage.reserve(repo, artifact, by_id[lid]["name"])
-                )
-                await repo.insert("engine_artifacts", artifact)
-
-            await self.store.transaction(record)
-            keys = tuple(compiler.keys(lid))
-            plan = PlanningPlan(None, compiled.schema, keys, (), (), (), False)
-            outcome = await self.executor.build(artifact, compiled, plan)
-            if outcome["rowCount"] != populations[lid]["rowCount"]:
-                raise MetadataError(
-                    "measure_cardinality",
-                    "Measure merging changed the planning population row count.",
-                )
-            postchecks_started = perf_counter()
-            await self.executor.checks(compiled)
-            postchecks_ms = (perf_counter() - postchecks_started) * 1000
-            populated = {
-                **artifact,
-                **outcome,
-                "state": "ready",
-                "builtAt": now(),
-                "levelId": lid,
-                "generationId": run["runId"],
-                "numericPolicy": MEASURE_TYPE_POLICY,
-                "materialisationManifest": manifests.get(lid),
-                "keyColumns": {
-                    c["columnId"]: c.get("storageName", c["name"])
-                    for c in outcome["columns"]
-                    if c["columnId"] in keys
-                },
-                "measureColumns": {
-                    c["measureId"]: c.get("storageName", c["name"])
-                    for c in outcome["columns"]
-                    if c.get("measureId")
-                },
-                "coverageColumns": {
-                    c["coverageFor"]: c.get("storageName", c["name"])
-                    for c in outcome["columns"]
-                    if c.get("coverageFor")
-                },
-                "unavailable": unavailable,
-                "populationArtifactId": populations[lid]["artifactId"],
-                "compilerVersion": compiled.compiler_version,
-                "derivations": [
-                    {
-                        "measureId": n.measure_id,
-                        "planningLevelId": n.level_id,
-                        "operation": n.operation,
-                    }
-                    for n in compiler.nodes
-                    if n.level_id == lid
-                ],
-            }
-            outcomes.append(populated)
-            await worker.step(
-                run,
-                step,
-                "succeeded",
-                rowCount=outcome["rowCount"],
-                artifactId=aid,
-                reusedMeasures=sorted(
-                    {
-                        n.measure_id
-                        for n in compiler.nodes
-                        if n.level_id == lid and n.operation == "reuse"
-                    }
-                ),
-                timingsMs={
-                    "compile": round((compiled_at - level_started) * 1000, 3),
-                    "preChecks": round(prechecks_ms, 3),
-                    "tableBuild": outcome.get("buildTimingsMs", {}),
-                    "postChecks": round(postchecks_ms, 3),
-                    "total": round((perf_counter() - level_started) * 1000, 3),
-                },
-            )
-
-        async def activate(repo):
-            current = await worker.fenced(repo, run)
-            rev, _, _, _, _, _, fingerprint = await self.capture(
-                repo, run["modelId"], run["revisionId"]
-            )
-            self.check_version(rev, run["revisionVersion"])
-            if rev["approvalStatus"] != "draft":
-                raise ImmutableRevision()
-            if fingerprint != run["inputHash"]:
-                raise Conflict("Measure inputs changed during the build.")
-            if run.get("buildMode") == "incremental":
-                await self.incremental.check_snapshots(repo, run, snapshots)
-            previous_binding = await repo.get(
-                "engine_artifact_bindings",
-                {
-                    **scope(run["modelId"], run["revisionId"]),
-                    "resourceKind": "measureValues",
-                    "resourceId": run["resourceId"],
-                },
-            )
-            if (previous_binding or {}).get("generationId") != run.get(
-                "previousGenerationId", (previous or {}).get("generationId")
-            ):
-                raise Conflict(
-                    "Another value generation was activated. Refresh and retry."
-                )
-            for artifact in outcomes:
-                identity = {
-                    **scope(run["modelId"], run["revisionId"]),
-                    "resourceKind": "measureValues",
-                    "resourceId": artifact["levelId"],
-                }
-                binding = {
-                    **identity,
-                    "artifactId": artifact["artifactId"],
-                    "definitionHash": run["inputHash"],
-                    "inputHash": run["inputHash"],
-                    "generationId": run["runId"],
-                    "builtAt": now(),
-                }
-                if await repo.get("engine_artifact_bindings", identity):
-                    await repo.replace("engine_artifact_bindings", identity, binding)
-                else:
-                    await repo.insert("engine_artifact_bindings", binding)
-                await repo.replace(
-                    "engine_artifacts", {"artifactId": artifact["artifactId"]}, artifact
-                )
-            old_bindings = await repo.list(
-                "engine_artifact_bindings",
-                {
-                    **scope(run["modelId"], run["revisionId"]),
-                    "resourceKind": "measureValues",
-                },
-                key="resourceId",
-                limit=self.max_objects + 1,
-            )
-            if len(old_bindings) > self.max_objects:
-                raise Conflict("Measure bindings exceed the metadata object limit.")
-            for old in old_bindings:
-                if old["resourceId"] not in populations:
-                    await repo.delete(
-                        "engine_artifact_bindings",
-                        {
-                            **scope(run["modelId"], run["revisionId"]),
-                            "resourceKind": "measureValues",
-                            "resourceId": old["resourceId"],
-                        },
-                    )
-            if run.get("isEdit"):
-                await repo.delete(
-                    "engine_run_inputs", {"runId": run["runId"], "inputId": "__edit"}
-                )
-            await self.touch_revision(repo, run["modelId"], run["revisionId"])
-            await repo.replace(
-                "engine_runs",
-                {"runId": run["runId"], "fence": run["fence"]},
-                {
-                    **current,
-                    "state": "succeeded",
-                    "updatedAt": now(),
-                    "generationId": run["runId"],
-                },
-            )
-
-        await self.store.transaction(activate)
+        await self.handler.execute_run(run, worker)
 
     async def describe_level(self, repo, model, revision, level_id):
         """Explain structural materialisation from the same relationship rules as execution."""
         objects = await self.objects(repo, model, revision)
         by_id = {o["objectId"]: o for o in objects}
-        rev = await self.require(
-            repo, "semantic_revisions", scope(model, revision), "Revision"
+        rev = await metadata_repositories(repo).revisions.require(
+            RevisionLookup(model_id=model, revision_id=revision), "Revision"
         )
         base = rev["basePlanningLevelId"]
         analyzer = LevelRelationshipAnalyzer(objects)
@@ -781,11 +424,13 @@ class MeasureBuildService(Service):
 
     async def status(self, model, revision, level_id, preview=False):
         repo = self.store.repository
-        query = scope(model, revision)
-        await self.require(
-            repo,
-            "semantic_objects",
-            {**query, "kind": "planningLevel", "objectId": level_id},
+        await metadata_repositories(repo).objects.require(
+            ObjectLookup(
+                model_id=model,
+                revision_id=revision,
+                kind="planningLevel",
+                object_id=level_id,
+            ),
             "Planning level",
         )
         result = {
@@ -799,15 +444,17 @@ class MeasureBuildService(Service):
                 repo, model, revision, level_id
             ),
         }
-        binding = await repo.get(
-            "engine_artifact_bindings",
-            {**query, "resourceKind": "measureValues", "resourceId": level_id},
+        binding = await metadata_repositories(repo).bindings.find(
+            BindingLookup(
+                model_id=model,
+                revision_id=revision,
+                resource_kind="measureValues",
+                resource_id=level_id,
+            )
         )
         if binding:
-            artifact = await self.require(
-                repo,
-                "engine_artifacts",
-                {"artifactId": binding["artifactId"]},
+            artifact = await metadata_repositories(repo).artifacts.require(
+                ArtifactLookup(artifact_id=binding["artifactId"]),
                 "Measure value artifact",
             )
             result.update(
@@ -821,10 +468,14 @@ class MeasureBuildService(Service):
             )
             if artifact.get("numericPolicy") != MEASURE_TYPE_POLICY:
                 result["state"] = "needs_rebuild"
-            rev = await self.require(repo, "semantic_revisions", query, "Revision")
+            rev = await metadata_repositories(repo).revisions.require(
+                RevisionLookup(model_id=model, revision_id=revision), "Revision"
+            )
             if rev["approvalStatus"] == "draft":
                 try:
-                    *_, fingerprint = await self.capture(repo, model, revision)
+                    *_, fingerprint = await self.capture_build_inputs(
+                        repo, model, revision
+                    )
                     if fingerprint != binding["inputHash"]:
                         result["state"] = "needs_rebuild"
                 except MetadataError:
@@ -833,27 +484,14 @@ class MeasureBuildService(Service):
                 await self.storage.ensure_inputs([artifact])
                 warehouse = self.executor.warehouse
 
-                def read(connect):
-                    client = connect()
-                    info = warehouse.table_info(client, artifact["physicalName"])
-                    if not info or info[0] != "MergeTree" or info[1] != owner(artifact):
-                        raise Conflict("The built measure table is missing or changed.")
-                    rows = client.query(
-                        relation_sql(
-                            warehouse, {**artifact, "columns": result["columns"]}
-                        )
-                        + " ORDER BY ALL LIMIT 50",
-                        settings=self.executor.execution_settings(),
-                    ).result_rows
-                    return [[warehouse.cell(v) for v in row] for row in rows]
-
-                result["rows"] = await warehouse.run(read)
-        runs = await repo.list(
-            "engine_runs",
-            {**query, "resourceKind": "measureSet"},
-            key="createdAt",
+                result["rows"] = await warehouse.queries.preview_values(
+                    artifact, result["columns"], self.executor.execution_settings()
+                )
+        runs = await metadata_repositories(repo).runs.list(
+            RunLookup(model_id=model, revision_id=revision, resource_kind="measureSet"),
+            order_by="createdAt",
             limit=1,
-            descending=True,
+            newest_first=True,
         )
         if runs:
             run = runs[0]
@@ -866,8 +504,8 @@ class MeasureBuildService(Service):
 
     async def base_visibility(self, model, revision, native_id):
         repo = self.store.repository
-        rev = await self.require(
-            repo, "semantic_revisions", scope(model, revision), "Revision"
+        rev = await metadata_repositories(repo).revisions.require(
+            RevisionLookup(model_id=model, revision_id=revision), "Revision"
         )
         objects = await self.effective(
             repo, model, revision, await self.objects(repo, model, revision)
@@ -900,16 +538,19 @@ class MeasureBuildService(Service):
             None,
         )
         if not measure:
-            return await self.require(
-                repo,
-                "semantic_objects",
-                {**scope(model, revision), "objectId": measure_id, "kind": "measure"},
+            return await metadata_repositories(repo).objects.require(
+                ObjectLookup(
+                    model_id=model,
+                    revision_id=revision,
+                    object_id=measure_id,
+                    kind="measure",
+                ),
                 "Measure",
             )
         analyzer = LevelRelationshipAnalyzer(objects)
         native = measure["definition"]["nativePlanningLevelId"]
-        revision_doc = await self.require(
-            repo, "semantic_revisions", scope(model, revision), "Revision"
+        revision_doc = await metadata_repositories(repo).revisions.require(
+            RevisionLookup(model_id=model, revision_id=revision), "Revision"
         )
         base = revision_doc["basePlanningLevelId"]
         levels = []
