@@ -54,11 +54,11 @@ Sales and forecast must also describe compatible business populations; matching 
 
 ## Revision lifecycle and CRUD
 
-Published definitions are immutable. Create a child draft by copying objects/examples and managed definitions, preserving IDs and resetting document versions. Do not share physical artifact bindings or manufacture fresh evidence. Full-copy revisions favor straightforward retrieval/history; consider structural sharing only if measured costs justify it.
+The current product exposes only one default draft. Model/revision creation, deletion and publication endpoints are removed; scoped metadata, services and historical immutability remain for future support. The retained lifecycle contract is: published definitions are immutable; a child draft can be created internally by copying objects/examples and managed definitions, preserving IDs and resetting document versions. Do not share physical artifact bindings or manufacture fresh evidence. Full-copy revisions favor straightforward retrieval/history; consider structural sharing only if measured costs justify it.
 
 Every draft-definition mutation writes the revision guard inside a MongoDB transaction. Publication validates the graph and updates revision state/model pointers in that transaction, preventing competing edits from publishing a mixed snapshot. Resource version, revision version, revision number and schema/contract version are distinct.
 
-MongoDB must be a replica set or sharded deployment; standalone mode is rejected. Persistence uses snapshot transactions and majority writes. Deletes are explicit, dependency-aware and non-cascading. Published history cannot be deleted through ordinary CRUD; empty drafts and models without revisions can be removed. Change/clear a draft's Base selection before deleting its selected level.
+MongoDB must be a replica set or sharded deployment; standalone mode is rejected. Persistence uses snapshot transactions and majority writes. Deletes are explicit, dependency-aware and non-cascading. Public model/revision deletion is disabled; the retained internal lifecycle can remove empty drafts and models without revisions. Change/clear a draft's Base selection before deleting its selected level.
 
 Metadata APIs use `/api/v1`; generated OpenAPI describes payloads. PUT replaces editable fields. Read/create/update return version and ETag; PUT, DELETE and publish require `If-Match`: missing → 428, malformed → 400, stale → 409. Revision creation and publication also require the expected model version because pointers change. Lists use bounded stable-ID cursors; clients must exhaust pages.
 
@@ -70,7 +70,7 @@ Adding executable kinds/AST operations requires schemas, service/API wiring, gra
 
 `POST /api/v1/workspace/bootstrap` transactionally creates `default_model` (Planning Model) and draft `revision_1` on an empty installation. It is explicit/authenticated, idempotent and retries competing first inserts; existing user models remain. New installations/UI drafts use contract 2.
 
-Model/revision selection and creation live only on Sources; Base selection lives on Planning Levels. Other pages inherit context. URL `model`, `revision`, `tab` parameters preserve navigation. The browser holds fetched snapshots, unsaved inputs, layout/loading/error state only—no semantic definitions/source rows in localStorage, sessionStorage or IndexedDB. Obsolete requests are aborted/ignored; success appears only after server confirmation.
+There are no model/revision selectors or creation/publication controls. The application automatically uses the default workspace; Base selection remains on Planning Levels. Validate metadata stays on Sources. GET/list and scoped update endpoints remain for inspection, Base selection and future compatibility; additional model/revision POSTs, lifecycle DELETEs and revision publish are absent from production OpenAPI. URL `model`, `revision`, `tab` parameters preserve navigation. The browser holds fetched snapshots, unsaved inputs, layout/loading/error state only—no semantic definitions/source rows in localStorage, sessionStorage or IndexedDB. Obsolete requests are aborted/ignored; success appears only after server confirmation.
 
 Published editors are read-only. Failed/stale writes preserve the form and diagnostics. Reload/reopen/reapply after conflicts; do not silently retry a replacement against a newer version. Deletes/publication require their explicit UI confirmation. Save/build workflows vary by resource and are documented with that resource.
 

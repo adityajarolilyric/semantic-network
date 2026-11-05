@@ -1,7 +1,7 @@
 from fastapi.testclient import TestClient
 import pytest
 
-from backend.app.main import create_app
+from backend.tests.fixture_app import create_fixture_app as create_app
 from .conftest import ROOT, seed
 from .fake_warehouse import FakeWarehouse
 from .memory_store import MemoryStore

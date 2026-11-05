@@ -7,6 +7,19 @@ from .objects import ObjectService
 class TransactionService(ObjectService):
     kind = "transaction"
 
+    def __init__(self, store, max_objects=5000, measure_factory=None):
+        super().__init__(store, max_objects)
+        self.measure_factory = measure_factory
+
+    def create_input(self, payload):
+        return payload.model_dump(exclude={"measures"})
+
+    def additional_create_documents(self, payload, document, objects):
+        selections = getattr(payload, "measures", [])
+        if not selections:
+            return []
+        return self.measure_factory.create_documents(document, selections, objects)
+
     def prepare_document(self, document, objects):
         """New authoring uses wide columns; unchanged saved selector rules remain readable."""
 

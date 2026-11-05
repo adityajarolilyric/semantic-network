@@ -75,12 +75,14 @@ export function FilterEditor({
   onChange,
   loading = false,
   error = '',
+  embedded = false,
 }: {
   value?: FilterDefinition | null
   columns: FilterColumn[]
   onChange: (value: FilterDefinition | null) => void
   loading?: boolean
   error?: string
+  embedded?: boolean
 }) {
   function condition(
     node: FilterCondition,
@@ -362,14 +364,8 @@ export function FilterEditor({
   }
   const conditionCount = value ? count(value.root) : 0
   const summary = value ? describe(value.root).slice(1, -1) : ''
-  return (
-    <TransformationSection
-      title="Filters"
-      configured={!!value}
-      status={
-        value ? conditionCount + (conditionCount === 1 ? ' condition' : ' conditions') : 'All rows'
-      }
-    >
+  const content = (
+    <>
       {!value ? (
         <div className="filter-empty">
           <div>
@@ -424,6 +420,19 @@ export function FilterEditor({
           </details>
         </>
       )}
+    </>
+  )
+  return embedded ? (
+    content
+  ) : (
+    <TransformationSection
+      title="Filters"
+      configured={!!value}
+      status={
+        value ? conditionCount + (conditionCount === 1 ? ' condition' : ' conditions') : 'All rows'
+      }
+    >
+      {content}
     </TransformationSection>
   )
 }

@@ -5,7 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.app.core.errors import MetadataError
-from backend.app.main import create_app
+from backend.tests.fixture_app import create_fixture_app as create_app
 from backend.app.services.workspace_gate import WorkspaceGate
 from .conftest import seed
 from .fake_warehouse import FakeWarehouse

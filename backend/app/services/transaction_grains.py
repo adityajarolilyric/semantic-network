@@ -11,9 +11,11 @@ from .base import Service, now, scope
 
 
 class TransactionGrainService(Service):
-    def __init__(self, store, settings, planning):
+    def __init__(self, store, settings, planning, resolution, measure_factory):
         super().__init__(store, settings.max_objects_per_revision)
         self.planning = planning
+        self.resolution = resolution
+        self.measure_factory = measure_factory
 
     async def definitions(self, repo, model, revision, payload):
         objects = await self.objects(repo, model, revision)
@@ -95,6 +97,9 @@ class TransactionGrainService(Service):
                 "description": payload.description,
                 "definition": {
                     **owner["definition"],
+                    "filters": payload.filters.model_dump()
+                    if payload.filters
+                    else None,
                     "planningLevelId": level_id,
                     "keyMappings": [
                         {"grainColumnId": key, "sourceColumnId": cid}
@@ -109,6 +114,8 @@ class TransactionGrainService(Service):
         _, level, _ = await self.store.transaction(
             lambda repo: self.definitions(repo, model, revision, payload)
         )
+        if payload.filters:
+            return await self.resolution.preview_unmapped(model, revision, payload)
         return await self.planning.preview(model, revision, level)
 
     async def create(self, model, revision, payload):
@@ -122,6 +129,37 @@ class TransactionGrainService(Service):
                 repo, model, revision, payload
             )
             inputs = [level.model_dump(), transaction.model_dump()]
+            timestamp = now()
+            transaction_document = {
+                **inputs[1],
+                **scope(model, revision),
+                "version": 1,
+                "createdAt": timestamp,
+                "updatedAt": timestamp,
+            }
+            effective = await self.effective(
+                repo, model, revision, [*objects, inputs[0], transaction_document]
+            )
+            measure_documents = self.measure_factory.create_documents(
+                transaction_document, payload.measures, effective
+            )
+            inputs.extend(
+                [
+                    {
+                        key: value
+                        for key, value in document.items()
+                        if key
+                        not in {
+                            "modelId",
+                            "revisionId",
+                            "version",
+                            "createdAt",
+                            "updatedAt",
+                        }
+                    }
+                    for document in measure_documents
+                ]
+            )
             existing = {o["objectId"]: o for o in objects}
             if any(o["objectId"] in existing for o in inputs):
                 # Stable generated IDs make retries safe; never overwrite edited objects.
@@ -137,7 +175,7 @@ class TransactionGrainService(Service):
                     "transaction": existing[transaction.objectId],
                     "planningLevel": existing[level.objectId],
                 }
-            if len(objects) + 2 > self.max_objects:
+            if len(objects) + len(inputs) > self.max_objects:
                 raise Conflict("The revision has reached its metadata object limit.")
             rev = await self.touch_revision(repo, model, revision)
             base = rev["basePlanningLevelId"]

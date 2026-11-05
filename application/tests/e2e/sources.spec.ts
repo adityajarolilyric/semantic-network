@@ -110,8 +110,8 @@ test('nuke everything confirms once and leaves only a default draft workspace', 
     await dialog.accept()
   })
   await button.click()
-  await expect(page.getByLabel('Semantic model', { exact: true })).toHaveValue('default_model')
-  await expect(page.getByLabel('Revision', { exact: true })).toHaveValue('revision_1')
+  await expect(page.getByLabel('Semantic model', { exact: true })).toHaveCount(0)
+  await expect(page.getByLabel('Revision', { exact: true })).toHaveCount(0)
   await expect(
     page.getByRole('heading', { name: 'Your first source starts here', exact: true }),
   ).toBeVisible()

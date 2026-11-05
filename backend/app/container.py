@@ -1,3 +1,4 @@
+from .services.transaction_measures import TransactionMeasureFactory
 from dataclasses import dataclass
 
 from .core.config import Settings
@@ -45,8 +46,11 @@ class ServiceContainer:
         self.sources = SourceService(*args)
         self.dimensions = DimensionService(*args)
         self.planning_levels = PlanningLevelService(*args)
-        self.transactions = TransactionService(*args)
         self.measures = MeasureService(*args)
+        self.transaction_measure_factory = TransactionMeasureFactory(self.measures)
+        self.transactions = TransactionService(
+            *args, measure_factory=self.transaction_measure_factory
+        )
         self.evidence = EvidenceService(*args)
         self.examples = ExampleService(*args)
         self.contracts = ContractService(*args)
@@ -78,11 +82,15 @@ class ServiceContainer:
             "planningLevelPreview", self.planning_builds.handler
         )
         self.engine_worker.register("measureSet", self.measure_builds.handler)
-        self.transaction_grains = TransactionGrainService(
-            self.store, self.settings, self.planning_builds
-        )
         self.transaction_resolution = TransactionResolutionService(
             self.store, self.settings, self.planning_builds, self.managed_tables
+        )
+        self.transaction_grains = TransactionGrainService(
+            self.store,
+            self.settings,
+            self.planning_builds,
+            self.transaction_resolution,
+            self.transaction_measure_factory,
         )
         self.planning_view = PlanningViewService(
             self.store, self.settings, self.measure_builds

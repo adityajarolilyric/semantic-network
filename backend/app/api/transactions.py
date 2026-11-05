@@ -6,6 +6,7 @@ from ..schemas.managed_tables import ObjectInputTransform
 from ..schemas.transactions import (
     CalendarSchemaInput,
     TransactionDocument,
+    TransactionCreateInput,
     TransactionFromGrainInput,
     TransactionInput,
 )
@@ -116,7 +117,7 @@ class TransactionAPI(RevisionResourceAPI):
         self,
         model_id: Identifier,
         revision_id: Identifier,
-        payload: TransactionInput,
+        payload: TransactionCreateInput,
         response: Response,
     ):
         return await super().create(model_id, revision_id, payload, response)

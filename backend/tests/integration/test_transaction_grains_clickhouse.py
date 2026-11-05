@@ -335,6 +335,28 @@ def test_onboarding_uses_transformed_population_and_preserves_input(
     preview = client.post(BASE + "/transactions/from-grain/preview", json=payload)
     assert preview.status_code == 200, preview.text
     assert preview.json()["rowCount"] == (4 if calendar else 2)
+    filtered_preview = client.post(
+        BASE + "/transactions/from-grain/preview",
+        json={
+            **payload,
+            "filters": {
+                "root": {
+                    "type": "group",
+                    "combinator": "and",
+                    "children": [
+                        {
+                            "type": "condition",
+                            "columnId": "col_5",
+                            "operator": "gt",
+                            "values": [70],
+                        }
+                    ],
+                }
+            },
+        },
+    )
+    assert filtered_preview.status_code == 200, filtered_preview.text
+    assert filtered_preview.json()["rowCount"] == (3 if calendar else 1)
     assert client.get(BASE).json()["version"] == before
     assert client.get(BASE + "/planning-levels").json()["items"] == []
     created = post(client, payload)
@@ -402,3 +424,112 @@ def test_onboarding_uses_transformed_population_and_preserves_input(
         unchanged = client.get(BASE + "/planning-levels/" + lid).json()
         assert unchanged["definition"] == level["definition"]
         assert unchanged["version"] == level["version"]
+
+
+def test_onboarding_filters_preview_and_materialise_without_changing_population(
+    clickhouse_app,
+):
+    client, _, _, _ = clickhouse_app
+    source = managed(
+        client,
+        "FilteredForecast",
+        b"product_id,location_id,time_id,qty\nP1,L1,W1,100\nP1,L1,W1,-10\nP2,L1,W1,-20\n",
+    )
+    payload = onboarding(source, "FilteredTx")
+    payload["filters"] = {
+        "root": {
+            "type": "group",
+            "combinator": "and",
+            "children": [
+                {
+                    "type": "condition",
+                    "columnId": "col_4",
+                    "operator": "gt",
+                    "values": [0],
+                }
+            ],
+        }
+    }
+    before = client.get(BASE).json()["version"]
+    response = client.post(BASE + "/transactions/from-grain/preview", json=payload)
+    assert response.status_code == 200, response.text
+    preview = response.json()
+    assert preview["rowCount"] == 1
+    assert preview["rows"] == [["P1", "L1", "W1", "100"]]
+    assert preview["diagnostics"]["filteredOutRows"] == 2
+    assert client.get(BASE).json()["version"] == before
+    assert client.get(BASE + "/transactions").json()["items"] == []
+    created = post(client, payload)
+    assert created["transaction"]["definition"]["filters"] == payload["filters"]
+    level = created["planningLevel"]["objectId"]
+    assert build(client, level)["state"] == "succeeded"
+    assert table(client, level)["rowCount"] == 2
+    # The resource envelope is not part of a typed preview input.
+    transaction_input = {
+        key: value
+        for key, value in created["transaction"].items()
+        if key not in ["modelId", "revisionId", "version", "createdAt", "updatedAt"]
+    }
+    normal = client.post(
+        BASE + "/transactions/resolution/preview", json=transaction_input
+    )
+    assert normal.status_code == 200, normal.text
+    assert normal.json()["rows"] == preview["rows"]
+    measure(client, "FilteredQty", "FilteredTx", level, "col_4")
+    assert build_values(client)["state"] == "succeeded"
+    values = client.get(
+        BASE + "/measures/execution/levels/" + level + "?preview=true"
+    ).json()
+    assert sorted(row[-1] for row in values["rows"] if row[-1] is not None) == ["100.0"]
+
+
+@pytest.mark.parametrize("mapped", [False, True])
+def test_create_multiple_measures_and_materialise_configured_policies(
+    clickhouse_app, mapped
+):
+    client, _, _, _ = clickhouse_app
+    source = managed(
+        client,
+        "MultiMeasure",
+        b"product,location,week,qty,price\nP1,L1,W1,100,10\nP1,L1,W1,50,20\nP2,L1,W1,200,40\n",
+    )
+    selections = [
+        {
+            "valueColumnId": "col_4",
+            "editable": True,
+            "aggregation": {"nonTime": "sum", "time": "sum"},
+        },
+        {
+            "valueColumnId": "col_5",
+            "aggregation": {"nonTime": "avg", "time": "max"},
+            "allocation": {"mode": "none"},
+        },
+    ]
+    payload = onboarding(source, "Multi")
+    if mapped:
+        existing = post(client, onboarding(source, "Initial"))
+        level = existing["planningLevel"]["objectId"]
+        payload = {
+            k: v
+            for k, v in existing["transaction"].items()
+            if k not in ["modelId", "revisionId", "createdAt", "updatedAt", "version"]
+        }
+        payload["objectId"] = "Multi"
+        payload["measures"] = selections
+        response = client.post(BASE + "/transactions", json=payload)
+        assert response.status_code == 201, response.text
+    else:
+        payload["measures"] = selections
+        level = post(client, payload)["planningLevel"]["objectId"]
+    assert build(client, level)["state"] == "succeeded"
+    measures = client.get(BASE + "/measures").json()["items"]
+    assert sorted(m["name"] for m in measures) == ["price", "qty"]
+    assert build_values(client)["state"] == "succeeded"
+    result = client.get(
+        BASE + "/measures/execution/levels/" + level + "?preview=true"
+    ).json()
+    assert result["rowCount"] == 2
+    # Distinct configured aggregations must be honoured during native source grouping.
+    assert sorted(
+        sorted(float(value) for value in row[-2:]) for row in result["rows"]
+    ) == [[15.0, 150.0], [40.0, 200.0]]

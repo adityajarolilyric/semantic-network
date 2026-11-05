@@ -14,7 +14,6 @@ import {
   type Dimension,
   type Kind,
   type Measure,
-  type Model,
   type ObjectDocument,
   type ObjectInput,
   type PlanningLevel,
@@ -22,7 +21,7 @@ import {
   type Revision,
   type Transaction,
 } from './types'
-import { Check, Field, Select, Text } from './editors/Fields'
+import { Check, Select } from './editors/Fields'
 import { ManagedTableEditor } from './editors/ManagedTableEditor'
 import { DimensionEditor } from './editors/DimensionEditor'
 import { PlanningLevelEditor } from './editors/PlanningLevelEditor'
@@ -145,10 +144,7 @@ export function MetadataWorkspace({
   useEffect(() => {
     if (editor) editorRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' })
   }, [editor?.input.objectId])
-  const [createModel, setCreateModel] = useState(false)
-  const [createRevision, setCreateRevision] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<ObjectDocument | null>(null)
-  const [publish, setPublish] = useState(false)
   const [showExcluded, setShowExcluded] = useState(false)
   const model = meta.model
   const revision = meta.revision
@@ -160,7 +156,6 @@ export function MetadataWorkspace({
     setPendingManaged({})
     setDeleteTarget(null)
     setReport(null)
-    setPublish(false)
     setError('')
     setNotice('')
   }, [tab, model?.modelId, revision?.revisionId])
@@ -282,96 +277,41 @@ export function MetadataWorkspace({
   }
   return (
     <>
-      {tab === 'sources' && (
-        <section className="meta-context" aria-label="Model context">
-          <div className="meta-context-selects">
-            <Select
-              label="Semantic model"
-              disabled={locked}
-              value={model?.modelId ?? ''}
-              items={meta.models.map((m) => ({ value: m.modelId, label: m.displayName }))}
-              required={false}
-              onChange={(v) => {
-                setEditor(null)
-                setReport(null)
-                meta.choose(v)
-              }}
-            />
-            <Select
-              label="Revision"
-              disabled={locked}
-              value={revision?.revisionId ?? ''}
-              items={meta.revisions.map((r) => ({
-                value: r.revisionId,
-                label: `Version ${r.revisionNumber} · ${r.approvalStatus}`,
-              }))}
-              required={false}
-              onChange={(v) => {
-                setEditor(null)
-                setReport(null)
-                meta.choose(model!.modelId, v)
-              }}
-            />
-          </div>
-          <div className="meta-toolbar">
-            {editable &&
-              (revision.metadataContractVersion === 1 ||
-                meta.data.sources.some((s) => s.definition.inScope && !s.managed?.ready)) && (
-                <button
-                  className="secondary-button"
-                  disabled={locked}
-                  onClick={() =>
-                    void run(async () => {
-                      const base = metadataApi.scope(model!.modelId, revision.revisionId)
-                      for (const source of meta.data.sources.filter(
-                        (s) => s.definition.inScope && !s.managed?.ready,
-                      ))
-                        await metadataApi.managedOperation(base + '/managed-tables/enable', {
-                          tableName: source.definition.tableName,
-                        })
-                      const latest = await metadataApi.request<Revision>(base)
-                      await metadataApi.request(
-                        base + '/managed-tables/upgrade-contract',
-                        'POST',
-                        undefined,
-                        latest.version,
-                      )
-                    }, 'Managed views initialized. This draft now uses the engine contract.')
-                  }
-                >
-                  Initialize managed views
-                </button>
-              )}
-            <button
-              className="secondary-button"
-              disabled={locked}
-              onClick={() => setCreateModel((v) => !v)}
-            >
-              New model
-            </button>
-            {model && !model.draftRevisionId && (
+      {tab === 'sources' &&
+        editable &&
+        (revision.metadataContractVersion === 1 ||
+          meta.data.sources.some(
+            (source) => source.definition.inScope && !source.managed?.ready,
+          )) && (
+          <section className="meta-context" aria-label="Source actions">
+            <div className="meta-toolbar">
               <button
                 className="secondary-button"
                 disabled={locked}
-                onClick={() => setCreateRevision((v) => !v)}
+                onClick={() =>
+                  void run(async () => {
+                    const base = metadataApi.scope(model!.modelId, revision.revisionId)
+                    for (const source of meta.data.sources.filter(
+                      (s) => s.definition.inScope && !s.managed?.ready,
+                    ))
+                      await metadataApi.managedOperation(base + '/managed-tables/enable', {
+                        tableName: source.definition.tableName,
+                      })
+                    const latest = await metadataApi.request<Revision>(base)
+                    await metadataApi.request(
+                      base + '/managed-tables/upgrade-contract',
+                      'POST',
+                      undefined,
+                      latest.version,
+                    )
+                  }, 'Managed views initialized. This draft now uses the engine contract.')
+                }
               >
-                New draft
+                Initialize managed views
               </button>
-            )}
-            <button
-              className="secondary-button"
-              disabled={locked}
-              onClick={() => {
-                setEditor(null)
-                setReport(null)
-                meta.refresh()
-              }}
-            >
-              Reload metadata
-            </button>
-          </div>
-        </section>
-      )}
+            </div>
+          </section>
+        )}
       {meta.error && (
         <div className="meta-error" role="alert">
           {meta.error}
@@ -380,74 +320,13 @@ export function MetadataWorkspace({
           </button>
         </div>
       )}
-      {tab === 'sources' && createModel && (
-        <ModelForm
-          busy={busy}
-          onCancel={() => setCreateModel(false)}
-          onSave={async (payload) => {
-            let created: Model | undefined
-            const ok = await run(async () => {
-              created = await metadataApi.request<Model>('/models', 'POST', payload)
-            }, 'Model created. Create its first draft to begin.')
-            if (ok && created) {
-              setCreateModel(false)
-              meta.choose(created.modelId)
-            }
-          }}
-        />
-      )}
-      {tab === 'sources' && createRevision && model && (
-        <RevisionForm
-          busy={busy}
-          parentId={
-            revision?.approvalStatus === 'published'
-              ? revision.revisionId
-              : model.publishedRevisionId
-          }
-          onCancel={() => setCreateRevision(false)}
-          onSave={async (payload) => {
-            let created: Revision | undefined
-            const ok = await run(async () => {
-              created = await metadataApi.request<Revision>(
-                `/models/${model.modelId}/revisions`,
-                'POST',
-                { ...payload, expectedModelVersion: model.version },
-              )
-            }, 'Draft created.')
-            if (ok && created) {
-              setCreateRevision(false)
-              meta.choose(model.modelId, created.revisionId)
-            }
-          }}
-        />
-      )}
-      {!meta.loading && !model && !meta.error && (
-        <div className="meta-card">
-          <h2>Create a semantic model to begin</h2>
-          <p className="meta-hint">
-            Your CSV tables stay in ClickHouse. Create a model and draft, then register tables and
-            capture their semantic definitions.
-          </p>
-        </div>
-      )}
-      {model && !revision && !meta.loading && !meta.error && (
-        <div className="meta-card">
-          <h2>Create the first draft</h2>
-          <p className="meta-hint">
-            Use “New draft” to start capturing metadata for {model.displayName}.
-          </p>
-        </div>
-      )}
       {revision && (tab === 'sources' || tab === 'levels') && (
         <section className="meta-revision">
           <div>
             <span className={'meta-badge ' + revision.approvalStatus}>
               {revision.approvalStatus}
             </span>
-            <span>
-              {' '}
-              Revision {revision.revisionNumber} · {all.length} objects
-            </span>
+            <span> {all.length} objects</span>
           </div>
           {tab === 'sources' && (
             <div className="meta-toolbar">
@@ -466,23 +345,12 @@ export function MetadataWorkspace({
                   }
                 }}
               >
-                Validate revision
+                Validate metadata
               </button>
-              {editable && (
-                <button
-                  className="secondary-button"
-                  disabled={locked || !!editor}
-                  onClick={() => setPublish(true)}
-                >
-                  Publish revision
-                </button>
-              )}
             </div>
           )}
           {revision.approvalStatus === 'published' && (
-            <p className="meta-hint">
-              This revision is read-only. Create a new draft to change its metadata.
-            </p>
+            <p className="meta-hint">This saved revision is read-only.</p>
           )}
         </section>
       )}
@@ -506,7 +374,7 @@ export function MetadataWorkspace({
       )}
       {report && (
         <section className="meta-card" aria-label="Validation results">
-          <h2>{report.valid ? 'Revision is valid' : 'Revision needs attention'}</h2>
+          <h2>{report.valid ? 'Metadata is valid' : 'Metadata needs attention'}</h2>
           {report.valid ? (
             <p className="meta-hint">
               Definition checks passed. Warehouse data uniqueness and coverage have not been
@@ -527,38 +395,6 @@ export function MetadataWorkspace({
               ))}
             </ul>
           )}
-        </section>
-      )}
-      {publish && (
-        <section className="meta-card">
-          <h2>Publish this revision?</h2>
-          <p className="meta-hint">
-            Publication validates and freezes this definition. Future changes require a new draft.
-          </p>
-          <div className="meta-toolbar">
-            <button className="secondary-button" disabled={busy} onClick={() => setPublish(false)}>
-              Cancel publication
-            </button>
-            <button
-              className="primary-button"
-              disabled={locked}
-              onClick={async () => {
-                const ok = await run(
-                  () =>
-                    metadataApi.request(
-                      metadataApi.scope(model!.modelId, revision!.revisionId) + '/publish',
-                      'POST',
-                      { expectedModelVersion: model!.version },
-                      revision!.version,
-                    ),
-                  'Revision published.',
-                )
-                if (ok) setPublish(false)
-              }}
-            >
-              Confirm publication
-            </button>
-          </div>
         </section>
       )}
       {quickMeasure && model && revision?.basePlanningLevelId && (
@@ -886,7 +722,7 @@ export function MetadataWorkspace({
                           : current,
                       )
                       meta.refresh()
-                      if (close) setNotice('Transaction and planning level created.')
+                      if (close) setNotice('Transaction created.')
                     }}
                     onSave={save}
                   />
@@ -930,116 +766,4 @@ function objectSummary(o: ObjectInput) {
     return `${o.definition.keyMappings.length} mapped keys`
   }
   return o.definition.measureType === 'calculated' ? 'Calculated measure' : 'Referenced measure'
-}
-function ModelForm({
-  onSave,
-  onCancel,
-  busy,
-}: {
-  onSave: (payload: {
-    modelId: string
-    name: string
-    displayName: string
-    description: string
-  }) => Promise<void>
-  onCancel: () => void
-  busy: boolean
-}) {
-  const [value, set] = useState({
-    modelId: identity('model').objectId,
-    name: '',
-    displayName: '',
-    description: '',
-  })
-  return (
-    <section className="meta-card">
-      <h2>New semantic model</h2>
-      <form
-        onSubmit={(e) => {
-          e.preventDefault()
-          void onSave(value)
-        }}
-      >
-        <fieldset disabled={busy}>
-          <div className="meta-grid">
-            {(['name', 'description'] as const).map((key) => (
-              <Text
-                key={key}
-                label={
-                  {
-                    modelId: 'Model ID',
-                    name: 'Model name',
-                    displayName: 'Model display name',
-                    description: 'Model description',
-                  }[key]
-                }
-                required={key !== 'description'}
-                value={value[key]}
-                onChange={(v) =>
-                  set({ ...value, [key]: v, ...(key === 'name' ? { displayName: v } : {}) })
-                }
-              />
-            ))}
-          </div>
-          <div className="meta-actions">
-            <button type="button" className="secondary-button" onClick={onCancel}>
-              Cancel new model
-            </button>
-            <button className="primary-button">Create model</button>
-          </div>
-        </fieldset>
-      </form>
-    </section>
-  )
-}
-function RevisionForm({
-  onSave,
-  onCancel,
-  busy,
-  parentId,
-}: {
-  onSave: (payload: {
-    revisionId: string
-    metadataContractVersion?: number
-    changeReason: string
-    parentRevisionId: string | null
-  }) => Promise<void>
-  onCancel: () => void
-  busy: boolean
-  parentId: string | null
-}) {
-  const [id] = useState(() => identity('revision').objectId)
-  const [reason, setReason] = useState('')
-  const [clone, setClone] = useState(!!parentId)
-  return (
-    <section className="meta-card">
-      <h2>New draft revision</h2>
-      <form
-        onSubmit={(e) => {
-          e.preventDefault()
-          void onSave({
-            revisionId: id,
-            metadataContractVersion: 2,
-            changeReason: reason,
-            parentRevisionId: clone ? parentId : null,
-          })
-        }}
-      >
-        <fieldset disabled={busy}>
-          <Field label="Change reason">
-            <textarea value={reason} onChange={(e) => setReason(e.target.value)} maxLength={4000} />
-          </Field>
-          {parentId && (
-            <Check label="Copy the published definition" value={clone} onChange={setClone} />
-          )}
-          <div className="meta-actions">
-            <button type="button" className="secondary-button" onClick={onCancel}>
-              Cancel new draft
-            </button>
-            <button className="primary-button">Create draft</button>
-          </div>
-        </fieldset>
-      </form>
-    </section>
-  )
 }

@@ -28,7 +28,9 @@ const help: Record<string, string> = {
   'Treat empty text as absent':
     'Empty text skips this restriction. Other restrictions still apply; an unconstrained axis requires Allow all members. NULL is always absent.',
   'Transaction mapping':
-    'No Planning Level creates a planning level from distinct selected grain keys. Map to Native Planning Level maps columns to an existing level; Resolve Multi Grain expands mixed-grain rows into it.',
+    'No Planning Level creates a planning level from distinct selected grain keys. Map to Planning Level uses an existing level. Select Resolve multi-grain data when source rows need expansion to its grain.',
+  'Resolve multi-grain data':
+    'Use when rows describe different grains, such as Product/Location and Brand/Zone. Match them to the selected planning level and choose how each numeric value is split or copied. Leave unchecked for direct grain-key mapping.',
   'Match using':
     'Column equals attribute matches a fixed source column. Level and value uses a selector column, such as Brand or Product ID, to interpret a second column.',
   'Match source column':

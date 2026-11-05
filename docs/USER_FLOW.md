@@ -25,11 +25,11 @@ Saving a Dimension, Transaction or Measure does not populate the complete measur
 1. Follow [full-stack startup](OPERATIONS.md#full-stack-startup) from the repository root.
 2. Open the application at localhost port 5174 and check warehouse connection status.
 3. On a fresh installation, use the default Planning Model and its first draft. There is no published revision initially.
-4. Choose the model/revision on Sources. Other pages inherit that context. Each model permits one current draft and can retain published revision history.
+4. Continue directly to Sources. One default Semantic Model and Revision are kept in MongoDB; selection, creation and publication are not exposed. All pages use this context.
 
-**Checkpoint:** the modeller knows which draft will receive changes. Base has not yet been selected.
+**Checkpoint:** the default editable context is ready. Base has not yet been selected.
 
-**Why:** model/revision scope isolates definitions, while keeping context selection in one place avoids inconsistent page-level selections. Published definitions are immutable. Deployment promotion between development and production is a separate, unresolved workflow, not something revision selection already implements. See P01–P04.
+**Why:** default scope removes setup steps while retaining model/revision IDs for future lifecycle support. Publication is disabled because it would freeze the only editable revision. Deployment promotion remains a separate future workflow. See P01–P04.
 
 ## 3. Load and register source tables
 
@@ -63,12 +63,14 @@ Decide which inputs describe members, which define valid intersections and which
 
 When the user has Forecast with Product ID, Location ID, Time ID and Quantity but no Dimensions or population, go directly to Transactions after source registration.
 
+The Transaction editor groups optional steps in a collapsed **Transformations** panel with **Filters**, **Pivot Data** and **Date Resolution** tabs. **Grain Selection** stays visible because every Transaction needs a grain; visual tab order does not change engine execution order.
+
 1. Create Forecast and select its Managed Table. For every new Transaction, the mapping defaults to No Planning Level. Configure Pivot and Date resolution if needed; then choose grain keys from the transformed columns.
 2. Select Product ID, Location ID and Time ID as grain columns; review the suggested level name.
 3. Preview the proposed distinct planning population. No metadata is saved by this preview.
 4. Save metadata. The system creates a normal source-populated level and directly mapped Transaction, then builds the level through the existing engine. The first level becomes Base if none exists.
-5. Define a referenced Quantity measure, build the Semantic Network and plot planning-level columns in Planning View. Dimensions are optional; none are generated.
-6. When Sales arrives, choose Map to Native Planning Level for that existing level and map every key. The user owns any missing-intersection correction; registration does not union the inputs automatically.
+5. Optionally select Quantity in the Transaction’s Measures grid before saving, choosing Editable, both aggregation policies and Dis-Aggregation. Otherwise define the referenced measure later in Measures. Build the Semantic Network and plot planning-level columns in Planning View. Dimensions are optional; none are generated.
+6. When Sales arrives, choose Map to Planning Level for that existing level and map every key. The user owns any missing-intersection correction; registration does not union the inputs automatically.
 7. To replace the population with an authoritative intersection input later, edit Planning Levels, choose the new source and explicitly map the existing fields. Stable key identities preserve Transaction mappings, even when source column order differs.
 
 **Checkpoint:** repeated Forecast facts remain available for aggregation, while its observed key combinations appear once in the population. This population does not establish every possible valid business intersection. If a build fails after creation, the saved objects remain; correct/build them rather than recreating them. Time-like column names do not infer a Time Dimension.
@@ -249,9 +251,9 @@ At the end of the walkthrough, the handoff should contain:
 
 These are modelling outcomes, not fixed row counts. Retained transaction context is not automatically a reporting axis; add an appropriate semantic definition when that separate capability is needed.
 
-## 15. Publish, recover and reset deliberately
+## 15. Validate, recover and reset deliberately
 
-- Validate and Publish revision on Sources when the draft is ready. Current contract publication requires Base, valid definitions and current managed/planning populations; it does not require a built measure network. Publish freezes definitions, not live external source rows. Start a child draft for further changes.
+- Use Validate metadata on Sources to review definition errors. The default revision remains editable; creating, publishing or selecting other models/revisions is not currently exposed. The stored scope and historical lifecycle rules remain available for future support.
 - On stale-write or stale-build errors, reload current metadata, reconcile the preserved form and retry explicitly. Do not assume the system silently reapplied changes to a newer version.
 - Reload metadata does not build data. Planning Build all does not rebuild measures. Incremental Materialise preserves unchanged edits; Full Refresh reloads sources and replaces edits.
 - Use Nuke everything only for an intentional whole-workspace reset. After one confirmation it removes all application data and configured-database tables/views, including other models and published history, then recreates only the default model and draft. It is not a model-scoped undo or a recovery shortcut.

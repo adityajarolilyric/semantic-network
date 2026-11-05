@@ -8,7 +8,7 @@ from pymongo.errors import DuplicateKeyError, OperationFailure
 import pytest
 
 from backend.app.core.config import Settings
-from backend.app.main import create_app
+from backend.tests.fixture_app import create_fixture_app as create_app
 from backend.tests.conftest import ROOT, seed
 from backend.tests.test_metadata_api import definition, publish
 

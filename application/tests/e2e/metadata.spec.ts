@@ -6,12 +6,10 @@ test('manage from the source grid and capture PLT/PT metadata without visible in
   test.setTimeout(180_000)
   await page.goto('/')
   await expect(page.getByText('ClickHouse connected')).toBeVisible()
-  await expect(page.getByLabel('Semantic model', { exact: true })).toHaveValue('default_model')
-  await page.getByRole('button', { name: 'About Semantic model', exact: true }).hover()
-  await expect(page.getByRole('tooltip')).toContainText('Groups the tables')
-  await page.keyboard.press('Escape')
-  await expect(page.getByRole('tooltip')).toHaveCount(0)
-  await expect(page.getByLabel('Revision', { exact: true })).toHaveValue('revision_1')
+  await expect(page.getByLabel('Semantic model', { exact: true })).toHaveCount(0)
+  await expect(page.getByLabel('Revision', { exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'New model', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'New draft', exact: true })).toHaveCount(0)
   const root = '/api/v1/models/default_model/revisions/revision_1'
   const fixtures = [
     {
@@ -193,11 +191,7 @@ test('manage from the source grid and capture PLT/PT metadata without visible in
     await page.getByLabel('Name', { exact: true }).fill(tx.name)
     await expect(page.getByLabel('Expected rows per grain', { exact: true })).toHaveCount(0)
     await page.getByLabel('Managed table', { exact: true }).selectOption({ label: tx.table })
-    await page
-      .locator('.transformation-section > summary')
-      .filter({ hasText: /^Planning-level mapping/ })
-      .click()
-    await page.getByRole('radio', { name: 'Map to Native Planning Level', exact: true }).check()
+    await page.getByRole('radio', { name: 'Map to Planning Level', exact: true }).check()
     await page
       .getByLabel('Native planning level', { exact: true })
       .selectOption({ label: tx.level })
@@ -481,18 +475,17 @@ test('manage from the source grid and capture PLT/PT metadata without visible in
   await page.getByRole('checkbox', { name: 'Manage UI_Product', exact: true }).uncheck()
   await expect(page.getByRole('alert')).toBeVisible()
   await expect(page.getByRole('checkbox', { name: 'Manage UI_Product', exact: true })).toBeChecked()
-  await page.getByRole('button', { name: 'Reload metadata', exact: true }).click()
-  await page.getByRole('button', { name: 'Validate revision', exact: true }).click()
-  await expect(page.getByRole('heading', { name: 'Revision is valid', exact: true })).toBeVisible()
-  await page.getByRole('button', { name: 'Publish revision', exact: true }).click()
-  await page.getByRole('button', { name: 'Confirm publication', exact: true }).click()
-  await expect(
-    page.getByText('This revision is read-only. Create a new draft to change its metadata.'),
-  ).toBeVisible()
-  await page.getByRole('button', { name: 'New draft', exact: true }).click()
-  await page.getByRole('button', { name: 'Create draft', exact: true }).click()
-  await expect(page.getByLabel('Revision', { exact: true })).not.toHaveValue('revision_1')
-  const second = await page.getByLabel('Revision', { exact: true }).inputValue()
+  await expect(page.getByRole('button', { name: 'Reload metadata', exact: true })).toHaveCount(0)
+  await page.getByRole('button', { name: 'Validate metadata', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Metadata is valid', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Publish revision', exact: true })).toHaveCount(0)
+  const model = (await (await page.request.get('/api/v1/models')).json()).items
+  expect(model).toHaveLength(1)
+  const revisions = (
+    await (await page.request.get('/api/v1/models/default_model/revisions')).json()
+  ).items
+  expect(revisions).toHaveLength(1)
+  expect(revisions[0].approvalStatus).toBe('draft')
   await nav(page, 'Measures')
   await expect(page.locator('.meta-object-card')).toHaveCount(4)
   await expect(page.getByLabel('Semantic model', { exact: true })).toHaveCount(0)
@@ -535,7 +528,7 @@ test('manage from the source grid and capture PLT/PT metadata without visible in
   expect(
     (
       await page.request.get(
-        `/api/v1/models/default_model/revisions/${second}/measures/${error.objectId}`,
+        `/api/v1/models/default_model/revisions/revision_1/measures/${error.objectId}`,
       )
     ).status(),
   ).toBe(404)

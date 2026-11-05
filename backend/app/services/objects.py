@@ -36,6 +36,12 @@ class ObjectService(Service):
     def prepare_document(self, document, objects):
         return document
 
+    def create_input(self, payload):
+        return payload.model_dump()
+
+    def additional_create_documents(self, payload, document, objects):
+        return []
+
     async def create(self, model_id, revision_id, payload):
         async def operation(repo):
             revision = await self.touch_revision(repo, model_id, revision_id)
@@ -46,7 +52,7 @@ class ObjectService(Service):
                 raise Conflict("An object with this ID already exists in the revision.")
             timestamp = now()
             document = {
-                **payload.model_dump(),
+                **self.create_input(payload),
                 **scope(model_id, revision_id),
                 "version": 1,
                 "createdAt": timestamp,
@@ -61,11 +67,30 @@ class ObjectService(Service):
                 and document["definition"]["inScope"]
             ):
                 raise Conflict("Enable sources through the managed-table lifecycle.")
-            self.validate(
+            related = self.additional_create_documents(
+                payload,
+                document,
                 await self.effective(repo, model_id, revision_id, [*objects, document]),
+            )
+            if len(objects) + 1 + len(related) > self.max_objects:
+                raise Conflict("The revision has reached its metadata object limit.")
+            existing_ids = {item["objectId"] for item in [*objects, document]}
+            for item in related:
+                if item["objectId"] in existing_ids:
+                    raise Conflict(
+                        "A related definition with this identity already exists."
+                    )
+                existing_ids.add(item["objectId"])
+            self.validate(
+                await self.effective(
+                    repo, model_id, revision_id, [*objects, document, *related]
+                ),
                 revision["basePlanningLevelId"],
             )
-            return await metadata_repositories(repo).objects.insert(document)
+            await metadata_repositories(repo).objects.insert(document)
+            for item in related:
+                await metadata_repositories(repo).objects.insert(item)
+            return document
 
         return await self.store.transaction(operation)
 

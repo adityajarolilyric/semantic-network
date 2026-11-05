@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from backend.app.core.errors import MetadataError
-from backend.app.main import create_app
+from backend.tests.fixture_app import create_fixture_app as create_app
 from backend.app.warehouse.csv_parser import CsvParser
 from backend.app.warehouse.repository import quote_identifier, validate_table_name
 from .fake_warehouse import FakeWarehouse

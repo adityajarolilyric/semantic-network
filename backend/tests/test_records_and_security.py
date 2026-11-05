@@ -2,7 +2,7 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 from pymongo.errors import AutoReconnect
 
-from backend.app.main import create_app
+from backend.tests.fixture_app import create_fixture_app as create_app
 from .conftest import ROOT
 from .memory_store import MemoryStore
 from .test_metadata_api import publish

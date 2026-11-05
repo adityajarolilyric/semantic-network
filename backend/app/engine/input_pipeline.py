@@ -5,7 +5,7 @@ from enum import StrEnum
 from ..core.errors import MetadataError
 from ..warehouse.repository import quote_identifier as quote_identifier
 from .calendar_resolution import CalendarResolutionCompiler
-from .filters import dimension_filter_columns
+from .filters import dimension_filter_columns, FilterCompiler
 from .transaction_resolution import ResolvedTransaction
 
 
@@ -14,6 +14,7 @@ class PreviewTarget(StrEnum):
     CALENDAR_INPUT = "calendar_input"
     DIMENSION_OUTPUT = "dimension_output"
     TRANSACTION_OUTPUT = "transaction_output"
+    UNMAPPED_TRANSACTION = "unmapped_transaction"
 
 
 class InputPipelineCompiler:
@@ -21,6 +22,26 @@ class InputPipelineCompiler:
         self.context = context
 
     def compile(self, owner, target):
+        if target == PreviewTarget.UNMAPPED_TRANSACTION:
+            input_target = (
+                PreviewTarget.CALENDAR_INPUT
+                if owner["definition"].get("calendarResolution")
+                else PreviewTarget.PIVOT_INPUT
+            )
+            resolved = self.compile(owner, input_target)
+            filters = owner["definition"].get("filters")
+            if not filters:
+                return resolved
+            from dataclasses import replace
+
+            query = FilterCompiler.apply(
+                "SELECT * FROM " + quote_identifier(resolved.node),
+                filters,
+                resolved.columns,
+            )
+            return replace(
+                resolved, node=self.context.cte(query), unfiltered_node=resolved.node
+            )
         if target == PreviewTarget.CALENDAR_INPUT:
             calendar = CalendarResolutionCompiler(self.context, owner)
             node = calendar.compile()

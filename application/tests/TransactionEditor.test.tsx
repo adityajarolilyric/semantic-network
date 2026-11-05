@@ -79,27 +79,42 @@ it.each([
         onCancel={() => {}}
       />,
     )
+    expect(screen.getByText('Transformations', { exact: true })).toBeVisible()
+    expect(screen.getByRole('region', { name: 'Grain Selection' })).toBeVisible()
+    await userEvent.click(screen.getByText('Transformations', { exact: true }))
+    expect(screen.getByRole('tab', { name: /^Filters$/ })).toHaveAttribute('aria-selected', 'true')
     expect(screen.queryByLabelText('Expected rows per grain')).not.toBeInTheDocument()
-    await userEvent.click(screen.getByText('Planning-level mapping', { exact: true }))
     expect(screen.queryByRole('combobox', { name: 'Transaction mapping' })).not.toBeInTheDocument()
     if (!editing) {
       expect(screen.getByRole('radio', { name: 'No Planning Level' })).toBeChecked()
-      expect(screen.getByText('Pivot transformation', { exact: true })).toBeVisible()
-      expect(screen.getByText('Date resolution', { exact: true })).toBeVisible()
+      expect(screen.getByRole('tab', { name: /^Pivot Data$/ })).toBeVisible()
+      expect(screen.getByRole('tab', { name: /^Date Resolution$/ })).toBeVisible()
       expect(screen.queryByLabelText('Native planning level')).not.toBeInTheDocument()
-      await userEvent.click(screen.getByRole('radio', { name: 'Map to Native Planning Level' }))
-      await userEvent.selectOptions(
-        screen.getByLabelText('P.product_id'),
-        'product_id',
-      )
+      await userEvent.click(screen.getByRole('radio', { name: 'Map to Planning Level' }))
+      await userEvent.selectOptions(screen.getByLabelText('P.product_id'), 'product_id')
     } else {
       expect(screen.getByRole('radio', { name: 'No Planning Level' })).toBeDisabled()
     }
-    expect(screen.getByRole('radio', { name: 'Map to Native Planning Level' })).toBeChecked()
+    expect(screen.getByRole('radio', { name: 'Map to Planning Level' })).toBeChecked()
     expect(screen.getByText(/aggregated by these native planning-level keys/)).toBeVisible()
+    expect(screen.getAllByRole('radio')).toHaveLength(2)
+    expect(screen.queryByRole('radio', { name: 'Resolve Multi Grain' })).not.toBeInTheDocument()
+    await userEvent.click(screen.getByLabelText('Resolve multi-grain data'))
+    expect(screen.getByRole('radio', { name: 'Map to Planning Level' })).toBeChecked()
+    expect(screen.queryByLabelText('P.product_id')).not.toBeInTheDocument()
+    await userEvent.click(screen.getByLabelText('Resolve multi-grain data'))
+    expect(screen.getByLabelText('P.product_id')).toBeVisible()
+    await userEvent.selectOptions(screen.getByLabelText('P.product_id'), 'product_id')
+
     await userEvent.click(screen.getByRole('button', { name: 'Save metadata' }))
     expect(save).toHaveBeenCalledWith(
-      expect.objectContaining({ definition: expect.objectContaining({ expectedRowsPerGrain }) }),
+      expect.objectContaining({
+        definition: expect.objectContaining({
+          expectedRowsPerGrain,
+          mappingMode: 'direct',
+          resolution: null,
+        }),
+      }),
     )
   },
 )

@@ -40,7 +40,7 @@ The revision designates Base and treats it as finest among proven related levels
 
 ## Editor: Cancel, Preview, Save
 
-The list toolbar places Base planning level on the left and Reload metadata, Build all planning levels and Create planning level on the right, aligned at the control bottoms. Narrow layouts stack them. Validate revision and Publish revision belong only on Sources, not Planning Levels.
+The list toolbar places Base planning level on the left and Reload metadata, Build all planning levels and Create planning level on the right, aligned at the control bottoms. Narrow layouts stack them. Validate metadata remains on Sources; publication is not exposed in the single-workspace product.
 
 Show exactly these three actions at bottom right; use the shared Source table for at most 50 preview rows without pagination/refresh controls. Grain selection is mandatory before Preview/Save. Grain and population attributes appear side by side on wide screens. For projection, Retain parent keys is left and Attributes from parent level right; hide measures, duplicate key choices and internal collision fields from attribute choices.
 

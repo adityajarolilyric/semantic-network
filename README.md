@@ -52,7 +52,7 @@ Existing `:v1` command aliases remain available. All default commands now use V1
 
 ## Workflow
 
-1. **Sources:** upload up to 10 CSV files sequentially, preview ClickHouse data, select semantic model/revision and enable Managed Tables. Empty installations create a default model and draft revision.
+1. **Sources:** upload up to 10 CSV files sequentially, preview ClickHouse data, enable Managed Tables. One default semantic model and draft revision are initialized automatically; creation, selection and publication controls are not exposed.
 2. **Managed Tables:** save identity or pivot views. Semantic objects consume revision-specific saved managed outputs.
 3. **Dimensions:** expose attributes and column display names, declare keys, and configure the daily Time dimension/calendar when needed.
 4. **Planning Levels:** build populations from intersections, Cartesian factors or distinct parent projections. Grain columns are mandatory; dimension bindings provide optional membership/enrichment and cross-level mappings.

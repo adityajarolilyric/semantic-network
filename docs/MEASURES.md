@@ -2,6 +2,8 @@
 
 Each measure has one native planning level. Referenced measures read a Transaction value; calculated measures use a typed formula. Precompute compatible representations at Base and other defined levels when paths exist. A measure on an independent level may remain native and roll directly to supported coarser levels; **Base connectivity is not a definition requirement**.
 
+Referenced measures can also be created from the optional **Measures** grid during Transaction creation. Select numeric output columns and their Editable, Time/Non-time aggregation and Dis-Aggregation policies; names and references are derived. Definitions save atomically with the Transaction, with the same validation and defaults described in [Transactions](TRANSACTIONS.md#create-measures-with-a-transaction). Materialise remains a separate action.
+
 ## Source materialisation versus edits
 
 A source build and a user edit use different disaggregation rules. Never infer SUM/AVG from measure names or business meaning; use the saved aggregation and NULL policies.

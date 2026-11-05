@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.app.core.config import Settings
-from backend.app.main import create_app
+from backend.tests.fixture_app import create_fixture_app as create_app
 from .memory_store import MemoryStore
 
 EXAMPLE = json.loads(

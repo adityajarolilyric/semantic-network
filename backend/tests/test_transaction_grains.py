@@ -57,3 +57,58 @@ def test_published_revision_cannot_generate_a_level(populated):
     result = populated.post(ROOT + "/transactions/from-grain", json=payload)
     assert result.status_code == 409, result.text
     assert populated.get(ROOT).json() == before
+
+
+def test_grain_creation_preserves_transaction_filters_without_filtering_population(
+    populated,
+):
+    payload = command(populated, "FilteredForecast")
+    payload["filters"] = {
+        "root": {
+            "type": "group",
+            "combinator": "and",
+            "children": [
+                {
+                    "type": "condition",
+                    "columnId": payload["grainColumnIds"][0],
+                    "operator": "eq",
+                    "values": ["P1"],
+                }
+            ],
+        }
+    }
+    response = populated.post(ROOT + "/transactions/from-grain", json=payload)
+    assert response.status_code == 201, response.text
+    created = response.json()
+    assert created["transaction"]["definition"]["filters"] == payload["filters"]
+    assert created["planningLevel"]["definition"].get("filters") is None
+    assert "filters" not in created["planningLevel"]["definition"]["population"]
+    assert (
+        populated.post(ROOT + "/transactions/from-grain", json=payload).json()
+        == created
+    )
+
+
+def test_invalid_onboarding_filter_does_not_save_partial_objects(populated):
+    payload = command(populated, "InvalidFilteredForecast")
+    payload["filters"] = {
+        "root": {
+            "type": "group",
+            "combinator": "and",
+            "children": [
+                {
+                    "type": "condition",
+                    "columnId": "missing",
+                    "operator": "eq",
+                    "values": ["P1"],
+                }
+            ],
+        }
+    }
+    before = populated.get(ROOT).json()
+    response = populated.post(ROOT + "/transactions/from-grain", json=payload)
+    assert response.status_code == 422, response.text
+    assert populated.get(ROOT).json() == before
+    assert (
+        populated.get(ROOT + "/transactions/InvalidFilteredForecast").status_code == 404
+    )

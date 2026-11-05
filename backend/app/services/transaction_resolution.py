@@ -285,6 +285,11 @@ class TransactionResolutionService(Service):
             model, revision, payload, PreviewTarget.CALENDAR_INPUT
         )
 
+    async def preview_unmapped(self, model, revision, payload):
+        return await self._preview(
+            model, revision, payload, PreviewTarget.UNMAPPED_TRANSACTION
+        )
+
     async def preview_dimension(self, model, revision, payload):
         return await self._preview(
             model, revision, payload, PreviewTarget.DIMENSION_OUTPUT
@@ -324,6 +329,23 @@ class TransactionResolutionService(Service):
                     "definition": {
                         "sourceId": payload.sourceId,
                         "pivot": payload.pivot.model_dump() if payload.pivot else None,
+                    },
+                    **scope(model, revision),
+                    "version": 0,
+                }
+            if target == PreviewTarget.UNMAPPED_TRANSACTION:
+                candidate = {
+                    "objectId": payload.objectId,
+                    "kind": "transaction",
+                    "definition": {
+                        "sourceId": payload.sourceId,
+                        "pivot": payload.pivot.model_dump() if payload.pivot else None,
+                        "calendarResolution": payload.calendarResolution.model_dump()
+                        if payload.calendarResolution
+                        else None,
+                        "filters": payload.filters.model_dump()
+                        if payload.filters
+                        else None,
                     },
                     **scope(model, revision),
                     "version": 0,
@@ -440,9 +462,7 @@ class TransactionResolutionService(Service):
             await self.planning.storage.ensure_inputs(
                 [population] if population else []
             )
-            await self.managed.input_verifier.verify(
-                objects, managed, definitions
-            )
+            await self.managed.input_verifier.verify(objects, managed, definitions)
             profiles = (
                 {}
                 if standalone

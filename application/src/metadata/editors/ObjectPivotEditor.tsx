@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { metadataApi } from '../api'
 import type { AttributeValue, PivotPair, PivotStage, Source, SourceColumn } from '../types'
 import { Check, Checks, Select } from './Fields'
@@ -15,7 +15,8 @@ export function ObjectPivotEditor({
   source,
   base,
   kind,
-  value,
+  value: savedValue,
+  showConfiguration = false,
   onChange,
   onColumns,
   disabled = false,
@@ -25,10 +26,26 @@ export function ObjectPivotEditor({
   base?: string
   kind: 'dimensions' | 'transactions'
   value?: PivotStage | null
+  showConfiguration?: boolean
   onChange: (value: PivotStage | null) => void
   onColumns: (columns: SourceColumn[] | null) => void
   disabled?: boolean
 }) {
+  const inputSignature = JSON.stringify(source?.definition.columns ?? [])
+  const blankStage = useMemo<PivotStage>(
+    () => ({
+      stageId: id('stage_'),
+      type: 'pivot',
+      enabled: true,
+      recordKeyColumnIds: [],
+      groupByColumnIds: (JSON.parse(inputSignature) as SourceColumn[]).map(
+        (column) => column.columnId,
+      ),
+      pairs: [pair()],
+    }),
+    [source?.objectId, inputSignature],
+  )
+  const value = showConfiguration ? (savedValue?.enabled ? savedValue : blankStage) : savedValue
   const [active, setActive] = useState('')
   const [choices, setChoices] = useState<Record<string, PivotPair['outputs']>>({})
   const [error, setError] = useState('')
@@ -40,8 +57,7 @@ export function ObjectPivotEditor({
   useEffect(() => () => pending.current?.abort(), [])
   const latest = useRef(onColumns)
   latest.current = onColumns
-  const signature = JSON.stringify(value ?? null)
-  const inputSignature = JSON.stringify(source?.definition.columns ?? [])
+  const signature = JSON.stringify(savedValue ?? null)
   const complete =
     !!value?.enabled &&
     !!value.pairs.length &&
@@ -49,7 +65,7 @@ export function ObjectPivotEditor({
   useEffect(() => {
     setError('')
     setPreview(null)
-    if (!value?.enabled) {
+    if (!savedValue?.enabled) {
       latest.current(source?.definition.columns ?? [])
       return
     }
@@ -88,6 +104,13 @@ export function ObjectPivotEditor({
     label: c.name,
   }))
   const retained = columns.filter((c) => !consumed.has(c.value))
+  function clearPivot() {
+    pending.current?.abort()
+    setChoices({})
+    setPreview(null)
+    setError('')
+    onChange(null)
+  }
   function update(patch: Partial<PivotStage>) {
     if (!value) return
     const next = { ...value, ...patch, mode: undefined, resolvedMode: undefined }
@@ -96,7 +119,8 @@ export function ObjectPivotEditor({
     next.recordKeyColumnIds = (next.recordKeyColumnIds ?? []).filter((cid) =>
       next.groupByColumnIds.includes(cid),
     )
-    onChange(next)
+    if (showConfiguration && !next.pairs.length) clearPivot()
+    else onChange(next)
   }
   function updatePair(p: PivotPair, patch: Partial<PivotPair>) {
     update({ pairs: value!.pairs.map((x) => (x.pairId === p.pairId ? { ...x, ...patch } : x)) })
@@ -169,28 +193,38 @@ export function ObjectPivotEditor({
     }
   }
   return (
-    <fieldset className="meta-subsection" disabled={disabled || busy}>
-      <Check
-        label="Pivot long-format columns"
-        value={!!value?.enabled}
-        disabled={!source}
-        onChange={(enabled) =>
-          onChange(
-            enabled
-              ? {
-                  ...(previousStage.current ?? {
-                    stageId: id('stage_'),
-                    type: 'pivot' as const,
-                    recordKeyColumnIds: [],
-                    groupByColumnIds: source?.definition.columns.map((c) => c.columnId) ?? [],
-                    pairs: [pair()],
-                  }),
-                  enabled: true,
-                }
-              : null,
-          )
-        }
-      />
+    <fieldset className="meta-subsection" disabled={disabled || busy || !source}>
+      {!showConfiguration && (
+        <Check
+          label="Pivot long-format columns"
+          value={!!value?.enabled}
+          disabled={!source}
+          onChange={(enabled) =>
+            onChange(
+              enabled
+                ? {
+                    ...(previousStage.current ?? {
+                      stageId: id('stage_'),
+                      type: 'pivot' as const,
+                      recordKeyColumnIds: [],
+                      groupByColumnIds: source?.definition.columns.map((c) => c.columnId) ?? [],
+                      pairs: [pair()],
+                    }),
+                    enabled: true,
+                  }
+                : null,
+            )
+          }
+        />
+      )}
+      {showConfiguration && savedValue?.enabled && (
+        <div className="managed-pair-heading">
+          <span />
+          <button type="button" className="meta-danger" onClick={clearPivot}>
+            Clear pivot
+          </button>
+        </div>
+      )}
       {value?.enabled && (
         <>
           <p className="meta-hint">
@@ -259,6 +293,7 @@ export function ObjectPivotEditor({
                   <div className="managed-pair-inputs">
                     <Select
                       label="Attribute column"
+                      required={!showConfiguration || !!savedValue?.enabled}
                       value={selected.attributeColumnId}
                       items={columns}
                       onChange={(attributeColumnId) => {
@@ -268,6 +303,7 @@ export function ObjectPivotEditor({
                     />
                     <Select
                       label="Value column"
+                      required={!showConfiguration || !!savedValue?.enabled}
                       value={selected.valueColumnId}
                       items={columns}
                       onChange={(valueColumnId) => updatePair(selected, { valueColumnId })}

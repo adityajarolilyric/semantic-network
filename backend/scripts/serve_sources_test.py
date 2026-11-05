@@ -12,7 +12,7 @@ import clickhouse_connect
 import uvicorn
 
 from backend.app.core.config import Settings
-from backend.app.main import create_app
+from backend.tests.fixture_app import create_fixture_app as create_app
 from temporary_mongo import temporary_mongo
 
 

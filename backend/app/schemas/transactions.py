@@ -4,6 +4,7 @@ from pydantic import Field, model_validator, model_serializer
 
 from .managed_tables import PivotStage
 from .filters import FilterDefinition
+from .measures import Aggregation, Allocation
 from .common import DocumentMetadata, Identifier, Name, Schema, SemanticInput, unique
 
 
@@ -194,9 +195,27 @@ class TransactionDefinition(Schema):
         return value
 
 
+class TransactionMeasureSelection(Schema):
+    valueColumnId: Identifier
+    editable: bool = False
+    aggregation: Aggregation
+    allocation: Allocation = Field(default_factory=Allocation)
+
+
 class TransactionInput(SemanticInput):
     kind: Literal["transaction"] = "transaction"
     definition: TransactionDefinition
+
+
+class TransactionCreateInput(TransactionInput):
+    measures: list[TransactionMeasureSelection] = Field(
+        default_factory=list, max_length=128
+    )
+
+    @model_validator(mode="after")
+    def unique_measure_columns(self):
+        unique([measure.valueColumnId for measure in self.measures], "measure columns")
+        return self
 
 
 class TransactionDocument(TransactionInput, DocumentMetadata):
@@ -210,10 +229,15 @@ class TransactionFromGrainInput(SemanticInput):
     sourceId: Identifier
     grainColumnIds: list[Identifier] = Field(min_length=1, max_length=32)
     planningLevelName: Name | None = None
+    measures: list[TransactionMeasureSelection] = Field(
+        default_factory=list, max_length=128
+    )
+    filters: FilterDefinition | None = None
     pivot: PivotStage | None = None
     calendarResolution: CalendarResolution | None = None
 
     @model_validator(mode="after")
     def distinct_grain(self):
         unique(self.grainColumnIds, "grain columns")
+        unique([measure.valueColumnId for measure in self.measures], "measure columns")
         return self

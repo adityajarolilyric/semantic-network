@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from backend.app.core.config import Settings
-from backend.app.main import create_app
+from backend.tests.fixture_app import create_fixture_app as create_app
 from backend.app.warehouse.csv_parser import ParsedCsv
 from backend.app.warehouse.schemas import WarehouseColumn
 from backend.tests.memory_store import MemoryStore

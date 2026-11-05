@@ -50,29 +50,49 @@ test('start from a single Transaction, generate its grain and pivot without Dime
   await page
     .getByLabel('Managed table', { exact: true })
     .selectOption({ label: 'UI_TableFirstForecast' })
-  await page
-    .locator('.transformation-section > summary')
-    .filter({ hasText: /^Planning-level mapping/ })
-    .click()
   await expect(page.getByRole('radio', { name: 'No Planning Level', exact: true })).toBeChecked()
   const keys = page.getByRole('group', { name: 'Transaction grain columns', exact: true })
   for (const name of ['product_id', 'location_id', 'time_id'])
     await keys.getByLabel(name, { exact: true }).check()
   await page.getByRole('button', { name: 'Preview', exact: true }).click()
   await expect(page.getByText('2/2 rows', { exact: true })).toBeVisible()
+  if (
+    !(await page
+      .locator('.transaction-transformations')
+      .evaluate((panel) => (panel as HTMLDetailsElement).open))
+  )
+    await page.locator('.transaction-transformations > summary').click()
+  await page.getByRole('tab', { name: 'Filters', exact: true }).click()
+  await page.getByRole('button', { name: 'Add filter', exact: true }).click()
+  await page.getByLabel('Filter column', { exact: true }).selectOption('col_4')
+  await page.getByLabel('Filter operator', { exact: true }).selectOption('gt')
+  await page.getByLabel('Filter value', { exact: true }).fill('0')
+  await page.getByRole('button', { name: 'Preview', exact: true }).click()
+  await expect(page.getByText('3/3 rows', { exact: true })).toBeVisible()
   expect((await (await page.request.get(base + '/planning-levels')).json()).items).toHaveLength(0)
+  await page
+    .locator('.transformation-section > summary')
+    .filter({ hasText: /^Measures/ })
+    .click()
+  await page
+    .locator('.transaction-measures-table')
+    .getByLabel('forecast_qty', { exact: true })
+    .check()
+  await expect(page.getByRole('button', { name: 'Save metadata', exact: true })).toBeDisabled()
+  await page.getByLabel('forecast_qty non-time aggregation').selectOption('sum')
+  await page.getByLabel('forecast_qty time aggregation').selectOption('sum')
+  await page.getByLabel('forecast_qty editable').check()
+  await page.screenshot({ path: 'test-results/transaction-create-measures.png', fullPage: true })
   await page.getByRole('button', { name: 'Save metadata', exact: true }).click()
   await expect(page.getByRole('region', { name: 'Metadata editor', exact: true })).toHaveCount(0)
   const levels = (await (await page.request.get(base + '/planning-levels')).json()).items
   expect(levels).toHaveLength(1)
   expect((await (await page.request.get(base + '/dimensions')).json()).items).toHaveLength(0)
-  await page.getByRole('button', { name: 'Measures', exact: true }).click()
-  await page.getByRole('button', { name: 'Create measure', exact: true }).click()
-  await page.getByLabel('Name', { exact: true }).fill('FQTY')
-  await page.getByLabel('Transaction', { exact: true }).selectOption({ label: 'Forecast' })
-  await page.getByLabel('Value column', { exact: true }).selectOption('col_4')
-  await page.getByRole('button', { name: 'Save metadata', exact: true }).click()
-  await expect(page.getByRole('region', { name: 'Metadata editor', exact: true })).toHaveCount(0)
+  const measures = (await (await page.request.get(base + '/measures')).json()).items
+  expect(measures).toHaveLength(1)
+  expect(measures[0].name).toBe('forecast_qty')
+  expect(measures[0].definition.editable).toBe(true)
+  expect(measures[0].definition.allocation.mode).toBe('weighted_by_self')
   await page.getByRole('button', { name: 'Materialise', exact: true }).click()
   await page.getByRole('button', { name: 'Build Semantic Network', exact: true }).click()
   await expect(
@@ -80,23 +100,35 @@ test('start from a single Transaction, generate its grain and pivot without Dime
   ).toBeEnabled()
   await page.getByRole('button', { name: 'Planning View', exact: true }).click()
   await page.getByLabel('Add rows attribute').selectOption({ label: 'Forecast grain · product_id' })
-  await page.getByLabel('FQTY', { exact: true }).check()
+  await page.getByLabel('forecast_qty', { exact: true }).check()
   await page.getByRole('button', { name: 'Update pivot', exact: true }).click()
-  await expect(page.getByRole('cell', { name: '150.00', exact: true })).toBeVisible()
-  await expect(page.getByRole('cell', { name: '200.00', exact: true })).toBeVisible()
+  await expect(
+    page.getByRole('button', { name: 'Edit forecast_qty · P1', exact: true }),
+  ).toBeVisible()
+  await expect(
+    page.getByRole('button', { name: 'Edit forecast_qty · P2', exact: true }),
+  ).toBeVisible()
   await page.screenshot({ path: 'test-results/table-first-pivot.png', fullPage: true })
   await page.reload()
-  await expect(page.getByRole('cell', { name: '150.00', exact: true })).toBeVisible()
+  await expect(
+    page.getByRole('button', { name: 'Edit forecast_qty · P1', exact: true }),
+  ).toBeVisible()
   await page.getByRole('button', { name: 'Materialise', exact: true }).click()
   await page.getByRole('button', { name: 'Build Semantic Network', exact: true }).click()
   await expect(
     page.getByRole('button', { name: 'Build Semantic Network', exact: true }),
   ).toBeEnabled()
   await page.getByRole('button', { name: 'Planning View', exact: true }).click()
-  await expect(page.getByLabel('FQTY', { exact: true })).toBeChecked()
-  await expect(page.getByRole('cell', { name: '150.00', exact: true })).toBeVisible()
+  await expect(page.getByLabel('forecast_qty', { exact: true })).toBeChecked()
+  await expect(
+    page.getByRole('button', { name: 'Edit forecast_qty · P1', exact: true }),
+  ).toBeVisible()
   expect((await (await page.request.get(base + '/dimensions')).json()).items).toHaveLength(0)
   const savedTransaction = (await (await page.request.get(base + '/transactions')).json()).items[0]
+  expect(savedTransaction.definition.filters.root.children[0]).toMatchObject({
+    columnId: 'col_4',
+    operator: 'gt',
+  })
   const replacementImport = await page.request.post('/api/v1/warehouse/imports/csv', {
     headers: { 'Idempotency-Key': 'population_' + crypto.randomUUID() },
     multipart: {
@@ -140,6 +172,40 @@ test('start from a single Transaction, generate its grain and pivot without Dime
     await page.request.get(base + '/planning-levels/' + levels[0].objectId + '/table?preview=true')
   ).json()
   expect(population.rowCount).toBe(3)
+  // The same grid also works when mapping directly to an existing planning level.
+  await page.getByRole('button', { name: 'Transactions', exact: true }).click()
+  await page.getByRole('button', { name: 'Create transaction', exact: true }).click()
+  await page.getByLabel('Name', { exact: true }).fill('Forecast direct')
+  await page
+    .getByLabel('Managed table', { exact: true })
+    .selectOption({ label: 'UI_TableFirstForecast' })
+  await page.getByRole('radio', { name: 'Map to Planning Level', exact: true }).check()
+  await page
+    .getByLabel('Native planning level', { exact: true })
+    .selectOption({ label: 'Forecast grain' })
+  for (const name of ['product_id', 'location_id', 'time_id'])
+    await page.getByLabel('Forecast grain.' + name, { exact: true }).selectOption({ label: name })
+  await page
+    .locator('.transformation-section > summary')
+    .filter({ hasText: /^Measures/ })
+    .click()
+  await page
+    .locator('.transaction-measures-table')
+    .getByLabel('forecast_qty', { exact: true })
+    .check()
+  await page.getByLabel('forecast_qty non-time aggregation').selectOption('avg')
+  await page.getByLabel('forecast_qty time aggregation').selectOption('max')
+  await page.getByRole('button', { name: 'Save metadata', exact: true }).click()
+  await expect(page.getByRole('region', { name: 'Metadata editor', exact: true })).toHaveCount(0)
+  const direct = (await (await page.request.get(base + '/transactions')).json()).items.find(
+    (item: { name: string }) => item.name === 'Forecast direct',
+  )
+  const directMeasure = (await (await page.request.get(base + '/measures')).json()).items.find(
+    (item: { definition: { transactionId: string } }) =>
+      item.definition.transactionId === direct.objectId,
+  )
+  expect(directMeasure.definition.aggregation.nonTime).toBe('avg')
+  expect(directMeasure.definition.nativePlanningLevelId).toBe(levels[0].objectId)
 })
 
 test('No Planning Level derives grain from Pivot then Date resolution and reopens it', async ({
@@ -217,18 +283,24 @@ test('No Planning Level derives grain from Pivot then Date resolution and reopen
     .getByLabel('Managed table', { exact: true })
     .selectOption({ label: 'UI_PromotionsFirst' })
   await expect(page.getByLabel('Native planning level', { exact: true })).toHaveCount(0)
-  await page
-    .locator('.transformation-section > summary')
-    .filter({ hasText: /^Pivot transformation/ })
-    .click()
-  await page.getByLabel('Pivot long-format columns', { exact: true }).check()
+  if (
+    !(await page
+      .locator('.transaction-transformations')
+      .evaluate((panel) => (panel as HTMLDetailsElement).open))
+  )
+    await page.locator('.transaction-transformations > summary').click()
+  await page.getByRole('tab', { name: 'Pivot Data', exact: true }).click()
+  await expect(page.getByLabel('Pivot long-format columns', { exact: true })).toHaveCount(0)
   await page.getByLabel('Attribute column', { exact: true }).selectOption({ label: 'attribute' })
   await page.getByLabel('Value column', { exact: true }).selectOption({ label: 'member' })
   await page.getByRole('button', { name: 'Discover', exact: true }).click()
-  await page
-    .locator('.transformation-section > summary')
-    .filter({ hasText: /^Date resolution/ })
-    .click()
+  if (
+    !(await page
+      .locator('.transaction-transformations')
+      .evaluate((panel) => (panel as HTMLDetailsElement).open))
+  )
+    await page.locator('.transaction-transformations > summary').click()
+  await page.getByRole('tab', { name: 'Date Resolution', exact: true }).click()
   await page.getByLabel('Resolve a date range using a calendar', { exact: true }).check()
   await page.getByLabel('Start date column', { exact: true }).selectOption({ label: 'start_date' })
   await page.getByLabel('End date column', { exact: true }).selectOption({ label: 'end_date' })
@@ -237,10 +309,6 @@ test('No Planning Level derives grain from Pivot then Date resolution and reopen
     .getByRole('group', { name: 'Calendar columns to bring in', exact: true })
     .getByLabel('Week', { exact: true })
     .check()
-  await page
-    .locator('.transformation-section > summary')
-    .filter({ hasText: /^Planning-level mapping/ })
-    .click()
   await expect(page.getByRole('radio', { name: 'No Planning Level', exact: true })).toBeChecked()
   const keys = page.getByRole('group', { name: 'Transaction grain columns', exact: true })
   await keys.getByLabel('product_id', { exact: true }).check()

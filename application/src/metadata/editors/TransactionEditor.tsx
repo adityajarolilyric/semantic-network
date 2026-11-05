@@ -1,6 +1,13 @@
+import {
+  TransactionMeasureEditor,
+  numericMeasureColumns,
+  transactionMeasuresComplete,
+  transactionMeasureSelections,
+  type TransactionMeasureDraft,
+} from './TransactionMeasureEditor'
 import { FilterEditor } from './FilterEditor'
 import { useFilterColumns } from './useFilterColumns'
-import { TransformationSection } from './TransformationSection'
+import { TransactionTransformations } from './TransactionTransformations'
 import { ObjectPivotEditor } from './ObjectPivotEditor'
 import { RawDataPreview } from './RawDataPreview'
 import { useEffect, useRef } from 'react'
@@ -57,6 +64,7 @@ export function TransactionEditor({
         }
       : initial,
   )
+  const [measureDrafts, setMeasureDrafts] = useState<TransactionMeasureDraft[]>([])
   const [createGrain, setCreateGrain] = useState(!editing)
   const [grainKeys, setGrainKeys] = useState<string[]>([])
   const [grainName, setGrainName] = useState('')
@@ -91,6 +99,16 @@ export function TransactionEditor({
   const pivotReady = !d.pivot?.enabled || pivotColumns !== null
   const inputColumns = d.pivot?.enabled ? (pivotColumns ?? []) : (source?.definition.columns ?? [])
   const grainColumns = d.calendarResolution ? calendarColumns : inputColumns
+  const measureColumns = numericMeasureColumns(
+    !createGrain && d.mappingMode === 'resolve_multi_grain'
+      ? grainColumns
+          .filter((column) =>
+            d.resolution?.values.some((value) => value.sourceColumnId === column.columnId),
+          )
+          .map((column) => ({ ...column, physicalType: 'Float64' }))
+      : grainColumns,
+  )
+  const measuresReady = editing || transactionMeasuresComplete(measureDrafts, measureColumns)
   const grainColumnSignature = JSON.stringify(grainColumns.map((c) => c.columnId))
   useEffect(() => {
     if (!pivotReady || (d.calendarResolution && !calendarColumns.length)) return
@@ -102,7 +120,8 @@ export function TransactionEditor({
     { ...value, definition: { ...d, filters: null } },
     !createGrain && !!d.filters,
   )
-  const grainPayload = () => ({
+  const grainPayload = (includeMeasures = false) => ({
+    ...(includeMeasures ? { measures: transactionMeasureSelections(measureDrafts) } : {}),
     objectId: value.objectId,
     kind: 'transaction',
     name: value.name,
@@ -111,12 +130,40 @@ export function TransactionEditor({
     sourceId: d.sourceId,
     pivot: d.pivot ?? null,
     calendarResolution: d.calendarResolution ?? null,
+    filters: d.filters ?? null,
     grainColumnIds: grainKeys,
     planningLevelName:
       grainName || ((value.name || source?.name || 'Transaction') + ' grain').slice(0, 200),
   })
   async function saveTransaction() {
     setOnboardingError('')
+    if (!measuresReady) return
+    if (!createGrain && !editing && measureDrafts.length) {
+      if (!base || onboardingRequest.current) return
+      onboardingRequest.current = true
+      setOnboardingBusy(true)
+      setError('')
+      try {
+        const created = await metadataApi.request<Transaction & { version: number }>(
+          base + '/transactions',
+          'POST',
+          { ...value, measures: transactionMeasureSelections(measureDrafts) },
+        )
+        if (mounted.current) {
+          onCreated?.(created, true)
+          if (!onCreated) onCancel()
+        }
+      } catch (error) {
+        if (mounted.current)
+          setError(
+            error instanceof Error ? error.message : 'Could not create transaction and measures.',
+          )
+      } finally {
+        onboardingRequest.current = false
+        setOnboardingBusy(false)
+      }
+      return
+    }
     if (!createGrain) {
       await onSave(value)
       return
@@ -129,7 +176,7 @@ export function TransactionEditor({
       created = await metadataApi.request<GrainCreated>(
         base + '/transactions/from-grain',
         'POST',
-        grainPayload(),
+        grainPayload(true),
       )
       setCreatedLevel(created.planningLevel)
       await metadataApi.managedOperation(
@@ -173,6 +220,7 @@ export function TransactionEditor({
             value={d.sourceId}
             items={options(data.sources.filter((s) => s.definition.inScope))}
             onChange={(sourceId) => {
+              setMeasureDrafts([])
               setGrainKeys([])
               update({
                 sourceId,
@@ -185,6 +233,142 @@ export function TransactionEditor({
               })
             }}
           />
+        </div>
+
+        <TransactionTransformations
+          tabs={[
+            {
+              label: 'Filters',
+              configured: !!d.filters,
+              content: (
+                <FilterEditor
+                  embedded
+                  value={d.filters}
+                  onChange={(filters) => update({ filters })}
+                  {...(createGrain
+                    ? {
+                        columns: grainColumns,
+                        loading: !pivotReady || (!!d.calendarResolution && !calendarColumns.length),
+                        error: '',
+                      }
+                    : filterColumns)}
+                />
+              ),
+            },
+            {
+              label: 'Pivot Data',
+              configured: !!d.pivot?.enabled,
+              content: (
+                <ObjectPivotEditor
+                  showConfiguration
+                  key={d.sourceId}
+                  objectId={value.objectId}
+                  source={source}
+                  base={base}
+                  kind="transactions"
+                  value={d.pivot}
+                  onChange={(pivot) => update({ pivot })}
+                  onColumns={setPivotColumns}
+                  disabled={busy || previewBusy || onboardingBusy}
+                />
+              ),
+            },
+            {
+              label: 'Date Resolution',
+              configured: !!d.calendarResolution,
+              content: (
+                <>
+                  {!d.resolution?.axes.some((a) => a.dateRange) && (
+                    <>
+                      <Check
+                        label="Resolve a date range using a calendar"
+                        value={!!d.calendarResolution}
+                        disabled={!pivotReady}
+                        onChange={(enabled) => {
+                          setCalendarColumns([])
+                          update({
+                            calendarResolution: enabled
+                              ? {
+                                  dimensionId: '',
+                                  startColumnId: '',
+                                  endColumnId: '',
+                                  selectedColumnIds: [],
+                                }
+                              : null,
+                            resolution: d.resolution
+                              ? {
+                                  ...d.resolution,
+                                  values: d.resolution.values.map((v) => ({
+                                    ...v,
+                                    timeMode: enabled ? 'copy' : null,
+                                  })),
+                                }
+                              : d.resolution,
+                          })
+                        }}
+                      />
+                      {d.calendarResolution && source && pivotReady && (
+                        <TransactionCalendarEditor
+                          value={d.calendarResolution}
+                          onChange={(calendarResolution) => update({ calendarResolution })}
+                          columns={inputColumns}
+                          pivot={d.pivot}
+                          onColumns={setCalendarColumns}
+                          base={base}
+                          sourceId={source.objectId}
+                          transactionId={value.objectId}
+                          levelId={d.planningLevelId}
+                        />
+                      )}
+                    </>
+                  )}
+                </>
+              ),
+            },
+          ]}
+        />
+        <section className="transaction-grain-section" aria-label="Grain Selection">
+          <div className="transaction-grain-heading">
+            <h3>Grain Selection</h3>
+            <span className="badge">Required</span>
+          </div>
+          <fieldset className="measure-type-control" disabled={!source || !pivotReady}>
+            <legend>
+              Transaction mapping <FieldHelp label="Transaction mapping" />
+            </legend>
+            <div className="measure-type-switch">
+              {(
+                [
+                  ['create_grain', 'No Planning Level'],
+                  ['direct', 'Map to Planning Level'],
+                ] as const
+              ).map(([mode, label]) => (
+                <label className="measure-type-option" key={mode}>
+                  <input
+                    type="radio"
+                    name="transaction-mapping"
+                    value={mode}
+                    checked={createGrain ? mode === 'create_grain' : mode === 'direct'}
+                    disabled={mode === 'create_grain' && editing}
+                    onChange={() => {
+                      setCreateGrain(mode === 'create_grain')
+                      update({
+                        mappingMode: 'direct',
+                        resolution: null,
+                        keyMappings: (level?.definition.grain.keyIds ?? []).map(
+                          (grainColumnId) => ({
+                            grainColumnId,
+                            sourceColumnId: '',
+                          }),
+                        ),
+                      })
+                    }}
+                  />
+                  <span>{label}</span>
+                </label>
+              ))}
+            </div>
+          </fieldset>
           {!createGrain && (
             <Select
               label="Native planning level"
@@ -207,121 +391,25 @@ export function TransactionEditor({
               }}
             />
           )}
-        </div>
-
-        <>
-          <TransformationSection title="Pivot transformation" configured={!!d.pivot?.enabled}>
-            <ObjectPivotEditor
-              key={d.sourceId}
-              objectId={value.objectId}
-              source={source}
-              base={base}
-              kind="transactions"
-              value={d.pivot}
-              onChange={(pivot) => update({ pivot })}
-              onColumns={setPivotColumns}
-              disabled={busy || previewBusy || onboardingBusy}
+          {!createGrain && (
+            <Check
+              label="Resolve multi-grain data"
+              value={d.mappingMode === 'resolve_multi_grain'}
+              disabled={!source || !pivotReady || !level}
+              onChange={(resolve) =>
+                update({
+                  mappingMode: resolve ? 'resolve_multi_grain' : 'direct',
+                  resolution: resolve && level ? newResolution(level) : null,
+                  keyMappings: resolve
+                    ? []
+                    : (level?.definition.grain.keyIds ?? []).map((grainColumnId) => ({
+                        grainColumnId,
+                        sourceColumnId: '',
+                      })),
+                })
+              }
             />
-          </TransformationSection>
-
-          <TransformationSection title="Date resolution" configured={!!d.calendarResolution}>
-            {!d.resolution?.axes.some((a) => a.dateRange) && (
-              <>
-                <Check
-                  label="Resolve a date range using a calendar"
-                  value={!!d.calendarResolution}
-                  disabled={!pivotReady}
-                  onChange={(enabled) => {
-                    setCalendarColumns([])
-                    update({
-                      calendarResolution: enabled
-                        ? {
-                            dimensionId: '',
-                            startColumnId: '',
-                            endColumnId: '',
-                            selectedColumnIds: [],
-                          }
-                        : null,
-                      resolution: d.resolution
-                        ? {
-                            ...d.resolution,
-                            values: d.resolution.values.map((v) => ({
-                              ...v,
-                              timeMode: enabled ? 'copy' : null,
-                            })),
-                          }
-                        : d.resolution,
-                    })
-                  }}
-                />
-                {d.calendarResolution && source && pivotReady && (
-                  <TransactionCalendarEditor
-                    value={d.calendarResolution}
-                    onChange={(calendarResolution) => update({ calendarResolution })}
-                    columns={inputColumns}
-                    pivot={d.pivot}
-                    onColumns={setCalendarColumns}
-                    base={base}
-                    sourceId={source.objectId}
-                    transactionId={value.objectId}
-                    levelId={d.planningLevelId}
-                  />
-                )}
-              </>
-            )}
-          </TransformationSection>
-        </>
-        <TransformationSection
-          title="Planning-level mapping"
-          configured={d.mappingMode === 'resolve_multi_grain'}
-          status={
-            createGrain
-              ? 'New planning level'
-              : d.mappingMode === 'resolve_multi_grain'
-                ? 'Multi-grain'
-                : 'Direct'
-          }
-        >
-          <fieldset className="measure-type-control" disabled={!source || !pivotReady}>
-            <legend>
-              Transaction mapping <FieldHelp label="Transaction mapping" />
-            </legend>
-            <div className="measure-type-switch">
-              {(
-                [
-                  ['create_grain', 'No Planning Level'],
-                  ['direct', 'Map to Native Planning Level'],
-                  ['resolve_multi_grain', 'Resolve Multi Grain'],
-                ] as const
-              ).map(([mode, label]) => (
-                <label className="measure-type-option" key={mode}>
-                  <input
-                    type="radio"
-                    name="transaction-mapping"
-                    value={mode}
-                    checked={createGrain ? mode === 'create_grain' : d.mappingMode === mode}
-                    disabled={mode === 'create_grain' && (editing || !!d.filters)}
-                    onChange={() => {
-                      setCreateGrain(mode === 'create_grain')
-                      update({
-                        mappingMode: mode === 'create_grain' ? 'direct' : mode,
-                        resolution:
-                          mode === 'resolve_multi_grain' && level ? newResolution(level) : null,
-                        keyMappings:
-                          mode === 'resolve_multi_grain'
-                            ? []
-                            : (level?.definition.grain.keyIds ?? []).map((grainColumnId) => ({
-                                grainColumnId,
-                                sourceColumnId: '',
-                              })),
-                      })
-                    }}
-                  />
-                  <span>{label}</span>
-                </label>
-              ))}
-            </div>
-          </fieldset>
+          )}
           {createGrain ? (
             <>
               <p className="meta-hint">
@@ -403,12 +491,14 @@ export function TransactionEditor({
               </p>
             </>
           )}
-        </TransformationSection>
-        {!createGrain && (
-          <FilterEditor
-            value={d.filters}
-            onChange={(filters) => update({ filters })}
-            {...filterColumns}
+        </section>
+        {!editing && (
+          <TransactionMeasureEditor
+            columns={measureColumns}
+            drafts={measureDrafts}
+            onChange={setMeasureDrafts}
+            measures={data.measures}
+            loading={!pivotReady || (!!d.calendarResolution && !calendarColumns.length)}
           />
         )}
         {onboardingError && (
@@ -436,7 +526,8 @@ export function TransactionEditor({
             <PlanningResult
               data={preview}
               name={
-                value.name + (createGrain ? ' — proposed planning population' : ' — transformed')
+                value.name +
+                (createGrain && !d.filters ? ' — proposed planning population' : ' — transformed')
               }
               showRefresh={false}
             />
@@ -450,13 +541,14 @@ export function TransactionEditor({
           <Actions
             busy={busy || previewBusy || onboardingBusy}
             canSave={
-              createGrain
+              measuresReady &&
+              (createGrain
                 ? grainKeys.length > 0 &&
                   pivotReady &&
                   (!d.calendarResolution || calendarColumns.length > 0)
                 : pivotReady &&
                   (!d.calendarResolution || calendarColumns.length > 0) &&
-                  (d.mappingMode === 'direct' || resolutionComplete(d.resolution))
+                  (d.mappingMode === 'direct' || resolutionComplete(d.resolution)))
             }
             onCancel={onCancel}
           >
