@@ -29,6 +29,8 @@ class SemanticGraphValidator:
         publishing: bool = False,
     ) -> ValidationReport:
         self.objects = {obj["objectId"]: obj for obj in objects}
+        if hasattr(self.measures_rules, "availability"):
+            del self.measures_rules.availability
         self.errors: list[Diagnostic] = []
         self.edges: dict[str, set[str]] = defaultdict(set)
         self.base = base_level_id

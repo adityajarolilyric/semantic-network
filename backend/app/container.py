@@ -1,3 +1,4 @@
+from .services.compatibility import CompatibilityService
 from .services.transaction_measures import TransactionMeasureFactory
 from dataclasses import dataclass
 
@@ -94,4 +95,7 @@ class ServiceContainer:
         )
         self.planning_view = PlanningViewService(
             self.store, self.settings, self.measure_builds
+        )
+        self.compatibility = CompatibilityService(
+            self.store, self.settings, self.planning_view
         )

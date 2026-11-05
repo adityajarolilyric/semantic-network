@@ -81,11 +81,13 @@ export default function App() {
             <p>
               {tab === 'sources'
                 ? 'Bring your data in. Explore it before you start modeling.'
-                : tab === 'planning-view'
-                  ? 'Explore dimension attributes and measures in a planning pivot.'
-                  : tab === 'materialise'
-                    ? 'Build your semantic network and explore planning-level tables.'
-                    : 'Capture the meaning, grain, and policies behind your data.'}
+                : tab === 'context-graph'
+                  ? 'Explore shared plotting contexts, measure paths and compatibility.'
+                  : tab === 'planning-view'
+                    ? 'Explore dimension attributes and measures in a planning pivot.'
+                    : tab === 'materialise'
+                      ? 'Build your semantic network and explore planning-level tables.'
+                      : 'Capture the meaning, grain, and policies behind your data.'}
             </p>
           </div>
           {tab === 'sources' && <WorkspaceReset />}

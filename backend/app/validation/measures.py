@@ -13,91 +13,13 @@ class MeasureRules:
         )["relationship"] in ("same", "equivalent", "roll_up")
 
     def available(self, measure: dict, target_level: str, seen=frozenset()) -> bool:
-        from ..engine.relationships import LevelRelationshipAnalyzer
+        from ..engine.compatibility import MeasureCompatibilityAnalyzer
 
-        definition = measure["definition"]
-        from ..formula_language.expressions import contains_counts
-
-        if contains_counts((definition.get("formula") or {}).get("expression")):
-            counting = definition["nativePlanningLevelId"]
-            return bool(counting and self.rolls_up(counting, target_level))
-        relation = LevelRelationshipAnalyzer(
-            list(self.context.objects.values())
-        ).analyze(definition["nativePlanningLevelId"], target_level)["relationship"]
-        if relation in ("same", "equivalent", "roll_up"):
-            return True
-        from ..domain.typed_values import is_numeric
-
-        if not is_numeric(definition):
-            if (
-                definition.get("calculationType") != "AggregateFirst"
-                or measure["objectId"] in seen
-            ):
-                return False
-            analyzer = LevelRelationshipAnalyzer(list(self.context.objects.values()))
-            if relation == "incompatible" and not (
-                self.context.base
-                and all(
-                    analyzer.analyze(self.context.base, lid)["relationship"]
-                    in {"same", "equivalent", "roll_up"}
-                    for lid in (definition["nativePlanningLevelId"], target_level)
-                )
-            ):
-                return False
-            from ..engine.relationships import Coordinate
-
-            def available_expression(node):
-                if node["type"] == "measureRef":
-                    dependency = self.context.objects.get(node["measureId"])
-                    return bool(
-                        dependency
-                        and dependency["kind"] == "measure"
-                        and self.available(
-                            dependency, target_level, seen | {measure["objectId"]}
-                        )
-                    )
-                if node["type"] == "attributeRef":
-                    coordinate = (
-                        Coordinate(
-                            frozenset(
-                                {("dimension", node["dimensionId"], node["columnId"])}
-                            )
-                        )
-                        if node.get("dimensionId")
-                        else analyzer.outputs(node["planningLevelId"]).get(
-                            node["columnId"]
-                        )
-                    )
-                    return bool(
-                        coordinate and analyzer.resolve(target_level, coordinate)
-                    )
-                if node["type"] == "grainRef":
-                    coordinate = analyzer.outputs(
-                        definition["nativePlanningLevelId"]
-                    ).get(node["grainColumnId"])
-                    return bool(
-                        coordinate and analyzer.resolve(target_level, coordinate)
-                    )
-                if node["type"] == "binary":
-                    return available_expression(node["left"]) and available_expression(
-                        node["right"]
-                    )
-                if node["type"] == "call":
-                    return all(available_expression(arg) for arg in node["arguments"])
-                return True
-
-            return available_expression(definition["formula"]["expression"])
-        if target_level == self.context.base and relation == "roll_down":
-            return True
-        analyzer = LevelRelationshipAnalyzer(list(self.context.objects.values()))
-        return bool(
-            self.context.base
-            and all(
-                analyzer.analyze(self.context.base, lid)["relationship"]
-                in ("same", "equivalent", "roll_up")
-                for lid in (definition["nativePlanningLevelId"], target_level)
+        if not hasattr(self, "availability"):
+            self.availability = MeasureCompatibilityAnalyzer(
+                list(self.context.objects.values()), getattr(self.context, "base", None)
             )
-        )
+        return self.availability.outcome(measure["objectId"], target_level).available
 
     def validate_measure(self, obj: dict):
         definition = obj["definition"]

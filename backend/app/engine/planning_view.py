@@ -261,6 +261,15 @@ class PlanningViewPlanner:
         for mid in request.measures:
             collect_counts(mid)
         relationships = ViewRelationships(list(self.objects.values()), fields)
+        from .compatibility import MeasureCompatibilityAnalyzer
+
+        availability = MeasureCompatibilityAnalyzer(
+            list(self.objects.values()), self.base_id, relationships
+        )
+        for mid in request.measures:
+            result = availability.outcome(mid, TARGET)
+            if not result.available:
+                raise MetadataError("planning_view_unavailable", result.reason)
         for counting in count_source_levels:
             if (
                 counting not in populations

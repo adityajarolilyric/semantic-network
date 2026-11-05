@@ -93,12 +93,20 @@ test('start from a single Transaction, generate its grain and pivot without Dime
   expect(measures[0].name).toBe('forecast_qty')
   expect(measures[0].definition.editable).toBe(true)
   expect(measures[0].definition.allocation.mode).toBe('weighted_by_self')
-  await page.getByRole('button', { name: 'Materialise', exact: true }).click()
-  await page.getByRole('button', { name: 'Build Semantic Network', exact: true }).click()
+  await page
+    .locator('nav')
+    .getByRole('button', { name: 'Build Semantic', exact: true })
+    .click()
+  await page
+    .getByRole('region', { name: 'Materialise', exact: true })
+    .getByRole('button', { name: 'Build Semantic Network', exact: true })
+    .click()
   await expect(
-    page.getByRole('button', { name: 'Build Semantic Network', exact: true }),
+    page
+      .getByRole('region', { name: 'Materialise', exact: true })
+      .getByRole('button', { name: 'Build Semantic Network', exact: true }),
   ).toBeEnabled()
-  await page.getByRole('button', { name: 'Planning View', exact: true }).click()
+  await page.getByRole('button', { name: 'Decision View', exact: true }).click()
   await page.getByLabel('Add rows attribute').selectOption({ label: 'Forecast grain · product_id' })
   await page.getByLabel('forecast_qty', { exact: true }).check()
   await page.getByRole('button', { name: 'Update pivot', exact: true }).click()
@@ -113,12 +121,20 @@ test('start from a single Transaction, generate its grain and pivot without Dime
   await expect(
     page.getByRole('button', { name: 'Edit forecast_qty · P1', exact: true }),
   ).toBeVisible()
-  await page.getByRole('button', { name: 'Materialise', exact: true }).click()
-  await page.getByRole('button', { name: 'Build Semantic Network', exact: true }).click()
+  await page
+    .locator('nav')
+    .getByRole('button', { name: 'Build Semantic', exact: true })
+    .click()
+  await page
+    .getByRole('region', { name: 'Materialise', exact: true })
+    .getByRole('button', { name: 'Build Semantic Network', exact: true })
+    .click()
   await expect(
-    page.getByRole('button', { name: 'Build Semantic Network', exact: true }),
+    page
+      .getByRole('region', { name: 'Materialise', exact: true })
+      .getByRole('button', { name: 'Build Semantic Network', exact: true }),
   ).toBeEnabled()
-  await page.getByRole('button', { name: 'Planning View', exact: true }).click()
+  await page.getByRole('button', { name: 'Decision View', exact: true }).click()
   await expect(page.getByLabel('forecast_qty', { exact: true })).toBeChecked()
   await expect(
     page.getByRole('button', { name: 'Edit forecast_qty · P1', exact: true }),

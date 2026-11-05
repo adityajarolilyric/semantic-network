@@ -87,7 +87,7 @@ class PlanningViewService(Service):
             ],
         }
 
-    async def capture(self, repo, model, revision, request, read_id):
+    async def current_snapshot(self, repo, model, revision):
         (
             rev,
             objects,
@@ -119,15 +119,28 @@ class PlanningViewService(Service):
             ):
                 values[binding["resourceId"]] = artifact
         base_id = rev["basePlanningLevelId"]
+        values = {
+            lid: artifact
+            for lid, artifact in values.items()
+            if base_id in values
+            and artifact["generationId"] == values[base_id]["generationId"]
+        }
+        return rev, objects, populations, managed, values, base_id, fingerprint
+
+    async def capture(self, repo, model, revision, request, read_id):
+        (
+            rev,
+            objects,
+            populations,
+            managed,
+            values,
+            base_id,
+            _,
+        ) = await self.current_snapshot(repo, model, revision)
         if base_id not in values:
             raise Conflict(
                 "Build Semantic Network in Materialise before opening a Planning View. Saved definitions and planning populations must be current."
             )
-        values = {
-            lid: artifact
-            for lid, artifact in values.items()
-            if artifact["generationId"] == values[base_id]["generationId"]
-        }
         planner = PlanningViewPlanner(objects, base_id)
         plan = planner.plan(request, populations, values)
         inputs = {

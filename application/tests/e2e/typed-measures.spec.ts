@@ -116,12 +116,34 @@ test('create typed references, attribute formulas and a mixed pivot through the 
     measures.find((measure: { name: string }) => measure.name === 'Risk Status').definition
       .resultType.type,
   ).toBe('string')
-  await page.getByRole('button', { name: 'Materialise', exact: true }).click()
-  await page.getByRole('button', { name: 'Build Semantic Network', exact: true }).click()
+  await page
+    .locator('nav')
+    .getByRole('button', { name: 'Build Semantic', exact: true })
+    .click()
+  await page
+    .getByRole('region', { name: 'Materialise', exact: true })
+    .getByRole('button', { name: 'Build Semantic Network', exact: true })
+    .click()
   await expect(
-    page.getByRole('button', { name: 'Build Semantic Network', exact: true }),
+    page
+      .getByRole('region', { name: 'Materialise', exact: true })
+      .getByRole('button', { name: 'Build Semantic Network', exact: true }),
   ).toBeEnabled()
-  await page.getByRole('button', { name: 'Planning View', exact: true }).click()
+  await page.getByRole('button', { name: 'Context Graph', exact: true }).click()
+  await page.getByRole('button', { name: 'Select qty for compatibility', exact: true }).click()
+  await page
+    .getByRole('button', { name: 'Select Positive Cells for compatibility', exact: true })
+    .click()
+  await expect(
+    page.getByText('The full selection can be plotted together in a shown context.', {
+      exact: true,
+    }),
+  ).toBeVisible()
+  await expect(
+    page.getByRole('button', { name: 'Select Positive Cells for compatibility', exact: true }),
+  ).toHaveAttribute('aria-pressed', 'true')
+  await page.screenshot({ path: 'test-results/context-graph.png', fullPage: true })
+  await page.getByRole('button', { name: 'Decision View', exact: true }).click()
   await page
     .getByLabel('Add rows attribute')
     .selectOption({ label: 'Typed Facts grain · product_id' })
@@ -135,6 +157,13 @@ test('create typed references, attribute formulas and a mixed pivot through the 
     'Positive Cells',
   ])
     await page.getByLabel(name, { exact: true }).check()
+  await page.getByRole('button', { name: 'Check compatibility', exact: true }).click()
+  await expect(
+    page.getByText('The full selection can be plotted together in a shown context.', {
+      exact: true,
+    }),
+  ).toBeVisible()
+  await page.getByRole('button', { name: 'Hide compatibility', exact: true }).click()
   await page.getByRole('button', { name: 'Update pivot', exact: true }).click()
   await expect(page.getByRole('cell', { name: 'Mixed', exact: true })).toBeVisible()
   await expect(page.getByRole('cell', { name: '2026-11-05', exact: true })).toBeVisible()

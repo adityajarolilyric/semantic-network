@@ -1,6 +1,6 @@
-# Planning View: pivot reads and edits
+# Decision View: pivot reads and edits
 
-Planning View sits below Materialise. Choose exposed Dimension attributes or explicit Planning Level grain/population attributes for Rows/Columns and measures under Values. **Measures render as rows** inside each row-dimension group, never as the column axis. Reorder/remove axis fields; Update pivot sends the layout to the backend. The browser arranges returned cells but performs no aggregation/disaggregation/formula evaluation. Layout selections are browser experience preferences; results remain transient and are always read fresh from the server. Neither is a persisted semantic definition.
+Decision View sits below Build Semantic in the navigation. Internal component and API names remain `planning-view`. Choose exposed Dimension attributes or explicit Planning Level grain/population attributes for Rows/Columns and measures under Values. **Measures render as rows** inside each row-dimension group, never as the column axis. Reorder/remove axis fields; Update pivot sends the layout to the backend. The browser arranges returned cells but performs no aggregation/disaggregation/formula evaluation. Layout selections are browser experience preferences; results remain transient and are always read fresh from the server. Neither is a persisted semantic definition.
 
 Use current saved populations and Build Semantic Network first. Results explain the selected planning level and reuse/recalculation; hide internal IDs, SQL, physical names and generation tokens. Distinguish NULL values, absent intersections and empty members. Scrolling/responsive selectors support large layouts. Empty dimension axes request a global group; automatic subtotals/grand totals, filters and server-saved/shared layouts remain unimplemented.
 
@@ -115,3 +115,20 @@ Row-dimension columns (including the global Rows column) and Measure are pinned 
 Draft revisions with a Base planning level offer **Create Measure** in Planning View. The compact modal asks for Name and a single-line Formula, using the shared formula builder, input insertion, caret handling and backend semantic validation from the Measures editor. Output Planning Level defaults to Base and calculation type to AggregateFirst: inputs align and aggregate before evaluation at the requested grain. Advanced settings sit below the searchable input library and reveal the output level, calculation type and applicable policies; collapsing them preserves changes. Measures remain noneditable with nullable Float64 results by default.
 
 Saving creates an ordinary measure definition and runs incremental materialisation, preserving unaffected values and the current pivot layout. The measure then appears under Values for selection. If saving succeeds but the build fails, the definition is retained and the UI directs the user to retry Build Semantic Network from Materialise. Published revisions cannot create measures. No additional metadata or API is introduced.
+
+
+## Context Graph: which measures can be plotted together
+
+Open Context Graph from the navigation, Explore measure compatibility in the formula editor, or Check compatibility in Decision View. Planning-level hubs show usable contexts for measures. Formula checks use the selected Output Planning Level; pivot checks use the current row/column fields. Select several measures to evaluate the entire selection. Pairwise compatibility does not imply that three or more measures share a usable source.
+
+- **Ready:** the complete selection has a current, coherent materialised source accepted by the pivot planner.
+- **Needs materialisation:** definitions permit the context, but current build inputs/values are missing or stale.
+- **Unavailable:** semantic paths, formula inputs, typed/count restrictions, pivot limits or a common source prevent the selection. The graph explains the reason using names.
+
+The graph shares `MeasureCompatibilityAnalyzer` with validation and pivot planning, then checks the actual `PlanningViewPlanner` against the same build snapshot used by reads. It does not infer joins from matching names, create relationships, or build tables. Availability is contextual, not a permanent measure-to-measure edge. A later edit/build can change readiness; execution recaptures inputs and acquires its own leases.
+
+`POST /models/{model}/revisions/{revision}/compatibility` accepts selected measures plus either a planning level or pivot fields. Metadata reads only: no ClickHouse queries. Responses are paged to 24 measures and eight contexts, with a twelve-measure selection limit. Revision/binding fingerprints invalidate bounded snapshot caches; analyzers and their recursive availability caches are bounded too.
+
+## Build Semantic screen
+
+The navigation label is **Build Semantic**; the build action remains **Build Semantic Network**. Preview starts collapsed and requests no rows until Show preview is selected. Building does not open it. Preview remains an independent action and displays the selected saved materialised table; build errors remain visible while preview is closed.

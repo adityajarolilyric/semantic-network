@@ -570,6 +570,9 @@ class MeasureBuildService(Service):
             RevisionLookup(model_id=model, revision_id=revision), "Revision"
         )
         base = revision_doc["basePlanningLevelId"]
+        from ..engine.compatibility import MeasureCompatibilityAnalyzer
+
+        availability = MeasureCompatibilityAnalyzer(objects, base)
         levels = []
         for lid in analyzer.levels:
             result = analyzer.analyze(native, lid)
@@ -581,23 +584,7 @@ class MeasureBuildService(Service):
                     for key in (native, lid)
                 )
             )
-            readable = result["relationship"] != "incompatible" or via_base
-            if (
-                measure["definition"]["resultType"]["type"]
-                in {"string", "date", "boolean"}
-                and measure["definition"].get("calculationType") != "AggregateFirst"
-            ):
-                readable = result["relationship"] in {"same", "equivalent", "roll_up"}
-                via_base = False
-            from ..formula_language.expressions import contains_counts
-
-            if contains_counts(
-                (measure["definition"].get("formula") or {}).get("expression")
-            ):
-                readable = analyzer.analyze(
-                    measure["definition"]["nativePlanningLevelId"], lid
-                )["relationship"] in {"same", "equivalent", "roll_up"}
-                via_base = False
+            readable = availability.outcome(measure_id, lid).available
             levels.append(
                 {
                     "planningLevelId": lid,

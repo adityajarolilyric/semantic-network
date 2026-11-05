@@ -1,3 +1,4 @@
+import { CompatibilityGraphPanel } from './CompatibilityGraphPanel'
 import {
   clearViewPreferences,
   viewReference,
@@ -303,6 +304,7 @@ export function PlanningViewPanel({
   creatingMeasure?: boolean
   onCommitted?: (version: number) => void
 }) {
+  const [showCompatibility, setShowCompatibility] = useState(false)
   const [refreshToken, refreshOptions] = useState(0)
   const [loadedScope, setLoadedScope] = useState<string | null>(null)
   const [options, setOptions] = useState<Options | null>(null)
@@ -598,6 +600,14 @@ export function PlanningViewPanel({
           <h2>Explore your planning data</h2>
         </div>
         <div className="meta-toolbar">
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={() => setShowCompatibility(!showCompatibility)}
+            aria-expanded={showCompatibility}
+          >
+            {showCompatibility ? 'Hide compatibility' : 'Check compatibility'}
+          </button>
           {onCreateMeasure && (
             <button
               type="button"
@@ -730,6 +740,20 @@ export function PlanningViewPanel({
         <p className="meta-hint" role="status">
           Applying edit and recomputing compatible planning levels…
         </p>
+      )}
+      {showCompatibility && (
+        <CompatibilityGraphPanel
+          base={base}
+          revisionVersion={revisionVersion}
+          refreshKey={options?.buildId}
+          measureIds={measures}
+          view={{
+            rows: rows.map((field) => viewReference(field)),
+            columns: columns.map((field) => viewReference(field)),
+          }}
+          onSelectionChange={(ids) => change(() => setMeasures(ids))}
+          selectionDisabled={saving || creatingMeasure}
+        />
       )}
       {error && (
         <p className="meta-error" role="alert">

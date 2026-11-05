@@ -44,6 +44,7 @@ it('uses incremental builds and reports when existing values were reused', async
   )
   expect(confirm).not.toHaveBeenCalled()
   expect(onBuilt).toHaveBeenCalledOnce()
+  expect(screen.queryByLabelText('Preview planning level')).not.toBeInTheDocument()
 })
 
 it('requires confirmation for Full Refresh and sends the explicit full mode', async () => {
@@ -63,4 +64,34 @@ it('requires confirmation for Full Refresh and sends the explicit full mode', as
   )
   expect(await screen.findByText('Full Refresh completed.')).toBeVisible()
   expect(confirm).toHaveBeenLastCalledWith(expect.stringContaining('replaces manual edits'))
+})
+
+it('keeps preview hidden and fetches rows only after Show preview', async () => {
+  const { user } = setup()
+  await waitFor(() =>
+    expect(metadataApi.request).toHaveBeenCalledWith(
+      '/models/m/revisions/r/measures/execution/levels/base?preview=false',
+      'GET',
+      undefined,
+      undefined,
+      expect.any(AbortSignal),
+    ),
+  )
+  expect(screen.queryByLabelText('Preview planning level')).not.toBeInTheDocument()
+  expect(
+    vi.mocked(metadataApi.request).mock.calls.every(([path]) => !path.includes('preview=true')),
+  ).toBe(true)
+  await user.click(screen.getByRole('button', { name: 'Show preview' }))
+  expect(await screen.findByLabelText('Preview planning level')).toBeVisible()
+  await waitFor(() =>
+    expect(metadataApi.request).toHaveBeenCalledWith(
+      '/models/m/revisions/r/measures/execution/levels/base?preview=true',
+      'GET',
+      undefined,
+      undefined,
+      expect.any(AbortSignal),
+    ),
+  )
+  await user.click(screen.getByRole('button', { name: 'Hide preview' }))
+  expect(screen.queryByLabelText('Preview planning level')).not.toBeInTheDocument()
 })

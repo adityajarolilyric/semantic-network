@@ -1,3 +1,4 @@
+from .api.compatibility import CompatibilityAPI
 from .api.planning_view import PlanningViewAPI
 from .core.workspace_middleware import WorkspaceMiddleware
 from contextlib import asynccontextmanager
@@ -162,6 +163,7 @@ class ApplicationFactory:
             ),
             MeasureAPI(container.measures, container.measure_builds),
             PlanningViewAPI(container.planning_view),
+            CompatibilityAPI(container.compatibility),
             EvidenceAPI(container.evidence),
             ExampleAPI(container.examples),
             ContractAPI(container.contracts),

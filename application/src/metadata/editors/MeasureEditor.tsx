@@ -1,3 +1,4 @@
+import { CompatibilityGraphPanel } from '../CompatibilityGraphPanel'
 import { FormulaBuilder, type FormulaFunction } from '../FormulaBuilder'
 import { metadataApi } from '../api'
 import { MeasureBaseVisibility } from './MeasureBaseVisibility'
@@ -32,6 +33,7 @@ export function MeasureEditor({
   quick = false,
 }: EditorProps<Measure> & { base?: string; baseLevelId?: string | null; quick?: boolean }) {
   const [advanced, setAdvanced] = useState(false)
+  const [showCompatibility, setShowCompatibility] = useState(false)
   const showSettings = !quick || advanced
   const [value, set] = useState(initial)
   const [text, setText] = useState(
@@ -210,6 +212,16 @@ export function MeasureEditor({
         }
       : null
   const validation = useFormulaValidation(base, formulaRequest)
+  const formulaInputs = new Set<string>()
+  function collectInputs(node: import('../types').Expression | undefined) {
+    if (!node) return
+    if (node.type === 'measureRef') formulaInputs.add(node.measureId)
+    else if (node.type === 'binary') {
+      collectInputs(node.left)
+      collectInputs(node.right)
+    } else if (node.type === 'call' || node.type === 'count') node.arguments.forEach(collectInputs)
+  }
+  collectInputs(validation?.expression)
   const counted =
     d.measureType === 'calculated' &&
     (validation?.expression
@@ -517,6 +529,25 @@ export function MeasureEditor({
             compact={quick}
             disabled={busy || validatingSave}
           />
+          {base && d.nativePlanningLevelId && (
+            <>
+              <button
+                type="button"
+                className="secondary-button compatibility-open"
+                aria-expanded={showCompatibility}
+                onClick={() => setShowCompatibility(!showCompatibility)}
+              >
+                {showCompatibility ? 'Hide compatibility' : 'Explore measure compatibility'}
+              </button>
+              {showCompatibility && (
+                <CompatibilityGraphPanel
+                  base={base}
+                  planningLevelId={d.nativePlanningLevelId}
+                  measureIds={[...formulaInputs].slice(0, 12)}
+                />
+              )}
+            </>
+          )}
           {quick && (
             <button
               type="button"

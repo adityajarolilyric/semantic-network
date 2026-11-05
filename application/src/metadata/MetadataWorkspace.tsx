@@ -1,3 +1,4 @@
+import { CompatibilityGraphPanel } from './CompatibilityGraphPanel'
 import { QuickCalculatedMeasure } from './QuickCalculatedMeasure'
 import { PlanningViewPanel } from './PlanningViewPanel'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
@@ -36,6 +37,7 @@ export type Tab =
   | 'measures'
   | 'materialise'
   | 'planning-view'
+  | 'context-graph'
 export const tabs: { id: Tab; label: string }[] = [
   { id: 'sources', label: 'Sources' },
   { id: 'managed', label: 'Managed Tables' },
@@ -43,8 +45,9 @@ export const tabs: { id: Tab; label: string }[] = [
   { id: 'levels', label: 'Planning Levels' },
   { id: 'transactions', label: 'Transactions' },
   { id: 'measures', label: 'Measures' },
-  { id: 'materialise', label: 'Materialise' },
-  { id: 'planning-view', label: 'Planning View' },
+  { id: 'materialise', label: 'Build Semantic' },
+  { id: 'planning-view', label: 'Decision View' },
+  { id: 'context-graph', label: 'Context Graph' },
 ]
 const tabKind: Partial<Record<Tab, Kind>> = {
   managed: 'source',
@@ -423,6 +426,15 @@ export function MetadataWorkspace({
               meta.updateRevisionVersion(model.modelId, revision.revisionId, version)
             }
           />
+        ) : null
+      ) : tab === 'context-graph' ? (
+        model && revision ? (
+          <div className="meta-card">
+            <CompatibilityGraphPanel
+              base={metadataApi.scope(model.modelId, revision.revisionId)}
+              revisionVersion={revision.version}
+            />
+          </div>
         ) : null
       ) : tab === 'materialise' ? (
         <>

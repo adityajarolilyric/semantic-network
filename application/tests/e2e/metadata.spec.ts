@@ -353,12 +353,14 @@ test('manage from the source grid and capture PLT/PT metadata without visible in
   await page.getByLabel('Dis-aggregation policy', { exact: true }).selectOption('none')
   await page.getByLabel('Editable measure', { exact: true }).check()
   await save(page)
-  await nav(page, 'Materialise')
+  await nav(page, 'Build Semantic')
   const valuesPanel = page.getByRole('region', { name: 'Materialise', exact: true })
   const buildButton = valuesPanel.getByRole('button', {
     name: 'Build Semantic Network',
     exact: true,
   })
+  await expect(valuesPanel.getByLabel('Preview planning level', { exact: true })).not.toBeVisible()
+  await valuesPanel.getByRole('button', { name: 'Show preview', exact: true }).click()
   const previewSelector = valuesPanel.getByLabel('Preview planning level', { exact: true })
   const buildBox = await buildButton.boundingBox()
   const previewBox = await previewSelector.boundingBox()
@@ -384,7 +386,7 @@ test('manage from the source grid and capture PLT/PT metadata without visible in
     .getByLabel('Preview planning level', { exact: true })
     .selectOption({ label: 'PT' })
   await expect(valuesPanel.getByRole('columnheader', { name: 'Error', exact: false })).toBeVisible()
-  await nav(page, 'Planning View')
+  await nav(page, 'Decision View')
   await expect(page.getByLabel('Semantic model', { exact: true })).toHaveCount(0)
   await page.getByLabel('Add rows attribute').selectOption({ label: 'Product · product_code' })
   await page.getByLabel('Add columns attribute').selectOption({ label: 'Time · Date' })
@@ -421,7 +423,7 @@ test('manage from the source grid and capture PLT/PT metadata without visible in
   await page.screenshot({ path: 'test-results/planning-view-mobile.png', fullPage: true })
   await page.setViewportSize({ width: 1440, height: 1000 })
   await nav(page, 'Measures')
-  await nav(page, 'Planning View')
+  await nav(page, 'Decision View')
   await expect(page.getByLabel('FQTY', { exact: true })).toBeChecked()
   await expect(
     page.getByRole('button', { name: 'Remove Product · product_code from rows', exact: true }),
@@ -434,23 +436,26 @@ test('manage from the source grid and capture PLT/PT metadata without visible in
   await expect(
     page.getByRole('button', { name: 'Edit SQTY · P1 / 2026-10-31', exact: true }),
   ).toContainText('150')
-  await nav(page, 'Materialise')
-  await page.getByRole('button', { name: 'Build Semantic Network', exact: true }).click()
+  await nav(page, 'Build Semantic')
+  await page
+    .getByRole('region', { name: 'Materialise', exact: true })
+    .getByRole('button', { name: 'Build Semantic Network', exact: true })
+    .click()
   await expect(
     page.getByText('Already up to date. Existing values were reused.', { exact: true }),
   ).toBeVisible()
-  await nav(page, 'Planning View')
+  await nav(page, 'Decision View')
   await expect(
     page.getByRole('button', { name: 'Edit SQTY · P1 / 2026-10-31', exact: true }),
   ).toContainText('150')
-  await nav(page, 'Materialise')
+  await nav(page, 'Build Semantic')
   page.once('dialog', async (dialog) => {
     expect(dialog.message()).toContain('replaces manual edits')
     await dialog.accept()
   })
   await page.getByRole('button', { name: 'Full Refresh', exact: true }).click()
   await expect(page.getByText('Full Refresh completed.', { exact: true })).toBeVisible()
-  await nav(page, 'Planning View')
+  await nav(page, 'Decision View')
   await expect(page.getByLabel('FQTY', { exact: true })).toBeChecked()
   await expect(
     page.getByRole('button', { name: 'Edit SQTY · P1 / 2026-10-31', exact: true }),
