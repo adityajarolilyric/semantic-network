@@ -1,5 +1,6 @@
 # ruff: noqa: F811
 from uuid import uuid4
+import time
 import pytest
 from .test_csv_clickhouse import clickhouse_app  # noqa: F401
 from .test_decision_view_clickhouse import seed_view, field, query_view
@@ -94,8 +95,25 @@ def test_edit_coarser_equal_base_first_formulas_rebuild_and_two_tables(clickhous
         )
     )
     documents = client.app.state.container.store.documents
-    active_ids = {b['artifactId'] for b in documents['engine_artifact_bindings']}
-    current_tables = {a['physicalName'] for a in documents['engine_artifacts'] if a['artifactId'] in active_ids and a.get('kind') == 'table' and a.get('storageMode') == 'current'}
+    active_ids = {b["artifactId"] for b in documents["engine_artifact_bindings"]}
+    current_tables = {
+        a["physicalName"]
+        for a in documents["engine_artifacts"]
+        if a["artifactId"] in active_ids
+        and a.get("kind") == "table"
+        and a.get("storageMode") == "current"
+    }
+    # Run completion commits before idempotent post-commit clone cleanup.
+    for _ in range(40):
+        count = int(
+            admin.command(
+                "SELECT count() FROM system.tables WHERE database={db:String} AND engine='MergeTree' AND startsWith(comment,'semanticCurrent:')",
+                parameters={"db": database},
+            )
+        )
+        if count == len(current_tables):
+            break
+        time.sleep(0.05)
     assert count == len(current_tables)
     # No replay: rebuilding reads the original transactions again.
     assert build_values(client)["state"] == "succeeded"
@@ -354,7 +372,13 @@ def test_independent_native_measure_can_define_disaggregation_and_survives_other
         },
     )
     assert build(client, "independent_group")["state"] == "succeeded"
-    transaction(client, "independent_group_tx", source, "independent_group", [("category", "col_2")])
+    transaction(
+        client,
+        "independent_group_tx",
+        source,
+        "independent_group",
+        [("category", "col_2")],
+    )
     editable(client)
     data, cols = values(client, "base")
     assert "IndependentQty" not in cols

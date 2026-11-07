@@ -5,6 +5,7 @@ import pytest
 
 from backend.app.core.errors import MetadataError
 from backend.app.core.metadata import utc_now
+from backend.app.warehouse.sql import quote_literal
 from .test_csv_clickhouse import authored_clickhouse_app, clickhouse_app  # noqa: F401
 from .test_incremental_clickhouse import calc, run_incremental, incremental
 from .test_managed_clickhouse import await_run
@@ -63,7 +64,13 @@ def test_single_source_is_virtual_and_added_measure_updates_only_its_columns(
         == count
     )
     assert any(" UPDATE " in c for c in commands)
-    assert not any(c.startswith("INSERT INTO") for c in commands)
+    inserts = [c for c in commands if c.startswith("INSERT INTO")]
+    assert inserts and all(
+        any(suffix in c.split(" SELECT", 1)[0] for suffix in ("_lookup`", "_values`"))
+        for c in inserts
+    )
+    updates = [c for c in commands if " UPDATE " in c]
+    assert all("joinGet(" in c and "transform(" not in c for c in updates)
     step = next(
         s
         for s in container.store.documents["engine_run_steps"]
@@ -88,7 +95,7 @@ def test_single_source_is_virtual_and_added_measure_updates_only_its_columns(
 def test_reads_block_and_failed_mutations_require_recovery(
     authored_clickhouse_app, monkeypatch
 ):
-    client, _, _, _ = authored_clickhouse_app
+    client, admin, database, _ = authored_clickhouse_app
     seed(client)
     container = client.app.state.container
     client.portal.call(container.engine_worker.stop)
@@ -106,6 +113,15 @@ def test_reads_block_and_failed_mutations_require_recovery(
 
     async def fail_after_write(*args, **kwargs):
         await original(*args, **kwargs)
+        artifact = args[0]
+        for suffix, definition in (
+            ("values", "(x String) ENGINE=MergeTree ORDER BY tuple()"),
+            ("lookup", "(__update_key String) ENGINE=Join(ANY, LEFT, __update_key)"),
+        ):
+            admin.command(
+                f"CREATE TABLE `{database}`.`{artifact['physicalName']}_{suffix}` {definition} COMMENT "
+                + quote_literal(artifact["buildOwner"] + ":" + suffix)
+            )
         raise MetadataError("test_write_failure", "Injected after mutation")
 
     monkeypatch.setattr(writer, "build", fail_after_write)
@@ -121,6 +137,11 @@ def test_reads_block_and_failed_mutations_require_recovery(
     assert recovered["state"] == "succeeded", recovered
     assert recovered["buildMode"] == "incremental"
     assert values(client, "base")[0]["rowCount"] == 2
+
+    assert not admin.query(
+        "SELECT name FROM system.tables WHERE database={db:String} AND position(name,'_build_')>0",
+        parameters={"db": database},
+    ).result_rows
 
 
 def test_column_checkpoints_preserve_typed_nulls_counts_and_dependency_order(
@@ -200,7 +221,7 @@ def test_recovery_recomputes_touched_measures_even_after_metadata_is_reverted(
     assert [r[cols["Double"]] for r in data["rows"]] == ["80.0", "120.0"]
 
 
-def test_cancelled_writer_stops_before_the_next_batch(
+def test_cancelled_writer_stops_at_the_next_checkpoint(
     authored_clickhouse_app, monkeypatch
 ):
     client, _, _, _ = authored_clickhouse_app
@@ -224,7 +245,6 @@ def test_cancelled_writer_stops_before_the_next_batch(
         await original(artifact)
 
     monkeypatch.setattr(storage, "require_running", guard)
-    monkeypatch.setattr(container.measure_builds.executor.in_place, "batch_size", 1)
     cancelled = run_incremental(client)
     assert cancelled["state"] == "cancelled", cancelled
     assert calls == 4

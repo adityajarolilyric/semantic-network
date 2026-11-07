@@ -15,6 +15,7 @@ from ..repositories.metadata.criteria import (
     RunLookup,
     TableResourceLookup,
 )
+from .measure_columns import lookup_name, result_name
 from .sql import quote_identifier as q, quote_literal as lit
 from .versioned_storage import TableStorage as LegacyTableStorage, owner
 from ..engine.network_gate import NetworkBuildGate
@@ -231,6 +232,10 @@ class TableStorage(LegacyTableStorage):
                 and source["physicalName"] == artifact["liveName"]
                 and source.get("sortKeyIds") == order
             )
+            if preserve and not can_clone:
+                raise Conflict(
+                    "Cannot preserve the existing materialised population for an incremental build. Run Full Semantic Refresh explicitly."
+                )
             if can_clone:
                 client.command(
                     f"CREATE TABLE {table} CLONE AS {self.warehouse.qualify(artifact['liveName'])}"
@@ -273,10 +278,11 @@ class TableStorage(LegacyTableStorage):
                 ]
                 target = ", ".join(q(c["storageName"]) for c in population)
                 selected = ", ".join(q(c["name"]) for c in population)
-                client.command(
-                    f"INSERT INTO {table} ({target}) SELECT {selected} FROM ({population_query}) LIMIT {self.warehouse.settings.planning_max_rows + 1}",
-                    settings=settings,
-                )
+                if not artifact.get("populateWithValues"):
+                    client.command(
+                        f"INSERT INTO {table} ({target}) SELECT {selected} FROM ({population_query}) LIMIT {self.warehouse.settings.planning_max_rows + 1}",
+                        settings=settings,
+                    )
             selected = ", ".join(
                 q(c["storageName"]) + " AS " + q(c["name"]) for c in columns
             )
@@ -506,6 +512,22 @@ class TableStorage(LegacyTableStorage):
             )
             if view:
                 client.command(f"DROP VIEW IF EXISTS {self.warehouse.qualify(view)}")
+            for temporary, role in (
+                (lookup_name({"physicalName": candidate}), "lookup"),
+                (result_name({"physicalName": candidate}), "values"),
+            ):
+                info = self.warehouse.table_info(client, temporary)
+                if info and info[1] == artifact.get("buildOwner", "") + ":" + role:
+                    client.command(
+                        "KILL MUTATION WHERE database={db:String} AND table={table:String} AND is_done=0 SYNC",
+                        parameters={
+                            "db": self.warehouse.settings.clickhouse_database,
+                            "table": candidate,
+                        },
+                    )
+                    client.command(
+                        f"DROP TABLE {self.warehouse.qualify(temporary)} SYNC"
+                    )
             current = self.warehouse.table_info(client, candidate)
             if current and (
                 current[1] == artifact.get("buildOwner")

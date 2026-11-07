@@ -184,11 +184,11 @@ def test_incremental_noop_add_change_remove_preserves_edits_and_full_refresh_is_
     assert (
         int(
             admin.command(
-                "SELECT count() FROM system.tables WHERE database={db:String} AND engine='MergeTree' AND startsWith(comment,'semanticTable:')",
+                "SELECT count() FROM system.tables WHERE database={db:String} AND engine='MergeTree' AND startsWith(comment,'semanticCurrent:')",
                 parameters={"db": database},
             )
         )
-        == 4
+        == 2
     )
 
 

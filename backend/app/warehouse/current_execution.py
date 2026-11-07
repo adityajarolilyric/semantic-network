@@ -16,7 +16,12 @@ class CurrentTableBuilder:
         started = perf_counter()
         settings = executor.execution_settings()
         columns = await storage.prepare(artifact, compiled, settings)
+        schema_prepared = perf_counter()
         population_query = artifact.get("populationQuery") or compiled.sql
+        has_measures = any(c.get("measureId") for c in columns)
+        artifact["populateWithValues"] = (
+            has_measures and artifact.get("writeMode") != "in_place"
+        )
         cloned = await storage.begin(
             artifact,
             columns,
@@ -25,7 +30,7 @@ class CurrentTableBuilder:
             settings,
             preserve=artifact.get("writeMode") == "in_place",
         )
-        has_measures = any(c.get("measureId") for c in columns)
+        candidate_prepared = perf_counter()
         if has_measures:
             artifact.setdefault("writeMode", "column_build")
             artifact.setdefault(
@@ -58,26 +63,22 @@ class CurrentTableBuilder:
                 table = executor.warehouse.qualify(artifact["viewName"])
                 names = {c["columnId"]: c["name"] for c in columns}
                 keys = ", ".join(q(names[k]) for k in plan.key_ids)
-                count = int(
-                    client.command(f"SELECT count() FROM {table}", settings=settings)
-                )
+                nulls = " OR ".join("isNull(" + q(names[k]) + ")" for k in plan.key_ids)
+                count, null_count, unique = client.query(
+                    f"SELECT count(), countIf({nulls}), uniqExact(tuple({keys})) FROM {table}",
+                    settings=settings,
+                ).first_row
+                count = int(count)
                 if count > executor.settings.planning_max_rows:
                     raise MetadataError(
                         "planning_row_limit",
                         "Population exceeds the configured row limit.",
                     )
-                nulls = " OR ".join("isNull(" + q(names[k]) + ")" for k in plan.key_ids)
-                if client.query(
-                    f"SELECT {keys} FROM {table} WHERE {nulls} LIMIT 1",
-                    settings=settings,
-                ).result_rows:
+                if null_count:
                     raise MetadataError(
                         "null_planning_key", "Dimension grain keys cannot be NULL."
                     )
-                if client.query(
-                    f"SELECT {keys} FROM {table} GROUP BY {keys} HAVING count()>1 LIMIT 1",
-                    settings=settings,
-                ).result_rows:
+                if unique != count:
                     raise MetadataError(
                         "duplicate_planning_key",
                         "The same dimension grain has conflicting output attributes.",
@@ -92,7 +93,10 @@ class CurrentTableBuilder:
                 "incompleteMeasures": {},
             }
         outcome["buildTimingsMs"].update(
-            total=round((perf_counter() - started) * 1000, 3), cloned=cloned
+            total=round((perf_counter() - started) * 1000, 3),
+            cloned=cloned,
+            prepareSchema=round((schema_prepared - started) * 1000, 3),
+            prepareCandidate=round((candidate_prepared - schema_prepared) * 1000, 3),
         )
         outcome["sortKeyIds"] = artifact["sortKeyIds"]
         return outcome

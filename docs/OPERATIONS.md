@@ -99,9 +99,9 @@ Run `backend/.venv/bin/python backend/scripts/migrate_current_storage.py` to ins
 
 Current storage requires Atomic database support for EXCHANGE TABLES and CLONE AS support (integration-tested on ClickHouse 25.3). One permanent table per materialised dimension is the steady-state constraint; allow temporary candidates and disk headroom during rebuilds. Constant-time publication refers to metadata exchange, not the full build or synchronous old-table cleanup.
 
-## Current-table benchmark and production sizing (7 November 2026)
+## Earlier current-table benchmark and production sizing (7 November 2026)
 
-The new storage path was measured on an **isolated MongoDB/ClickHouse copy of the current example**, not by migrating/deleting live tables. Nine measures cover three materialised dimensions: ProdLocWeek (576 rows), product (9), BrandZoneWeek (144). ClickHouse 25.3, four query threads; host has 12 logical CPUs / 18 GiB RAM and Docker exposes about 7.26 GiB. Query-memory ceilings are distinct from server/container RAM. No container resource allocation was changed.
+Before the database-side writer change, the current-table storage path was measured on an **isolated MongoDB/ClickHouse copy of the current example**, not by migrating/deleting live tables. Nine measures cover three materialised dimensions: ProdLocWeek (576 rows), product (9), BrandZoneWeek (144). ClickHouse 25.3, four query threads; host has 12 logical CPUs / 18 GiB RAM and Docker exposes about 7.26 GiB. Query-memory ceilings are distinct from server/container RAM. No container resource allocation was changed.
 
 After one warm-up Full Refresh, two measured runs per ceiling produced:
 
@@ -118,9 +118,9 @@ The existing stored example has discount_pct=10 across all 576 Base rows. A fres
 
 Current source uploads retain the intentional 5,000-row CSV limit; larger ingestion should use bulk warehouse loading/registration. Planning population defaults to one million rows; date/multi-grain expansion has its own bounds. Size the **expanded intersections**, not just source row counts or number of tables. Fifty source tables should not imply fifty duplicated populations: lookup dimensions use views, and stored measure targets remain Native/Base/compatible native dimensions.
 
-The current bounded column writer fetches one measure's results into Python and applies synchronous mutations in batches of 1,000 cells. This preserves existing validation/edit semantics and works for the current example, but it is **not an efficient bulk writer for millions of cells**. More RAM alone will not fix repeated mutation scans or Python result buffering. Before a million-row production rollout:
+Bulk measure rows now remain in ClickHouse: first-build `INSERT ... SELECT`, then dependency-scoped, lookup-backed column mutations on an isolated clone. Python coordinates SQL and bounded validation summaries. This removes Python buffering and 1,000-cell batches; it does not eliminate ClickHouse query/lookup memory or temporary disk demand. Before a million-row production rollout:
 
-1. Add a server-side bulk materialisation operator: aggregate each transaction once at its native grain; evaluate dependent formulas in stages; construct the build candidate using narrow, set-based joins/projections. Avoid transferring entire measure columns through the API process. Keep the clone/exchange publication boundary and use a separately bounded path for small interactive edits.
+1. Load-test the database-side writer with the actual model. The temporary Join lookup is memory-resident and bounded by the build's captured query-memory budget; it throws on overflow. Use narrow groups and sufficient measured headroom. Very wide groups may require smaller write groups or a disk-capable replacement-join writer; do not assume the lookup spills.
 2. Give build workers separate processes/resources from API reads. Retain durable jobs, admission limits, cancellation/fences and network-level publication protection; a replica alone does not solve coherent multi-table activation.
 3. Bound concurrent builds and query memory together. Use version-tested spill-capable grouping/sorting/joins and NVMe spill space; do not raise every query's limit to the entire server RAM. Validate policy-aware AVG, Time ordering, NULL/Mixed and AggregateFirst behaviour on each bulk operator.
 4. Record actual peak memory, read rows/bytes, elapsed CPU, spill volume, mutation/merge backlog and part counts from query/system logs. Benchmark 1M/10M expanded intersections with realistic attribute widths, sparse measures, skew and concurrent pivots before claiming a capacity target.
@@ -138,12 +138,33 @@ Live consolidation was subsequently approved and applied. Verification found exa
 
 These sizing estimates assume dedicated resources and realistic load testing. The current executor targets owned MergeTree tables in an Atomic database; replicated/distributed/cloud-specific engines need an explicit publication/ownership adapter and multi-node consistency design. Production replication and external backups are separate work from the temporary clone safety mechanism.
 
-### What Python buffering and 1,000-cell mutations mean
+### Database-side bulk writer
 
-Measure computation already runs in ClickHouse. In `warehouse/in_place_values.py`, Python fetches an entire measure result with `.result_rows`: grain-key JSON, value and associated flags. It checks row count/uniqueness/NULL contracts, sends updates in batches of 1,000 native cells using parameter arrays, waits synchronously (`mutations_sync=2`) for each `ALTER TABLE ... UPDATE`, then reads the stored measure back and compares dictionaries. This operates on the build candidate, so failure does not change the live table.
+The previous writer fetched a full measure result into Python, validated it, sent 1,000-cell mutation batches and fetched the stored result again for dictionary comparison. At one million rows and ten measures, that could mean 10,000 mutation commands, repeated part scans and large Python buffers.
 
-Batches bound command payloads and provide cancellation/fencing checkpoints; they do **not** bound total Python result memory. One million Float64 values occupy about 8 MB before keys, flags, Python objects, sets/dictionaries, transport and the verification read. The actual Python footprint depends on key widths/types and can be much larger. Results are processed one measure at a time, rather than holding the complete wide model at once.
+The replacement keeps data in ClickHouse. Full builds insert population plus the first independent measure group directly into a candidate. Incremental builds clone the current table, compute only changed columns into a narrow temporary stage, validate them and use one lookup-backed mutation per dependency group. Formula consumers run after their changed inputs; preserved inputs retain edited values. NULL/key/cardinality/completeness checks and persisted-value comparison execute server-side. The stage prevents evaluating expensive measure expressions twice. Temporary stages/lookups are owned, bounded and crash-cleaned with the candidate; atomic exchange publishes validated output.
 
-For one million native rows and ten updated measures, 1,000-row batches mean roughly **10,000 mutation commands**, plus calculation and verification queries. ClickHouse update mutations process affected parts and rewrite updated data; repeated small batches can revisit the same parts. The current predicate uses JSON-encoded grain keys, so adding grain sorting does not automatically make those mutations efficient primary-key range updates. [ClickHouse mutation semantics](https://github.com/ClickHouse/docs-reference/blob/master/docs/en/sql-reference/statements/alter/update.md)
+Python still compiles/orchestrates SQL and receives schema, validation summaries and bounded previews. It does not buffer bulk measure rows. ClickHouse still needs query memory, a memory-resident lookup, storage bandwidth and temporary disk headroom. The lookup has a captured byte limit and throws on overflow rather than dropping data; it is not a spill-capable structure. This change removes a bulk-write bottleneck, not the need to profile compilation, semantic checks, joins, mutations and publication separately.
 
-Bulk materialisation should keep the row stream inside ClickHouse: aggregate transaction sources at native grain using configured policies, merge by keys, calculate formulas in dependency order and populate the candidate through a bounded number of set-based SQL stages. Python should coordinate plans, validation summaries, leases and activation. Retain incremental dependency selection, unchanged edits, one permanent table, temporary build candidates, and exchange publication. This is a separate engine-write-path change, not a bigger batch-size setting or a return to one giant recursive query. Its exact incremental SQL strategy must respect the deployed ClickHouse 25.3 capabilities.
+### Server-side writer comparison (7 November 2026)
+
+On an isolated copy of the current example, using ClickHouse 25.3, four query threads and a 512-MiB query limit, an alternating old/new Full Refresh comparison after warm-up measured:
+
+- Previous writer: **17.012 / 17.383 s**, mean **17.20 s**.
+- Server-side writer: **16.401 / 16.568 s**, mean **16.48 s** (about **4.1% faster**).
+- Unchanged incremental: **2.072 s**, reused values. Every refreshed output checksum matched across both writers; live values and metadata were not rebuilt.
+
+This small example is dominated by about 7.2 s of pre/post semantic checks and 3.7 s of schema preparation across targets. Table-build time, including schema preparation, fell from about 6.10 s to 5.37 s. Removing row transfers is a scaling improvement, not evidence of a large end-to-end speedup on hundreds of rows. Two samples per writer do not establish a latency SLA.
+
+A separate, isolated **100,000-row / one new Float64 measure** writer-only comparison used server-generated exactly representable quantities and a preserved existing value column:
+
+- Previous writer: **4.336 s**, **100 mutation commands**, **200,000 bulk result rows fetched into Python** (computation plus read-back).
+- Server-side writer: **0.091 s**, **one mutation**, **zero bulk result rows fetched**. Checksums matched and all existing values survived.
+
+That is about **48× faster for this narrow column-write microbenchmark**. It excludes population creation, compilation, metadata capture, publication and complex business transformations; it is not a million-row network-build estimate. An initial fractional variant failed the previous writer's exact read-back check and is excluded from the timing comparison. The controlled old/new timing uses exactly representable values; fractional results are verified separately on the new path. The new writer has no Python/String/Float64 value round trip.
+
+A separate **one-million-row fractional Float64** run on the new writer completed its column write and validation in **0.531 s** (repeat with explicit NULL-safe verification: **0.602 s**), with **one mutation**, **zero bulk rows fetched**, exact scalar verification and all existing values preserved. These are narrow synthetic samples under a 512-MiB query/lookup ceiling, not a full-network benchmark or a memory sizing guarantee.
+
+Reproduce the writer-only load using `backend/.venv/bin/python -m backend.scripts.benchmark_column_writer --rows 100000`; `--fractional` exercises six-decimal values, and `--rows 1000000` expands it. The script creates and deletes a private database, generates rows inside ClickHouse and checks results with scalar SQL summaries. It never changes live tables. An optional local `--baseline-writer` file supports a controlled comparison; previous application code is not retained in the repository.
+
+Broader regression testing also reproduced a **pre-existing nested AggregateFirst/CalculateFirst Decision View read** exceeding 512 MiB after a successful build. The same test fails with the previous writer (about 670 MiB required); this is a separate read-query expansion limitation, not repaired by the write-path change. Some older typed-measure integration fixtures still expect `/transactions/from-grain` to auto-create a Dimension, which the current standalone-Transaction API no longer returns; those fail before invoking either writer. Current writer tests cover numeric/String/Date/Boolean values, NULLs/counts, dependency checkpoints, real edits, coverage/cardinality errors and orphan-stage recovery.

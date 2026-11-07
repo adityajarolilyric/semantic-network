@@ -277,6 +277,10 @@ class MeasureBuildHandler:
                             or c.get("mixedFor")
                         ],
                         measureOrder=measure_order,
+                        measureDependencies={
+                            mid: sorted(deps)
+                            for mid, deps in compiler.dependencies.direct.items()
+                        },
                         measureNodes={
                             mid: compiler.cache.get((mid, dimension_id))
                             for mid in compiler.measures
