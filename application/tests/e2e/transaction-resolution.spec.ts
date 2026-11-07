@@ -41,9 +41,9 @@ test('configure, preview and reopen a multi-grain transaction', async ({ page })
   }
   const sources = (await (await page.request.get(base + '/sources')).json()).items
   const source = (name: string) => sources.find((s: { name: string }) => s.name === name).objectId
-  await post(base + '/planning-levels', {
+  await post(base + '/dimensions', {
     objectId: 'native',
-    kind: 'planningLevel',
+    kind: 'dimension',
     name: 'Product',
     displayName: 'Product',
     definition: {
@@ -57,10 +57,10 @@ test('configure, preview and reopen a multi-grain transaction', async ({ page })
       populationAttributes: [
         { columnId: 'brand', name: 'brand', populationRef: { columnId: 'col_2' } },
       ],
-      dimensionBindings: [],
+      memberBindings: [],
     },
   })
-  const run = await post(base + '/planning-levels/native/build', {})
+  const run = await post(base + '/dimensions/native/build', {})
   await expect
     .poll(
       async () => (await (await page.request.get(base + '/engine/runs/' + run.runId)).json()).state,
@@ -76,8 +76,8 @@ test('configure, preview and reopen a multi-grain transaction', async ({ page })
   await page
     .getByLabel('Managed table', { exact: true })
     .selectOption({ label: 'ResolutionAssignments' })
-  await page.getByRole('radio', { name: 'Map to Planning Level', exact: true }).check()
-  await page.getByLabel('Native planning level', { exact: true }).selectOption({ label: 'Product' })
+  await page.getByRole('radio', { name: 'Map to Dimension', exact: true }).check()
+  await page.getByLabel('Native dimension', { exact: true }).selectOption({ label: 'Product' })
   await page.getByLabel('Resolve multi-grain data', { exact: true }).check()
   await page.getByRole('button', { name: 'Raw Data Preview', exact: true }).click()
   await expect(page.locator('th .column-name').filter({ hasText: /^level$/ })).toBeVisible()
@@ -207,9 +207,9 @@ test('resolve daily ranges into weekly keys, save and reopen', async ({ page }) 
   }
   const sources = (await (await page.request.get(base + '/sources')).json()).items
   const source = (name: string) => sources.find((s: { name: string }) => s.name === name).objectId
-  await post(base + '/dimensions', {
+  await post(base + '/dimension-members', {
     objectId: 'time',
-    kind: 'dimension',
+    kind: 'dimensionMembers',
     name: 'Calendar',
     displayName: 'Calendar',
     isTimeDim: true,
@@ -225,9 +225,9 @@ test('resolve daily ranges into weekly keys, save and reopen', async ({ page }) 
       time: { baseGrain: 'day', dateColumnId: 'day', orderingColumnId: 'day' },
     },
   })
-  await post(base + '/planning-levels', {
+  await post(base + '/dimensions', {
     objectId: 'weekly',
-    kind: 'planningLevel',
+    kind: 'dimension',
     name: 'Weekly',
     displayName: 'Weekly',
     definition: {
@@ -239,16 +239,16 @@ test('resolve daily ranges into weekly keys, save and reopen', async ({ page }) 
           { grainColumnId: 'week', name: 'Week', populationRef: { columnId: 'col_2' } },
         ],
       },
-      dimensionBindings: [
+      memberBindings: [
         {
-          dimensionId: 'time',
-          keyMappings: [{ grainColumnId: 'week', dimensionColumnId: 'week' }],
+          memberCatalogId: 'time',
+          keyMappings: [{ grainColumnId: 'week', memberColumnId: 'week' }],
           selectedAttributeColumnIds: [],
         },
       ],
     },
   })
-  await waitRun(await post(base + '/planning-levels/weekly/build', {}))
+  await waitRun(await post(base + '/dimensions/weekly/build', {}))
   await page.goto(`/?model=${model}&revision=draft_1&tab=transactions`)
   await page
     .getByRole('navigation', { name: 'Workspace', exact: true })
@@ -259,8 +259,8 @@ test('resolve daily ranges into weekly keys, save and reopen', async ({ page }) 
   await page
     .getByLabel('Managed table', { exact: true })
     .selectOption({ label: 'RangeAssignments' })
-  await page.getByRole('radio', { name: 'Map to Planning Level', exact: true }).check()
-  await page.getByLabel('Native planning level', { exact: true }).selectOption({ label: 'Weekly' })
+  await page.getByRole('radio', { name: 'Map to Dimension', exact: true }).check()
+  await page.getByLabel('Native dimension', { exact: true }).selectOption({ label: 'Weekly' })
   await page.getByLabel('Resolve multi-grain data', { exact: true }).check()
   await page.getByLabel('Allow all Product members when blank', { exact: true }).check()
   if (

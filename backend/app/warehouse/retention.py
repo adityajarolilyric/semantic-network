@@ -1,3 +1,8 @@
+from datetime import timedelta
+
+from ..core.errors import MetadataError
+from ..core.metadata import utc_now as now
+from ..engine.table_storage import GENERATION, owner, token
 from ..repositories.metadata import metadata_repositories
 from ..repositories.metadata.criteria import (
     ArtifactLookup,
@@ -8,24 +13,30 @@ from ..repositories.metadata.criteria import (
     RunLookup,
     TableResourceLookup,
 )
-from datetime import timedelta
-
-from ..core.errors import MetadataError
-from ..core.metadata import utc_now as now
-from ..warehouse.repository import quote_identifier as q
-from ..warehouse.repository import quote_literal as lit
-from ..engine.table_storage import GENERATION, owner, token
+from ..warehouse.sql import quote_identifier as q
+from ..warehouse.sql import quote_literal as lit
 
 
 class ArtifactCollector:
     """Retire only owned, unbound artifacts of terminal runs after a 24-hour grace."""
 
-    def __init__(self, service):
+    def __init__(self, service, current_storage=None):
         self.service = service
         self.cursor = None
         self.resource_cursor = None
+        self.current_storage = current_storage
+
+    async def recover_pending(self):
+        if self.current_storage is None:
+            return
+        pending = await metadata_repositories(
+            self.service.store.repository
+        ).artifacts.list(ArtifactLookup(cleanup_pending=True), limit=1001)
+        for model, revision in {(a["modelId"], a["revisionId"]) for a in pending}:
+            await self.current_storage.recover(model, revision)
 
     async def collect(self):
+        await self.recover_pending()
         repo = self.service.store.repository
         candidates = await metadata_repositories(repo).artifacts.list(
             ArtifactLookup(
@@ -48,9 +59,13 @@ class ArtifactCollector:
                 run = await metadata_repositories(repo).runs.find(
                     RunLookup(run_id=current["runId"])
                 )
-                if run["state"] in ("queued", "running") or await metadata_repositories(
-                    repo
-                ).bindings.find(BindingLookup(artifact_id=current["artifactId"])):
+                if run["state"] in (
+                    "queued",
+                    "running",
+                    "waiting",
+                ) or await metadata_repositories(repo).bindings.find(
+                    BindingLookup(artifact_id=current["artifactId"])
+                ):
                     return False
                 reads = await metadata_repositories(repo).read_leases.list(
                     ReadLeaseLookup(
@@ -72,13 +87,28 @@ class ArtifactCollector:
                     pinned_run = await metadata_repositories(repo).runs.find(
                         RunLookup(run_id=pin["runId"])
                     )
-                    if pinned_run and pinned_run["state"] in ("queued", "running"):
+                    if pinned_run and pinned_run["state"] in (
+                        "queued",
+                        "running",
+                        "waiting",
+                    ):
                         return False
+                aliases = await metadata_repositories(repo).artifacts.list(
+                    ArtifactLookup(
+                        physical_name=current["physicalName"],
+                        generation_token=token(current),
+                        state_in=["candidate", "ready"],
+                    ),
+                    limit=10001,
+                )
+                shared_generation = any(
+                    a["artifactId"] != current["artifactId"] for a in aliases
+                )
                 await metadata_repositories(repo).artifacts.replace(
                     ArtifactLookup(artifact_id=current["artifactId"]),
                     {**current, "state": "retiring"},
                 )
-                return current
+                return {**current, "sharedGeneration": shared_generation}
 
             artifact = await self.service.store.transaction(retire)
             if not artifact:
@@ -86,6 +116,23 @@ class ArtifactCollector:
             warehouse = self.service.executor.warehouse
 
             def drop(connect):
+                if artifact.get("storageMode") == "current":
+                    if artifact["physicalName"] == artifact.get(
+                        "liveName"
+                    ) or artifact.get("publication"):
+                        return
+                    client = connect()
+                    info = warehouse.table_info(client, artifact["physicalName"])
+                    if info and info[1] == artifact.get("buildOwner"):
+                        client.command(
+                            f"DROP VIEW IF EXISTS {warehouse.qualify(artifact['viewName'])}"
+                        )
+                        client.command(
+                            f"DROP TABLE {warehouse.qualify(artifact['physicalName'])} SYNC"
+                        )
+                    return
+                if artifact.get("sharedGeneration"):
+                    return
                 client = connect()
                 info = warehouse.table_info(client, artifact["physicalName"])
                 if info:
@@ -114,13 +161,18 @@ class ArtifactCollector:
             )
             await metadata_repositories(repo).artifacts.replace(
                 ArtifactLookup(artifact_id=artifact["artifactId"], state="retiring"),
-                {**current, "state": "dropped", "droppedAt": now()},
+                {
+                    **current,
+                    "state": "dropped",
+                    "droppedAt": now(),
+                    "cleanupPending": False,
+                },
             )
 
         await self.collect_resources()
 
     async def collect_resources(self):
-        """Drop the pair only after its planning level and all retained rows retire."""
+        """Drop the pair only after its dimension and all retained rows retire."""
 
         repo = self.service.store.repository
         rows = await metadata_repositories(repo).table_resources.list(
@@ -150,7 +202,7 @@ class ArtifactCollector:
                         model_id=current["modelId"],
                         revision_id=current["revisionId"],
                         object_id=current["resourceId"],
-                        kind="planningLevel",
+                        kind="dimension",
                     )
                 )
                 retained = await metadata_repositories(repo).artifacts.list(
@@ -171,7 +223,6 @@ class ArtifactCollector:
                         BindingLookup(
                             model_id=resource["modelId"],
                             revision_id=resource["revisionId"],
-                            resource_kind=resource["resourceKind"],
                             resource_id=resource["resourceId"],
                         )
                     )
@@ -202,6 +253,10 @@ class ArtifactCollector:
                             "artifact_ownership",
                             "Refusing to remove a planning table whose ownership changed.",
                         )
+                    if resource.get("viewName"):
+                        client.command(
+                            f"DROP VIEW IF EXISTS {warehouse.qualify(resource['viewName'])}"
+                        )
                     client.command(
                         f"DROP TABLE {warehouse.qualify(resource['physicalName'])} SYNC"
                     )
@@ -219,6 +274,8 @@ class ArtifactCollector:
             )
 
     async def prune_columns(self, resource):
+        if resource.get("storagePolicy") == "single-current-table-exchange-v1":
+            return
         """Retire unused storage slots before DDL so overlapping builds cannot reuse them."""
 
         async def plan(repo):

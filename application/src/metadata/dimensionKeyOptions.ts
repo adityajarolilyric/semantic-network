@@ -1,4 +1,4 @@
-import type { Dimension, GrainColumn, PlanningLevel, Snapshot } from './types'
+import type { DimensionMembers, GrainColumn, Dimension, Snapshot } from './types'
 
 const normalizedType = (type: string): string => {
   let value = type.replace(/\s/g, '').toLowerCase()
@@ -9,12 +9,12 @@ const normalizedType = (type: string): string => {
 
 /** Suggest an initial grain-side mapping; explicit join selections are not restricted to these candidates. */
 export function dimensionKeyOptions(
-  level: PlanningLevel,
-  dimension: Dimension,
-  dimensionColumnId: string,
-  data: Pick<Snapshot, 'sources' | 'planningLevels' | 'dimensions'>,
+  level: Dimension,
+  dimension: DimensionMembers,
+  memberColumnId: string,
+  data: Pick<Snapshot, 'sources' | 'dimensions' | 'dimensionMembers'>,
 ): { value: string; label: string }[] {
-  const key = dimension.definition.columns.find((c) => c.columnId === dimensionColumnId)
+  const key = dimension.definition.columns.find((c) => c.columnId === memberColumnId)
   if (!key) return []
   const keySourceColumnId = key.sourceColumnId
   const dimensionSource = data.sources.find((s) => s.objectId === dimension.definition.sourceId)
@@ -23,7 +23,7 @@ export function dimensionKeyOptions(
   )
 
   function matches(
-    current: PlanningLevel,
+    current: Dimension,
     column: GrainColumn,
     ancestors: Set<string>,
     inherited: boolean,
@@ -33,17 +33,17 @@ export function dimensionKeyOptions(
     const seen = new Set(ancestors).add(marker)
     // A parent's recorded binding is stronger than an inferred name match.
     if (inherited) {
-      const binding = current.definition.dimensionBindings.find(
-        (b) => b.dimensionId === dimension.objectId,
+      const binding = current.definition.memberBindings.find(
+        (b) => b.memberCatalogId === dimension.objectId,
       )
-      const mappings = binding?.keyMappings.filter((m) => m.dimensionColumnId === dimensionColumnId)
+      const mappings = binding?.keyMappings.filter((m) => m.memberColumnId === memberColumnId)
       if (mappings?.length) return mappings.some((m) => m.grainColumnId === column.grainColumnId)
     }
     const population = current.definition.population
     const ref = column.populationRef
     if (population.operation === 'distinct_projection') {
-      const parent = data.planningLevels.find(
-        (p) => p.objectId === population.sourcePlanningLevelId,
+      const parent = data.dimensions.find(
+        (p) => p.objectId === population.sourceDimensionId,
       )
       const parentColumn = parent?.definition.grain.columns.find(
         (c) => c.grainColumnId === ref.sourceGrainColumnId,
@@ -61,7 +61,7 @@ export function dimensionKeyOptions(
       return false
     if (sourceId === dimension.definition.sourceId && sourceColumn.columnId === keySourceColumnId)
       return true
-    const otherDimensionKey = data.dimensions.some(
+    const otherDimensionKey = data.dimensionMembers.some(
       (other) =>
         other.objectId !== dimension.objectId &&
         other.definition.sourceId === sourceId &&

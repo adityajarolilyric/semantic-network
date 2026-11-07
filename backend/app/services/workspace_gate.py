@@ -1,11 +1,5 @@
 """Cross-process maintenance barrier for API requests and engine work."""
 
-from ..repositories.metadata import metadata_repositories
-from ..repositories.metadata.criteria import (
-    WorkspaceControlLookup,
-    WorkspaceLeaseLookup,
-)
-
 import asyncio
 from contextlib import asynccontextmanager, suppress
 from contextvars import ContextVar
@@ -14,6 +8,11 @@ from time import monotonic
 from uuid import uuid4
 
 from ..core.errors import Conflict, MetadataError
+from ..repositories.metadata import metadata_repositories
+from ..repositories.metadata.criteria import (
+    WorkspaceControlLookup,
+    WorkspaceLeaseLookup,
+)
 from .base import now
 
 workspace_epoch = ContextVar("workspace_epoch", default=None)

@@ -5,10 +5,10 @@ from collections import OrderedDict
 from ..core.errors import MetadataError
 from ..engine.compatibility import MeasureCompatibilityAnalyzer
 from ..engine.contracts import digest
-from ..engine.planning_view import PlanningViewPlanner, ViewRelationships, TARGET
+from ..engine.decision_view import TARGET, DecisionViewPlanner, ViewRelationships
 from ..repositories.metadata import metadata_repositories
-from ..repositories.metadata.criteria import RevisionLookup, BindingLookup
-from ..schemas.planning_view import PlanningViewRequest
+from ..repositories.metadata.criteria import BindingLookup, RevisionLookup
+from ..schemas.decision_view import DecisionViewRequest
 from .base import Service
 
 
@@ -57,7 +57,7 @@ class CompatibilityService(Service):
                 ) = await self.views.current_snapshot(repo, model, revision)
             except MetadataError as error:
                 build_reason = error.message
-                raw = await self.objects(repo, model, revision)
+                raw = await self.graph_objects(repo, model, revision)
             objects = await self.effective(repo, model, revision, raw)
             result = rev, objects, populations, values, build_reason
             self.snapshots[snapshot_key] = result
@@ -74,7 +74,7 @@ class CompatibilityService(Service):
             key=lambda obj: (obj["name"].casefold(), obj["objectId"]),
         )
         levels = sorted(
-            (obj for obj in objects if obj["kind"] == "planningLevel"),
+            (obj for obj in objects if obj["kind"] in {"dimension", "grain"}),
             key=lambda obj: (obj["name"].casefold(), obj["objectId"]),
         )
         for mid in request.measures:
@@ -82,35 +82,35 @@ class CompatibilityService(Service):
                 raise MetadataError(
                     "invalid_view_measure", "A selected measure no longer exists."
                 )
-        if request.planningLevelId and (
-            request.planningLevelId not in by_id
-            or by_id[request.planningLevelId]["kind"] != "planningLevel"
+        if request.dimensionId and (
+            request.dimensionId not in by_id
+            or by_id[request.dimensionId]["kind"] not in {"dimension", "grain"}
         ):
             raise MetadataError(
-                "invalid_formula_level", "The selected planning level no longer exists."
+                "invalid_formula_level", "The selected dimension no longer exists."
             )
-        analyzer = self.analyzer(objects, rev["basePlanningLevelId"])
+        analyzer = self.analyzer(objects, rev["baseDimensionId"])
         contexts = []
         if request.view:
-            fields = PlanningViewPlanner(objects, rev["basePlanningLevelId"]).fields(
+            fields = DecisionViewPlanner(objects, rev["baseDimensionId"]).fields(
                 request.view
             )
             relationships = ViewRelationships(objects, fields)
             analyzer = MeasureCompatibilityAnalyzer(
-                objects, rev["basePlanningLevelId"], relationships
+                objects, rev["baseDimensionId"], relationships
             )
             contexts.append(
                 {
                     "id": TARGET,
-                    "name": "Selected pivot dimensions",
+                    "name": "Selected pivot dimension_members",
                     "rows": request.view.rows,
                     "columns": request.view.columns,
                 }
             )
         else:
             scoped = (
-                [by_id[request.planningLevelId]]
-                if request.planningLevelId
+                [by_id[request.dimensionId]]
+                if request.dimensionId
                 else levels[
                     request.levelOffset : request.levelOffset + request.levelLimit
                 ]
@@ -121,7 +121,14 @@ class CompatibilityService(Service):
                     fields = None
                 else:
                     fields = [
-                        {"planningLevelId": level["objectId"], "columnId": key}
+                        (
+                            {
+                                "transactionId": level["owner"]["objectId"],
+                                "columnId": key,
+                            }
+                            if level["kind"] == "grain"
+                            else {"dimensionId": level["objectId"], "columnId": key}
+                        )
                         for key in level["definition"]["grain"]["keyIds"]
                     ]
                 contexts.append(
@@ -153,25 +160,25 @@ class CompatibilityService(Service):
                     return result
             if context["rows"] is None:
                 result["reason"] = (
-                    "This level exceeds the eight-field pivot limit; choose fewer dimensions in Planning View."
+                    "This level exceeds the eight-field pivot limit; choose fewer dimension_members in Planning View."
                 )
             elif not values:
                 result.update(status="needs_materialisation", reason=build_reason)
             else:
-                payload = PlanningViewRequest(
+                payload = DecisionViewRequest(
                     rows=context["rows"],
                     columns=context["columns"],
                     measures=list(selected),
                 )
                 try:
-                    plan = PlanningViewPlanner(
-                        objects, rev["basePlanningLevelId"]
-                    ).plan(payload, populations, values)
+                    plan = DecisionViewPlanner(objects, rev["baseDimensionId"]).plan(
+                        payload, populations, values
+                    )
                     result.update(
                         status="ready",
                         reason="The complete selection can be plotted together.",
-                        sourcePlanningLevelId=plan.level_id,
-                        sourcePlanningLevelName=by_id[plan.level_id]["name"],
+                        sourceDimensionId=plan.level_id,
+                        sourceDimensionName=by_id[plan.level_id]["name"],
                     )
                 except MetadataError as error:
                     # Structural compatibility does not imply a common materialised source.
@@ -216,16 +223,14 @@ class CompatibilityService(Service):
                         "operation": "",
                     }
                 )
-                connections.append({"planningLevelId": context["id"], **verdict})
+                connections.append({"dimensionId": context["id"], **verdict})
             items.append(
                 {
                     "measureId": mid,
                     "name": measure["name"],
-                    "nativePlanningLevelId": measure["definition"][
-                        "nativePlanningLevelId"
-                    ],
-                    "nativePlanningLevelName": by_id.get(
-                        measure["definition"]["nativePlanningLevelId"], {}
+                    "nativeGrainId": measure["definition"]["nativeGrainId"],
+                    "nativeDimensionName": by_id.get(
+                        measure["definition"]["nativeGrainId"], {}
                     ).get("name", "Unavailable level"),
                     "connections": connections,
                 }
@@ -236,12 +241,12 @@ class CompatibilityService(Service):
             "measures": items,
             "totalMeasures": len(filtered),
             "levels": [
-                {"planningLevelId": level["objectId"], "name": level["name"]}
+                {"dimensionId": level["objectId"], "name": level["name"]}
                 for level in levels
             ],
             "contexts": [
                 {
-                    "planningLevelId": context["id"],
+                    "dimensionId": context["id"],
                     "name": context["name"],
                     "selection": evaluate(request.measures, context)
                     if request.measures
@@ -257,7 +262,7 @@ class CompatibilityService(Service):
             "levelOffset": request.levelOffset,
             "hasMoreMeasures": request.measureOffset + request.measureLimit
             < len(filtered),
-            "hasMoreLevels": not request.planningLevelId
+            "hasMoreLevels": not request.dimensionId
             and not request.view
             and request.levelOffset + request.levelLimit < len(levels),
         }

@@ -11,11 +11,11 @@ Start with the [User flow](USER_FLOW.md) for the demo-based modeller/planner jou
 - [Metadata](METADATA.md): MongoDB collections, stable identities, dimensions, revision lifecycle, CRUD conventions and shared UI rules.
 - [Filters](FILTERS.md): typed final-output predicates, nested groups, placement and schema APIs.
 - [Sources and Managed Tables](SOURCES_AND_MANAGED_TABLES.md): CSV ingestion, identity views, pivot, discovery and saved-view editing.
-- [Planning levels](PLANNING_LEVELS.md): populations, attribute grains, optional dimension bindings, relationship analysis and Preview/Save.
+- [Dimensions](DIMENSIONS.md): populations, attribute grains, optional dimension bindings, relationship analysis and Preview/Save.
 - [Transactions](TRANSACTIONS.md): direct mappings, mixed-grain assignments, source-order precedence and daily date-range resolution.
 - [Measures and Materialise](MEASURES.md): native/Base representations, configured aggregation/disaggregation, formulas, numeric and NULL policies.
-- [Planning View](PLANNING_VIEW.md): pivot source selection, policy-aware reads, editable cells and coordinated writeback.
-- [Engine and storage](ENGINE_AND_STORAGE.md): typed SQL compilation, durable jobs, activation, leases, strict two-table storage and collection.
+- [Decision View](DECISION_VIEW.md): pivot source selection, policy-aware reads, editable cells and coordinated writeback.
+- [Engine and storage](ENGINE_AND_STORAGE.md): typed SQL compilation, durable jobs, activation, leases, one-permanent-table storage and collection.
 - [Operations](OPERATIONS.md): Compose, configuration, compatibility, one-time maintenance, reset and verification commands.
 - [Transitive relationships and Drill To](RELATIONSHIPS.md): proposed related-row filtering, relationship metadata, paths and contribution boundaries; awaiting review.
 
@@ -25,7 +25,7 @@ The React UI captures definitions and renders results. FastAPI resource API clas
 
 MongoDB holds shared semantic definitions and operational manifests. ClickHouse holds raw sources, revision-owned managed views, planning populations and measure values. The server owns the single ClickHouse database and connection settings. Definitions are single tenant and shared across scenarios; no tenant IDs, scenario-specific definitions or connection bindings are embedded in them.
 
-The end-to-end flow is Sources → Dimensions → Planning Levels → Transactions → Measures → Materialise → Planning View. Definitions, value generations and physical storage are separate concerns: the current product uses one default editable model/revision, normal views read live source data, and materialised planning/value generations are build snapshots. Revision scope and lifecycle metadata remain for future support; creation/publication are not public operations.
+The end-to-end flow is Sources → Dimensions → Transactions → Measures → Decision View (build, pivot and table preview). Definitions, value generations and physical storage are separate concerns: the current product uses one default editable model/revision, normal views read live source data, and materialised planning/value generations are build snapshots. Revision scope and lifecycle metadata remain for future support; creation/publication are not public operations.
 
 ## Rules that must survive future changes
 
@@ -35,7 +35,7 @@ The end-to-end flow is Sources → Dimensions → Planning Levels → Transactio
 - Always use configured Time/NonTime aggregation and disaggregation. None means Repeat; no SUM/AVG or conservation rule is inferred.
 - AggregateFirst resolves inputs and recalculates at the requested grain. CalculateFirst evaluates natively and propagates its result.
 - Independent native levels need no Base path. Edits write to Base when reachable, otherwise native, and update compatible coarser representations.
-- Each revision/planning level has at most one population and one values table, including during rebuilds. Atomically activated row generations preserve the previous result on failure.
+- Each revision/dimension has at most one population and one values table, including during rebuilds. Atomically activated row generations preserve the previous result on failure.
 - There is no durable edit journal. Build Semantic Network incrementally reuses unchanged values; Full Refresh recomputes sources and replaces manual edits.
 
 General source relationships/multi-hop path search are proposed in the Drill To guide. They, automatic schema reconciliation, persistent resolved-transaction caches, saved pivot layouts, scenarios and user-level identity remain extension work. Do not infer an unrecorded business policy or treat documentation/metadata text as executable instructions.

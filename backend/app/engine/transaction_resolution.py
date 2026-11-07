@@ -1,10 +1,20 @@
 """Transaction matching and last-application overlay, without persistent SQL objects."""
 
-from dataclasses import dataclass
 import re
+from dataclasses import dataclass
+
 from ..core.errors import MetadataError
-from ..warehouse.repository import quote_identifier as q, quote_literal as lit
+from ..warehouse.sql import quote_identifier as q
+from ..warehouse.sql import quote_literal as lit
+from .calendar_resolution import (
+    CalendarResolutionCompiler,
+    CalendarResolutionPlanner,
+    effective_calendar_objects,
+)
+from .compilation_context import CompilationContext
 from .contracts import Check, digest
+from .date_range_resolution import DateRangeCompiler, DateRangePlanner
+from .object_inputs import input_columns
 from .relationships import Coordinate, LevelRelationshipAnalyzer
 
 RESOLUTION_POLICY = "transaction-resolution-v3-calendar-stage"
@@ -24,20 +34,20 @@ class TransactionResolutionPlanner:
         self.tx = transaction
         self.d = transaction["definition"]
         self.config = self.d["resolution"]
-        self.level = self.objects[self.d["planningLevelId"]]
-        from .calendar_resolution import CalendarResolutionPlanner
+        self.level = self.objects[
+            (self.d.get("nativeGrainId") or self.d["dimensionId"])
+        ]
 
         self.calendar = CalendarResolutionPlanner(objects, transaction, source_columns)
         self.columns = {c["columnId"]: c for c in self.calendar.schema()}
         self.relationships = LevelRelationshipAnalyzer(objects)
         self.rules = [r for a in self.config["axes"] for r in a["rules"]]
-        from .date_range_resolution import DateRangePlanner
 
         self.date_range = DateRangePlanner(self)
         self.validate()
 
     def target(self, target):
-        dim_id = target.get("dimensionId")
+        dim_id = target.get("memberCatalogId")
         cid = target["columnId"]
         if not dim_id:
             coordinate = self.relationships.outputs(self.level["objectId"]).get(cid)
@@ -48,7 +58,7 @@ class TransactionResolutionPlanner:
                 )
             return coordinate
         dim = self.objects.get(dim_id)
-        if not dim or dim["kind"] != "dimension":
+        if not dim or dim["kind"] != "dimensionMembers":
             raise MetadataError(
                 "invalid_resolution_target", "The matching dimension is missing."
             )
@@ -65,7 +75,7 @@ class TransactionResolutionPlanner:
         coordinate = Coordinate(
             frozenset(
                 {
-                    ("dimension", dim_id, cid),
+                    ("dimensionMembers", dim_id, cid),
                     ("source", dim["definition"]["sourceId"], col["sourceColumnId"]),
                 }
             )
@@ -74,7 +84,7 @@ class TransactionResolutionPlanner:
         if not resolved:
             raise MetadataError(
                 "resolution_path_unavailable",
-                "The native planning level cannot supply this matching attribute. Choose a finer native level or provide the required binding.",
+                "The native dimension cannot supply this matching attribute. Choose a finer native level or provide the required binding.",
             )
         return resolved
 
@@ -248,7 +258,6 @@ class TransactionResolutionPlanner:
                 calendar_columns
                 or self.objects[dim["sourceId"]]["definition"]["columns"]
             )
-            from .object_inputs import input_columns
 
             source_columns = input_columns(self.date_range.dimension, source_columns)
             physical = next(
@@ -326,22 +335,22 @@ class TransactionResolutionCompiler:
         )
         self.d = transaction["definition"]
         self.source = host.managed[self.d["sourceId"]]
-        from .calendar_resolution import effective_calendar_objects
 
         self.planner = TransactionResolutionPlanner(
             effective_calendar_objects(list(host.objects.values()), host.managed),
             transaction,
             self.source["columns"],
         )
-        self.config, self.level = self.planner.config, self.d["planningLevelId"]
+        self.config, self.level = (
+            self.planner.config,
+            (self.d.get("nativeGrainId") or self.d["dimensionId"]),
+        )
 
     def compile(self):
         h, p, config = self.host, self.planner, self.config
         source_table, _ = h.object_input(self.tx, self.source)
         calendar_enabled = bool(p.calendar.config)
         if calendar_enabled:
-            from .calendar_resolution import CalendarResolutionCompiler
-
             expanded = CalendarResolutionCompiler(h, self.tx).compile()
             source_table = (
                 "("
@@ -416,7 +425,6 @@ class TransactionResolutionCompiler:
         seed = h.cte(
             f"SELECT {', '.join(q(k) for k in h.keys(self.level))}, 0 AS {q(VALUE_NAME)} FROM ({h.population(self.level)})"
         )
-        from .date_range_resolution import DateRangeCompiler
 
         date_range = DateRangeCompiler(self)
         date_range.prepare(raw)
@@ -678,7 +686,6 @@ async def prepare_resolution_profiles(warehouse, objects, managed, limit, settin
         ):
             continue
         source = managed[tx["definition"]["sourceId"]]
-        from .calendar_resolution import effective_calendar_objects
 
         planner = TransactionResolutionPlanner(
             effective_calendar_objects(objects, managed), tx, source["columns"]
@@ -686,13 +693,12 @@ async def prepare_resolution_profiles(warehouse, objects, managed, limit, settin
         table = warehouse.qualify(source["physicalName"])
         compiler = None
         if planner.calendar.config or tx["definition"].get("pivot"):
-            from .measure_compiler import MeasureCompiler
-            from .calendar_resolution import CalendarResolutionCompiler
-
-            compiler = MeasureCompiler(
-                warehouse.settings.clickhouse_database, objects, {}, managed, None
+            compiler = CompilationContext(
+                warehouse.settings.clickhouse_database,
+                objects,
+                managed,
+                resolution_max_rows=warehouse.settings.resolution_max_rows,
             )
-            compiler.resolution_max_rows = warehouse.settings.resolution_max_rows
             if planner.calendar.config:
                 node = CalendarResolutionCompiler(compiler, tx).compile()
             else:

@@ -1,17 +1,16 @@
 """Capture and atomically reuse a coherent values generation without source reload."""
 
-from ..repositories.metadata import metadata_repositories
-from ..repositories.metadata.criteria import ArtifactLookup, BindingLookup, RunLookup
-
 from ..core.errors import Conflict, MetadataError
 from ..domain.measure_policies import MEASURE_TYPE_POLICY
 from ..engine.captured_inputs import CapturedRunInputs
 from ..engine.incremental import INCREMENTAL_POLICY, MaterialisationManifest, reusable
 from ..engine.measure_compiler import (
-    MEASURE_COMPILER_VERSION,
     LEGACY_MEASURE_COMPILER_VERSION,
+    MEASURE_COMPILER_VERSION,
     TYPED_MEASURE_COMPILER_VERSION,
 )
+from ..repositories.metadata import metadata_repositories
+from ..repositories.metadata.criteria import ArtifactLookup, BindingLookup, RunLookup
 
 
 class IncrementalBuildCoordinator:
@@ -20,9 +19,9 @@ class IncrementalBuildCoordinator:
 
     @staticmethod
     def validate_runtime_policy(run):
-        if run.get("buildMode") == "incremental" and (
-            run.get("incrementalPolicy") != INCREMENTAL_POLICY
-            or run.get("incrementalCompilerVersion") != MEASURE_COMPILER_VERSION
+        if run.get("incrementalPolicy") != INCREMENTAL_POLICY or (
+            run.get("buildMode") == "incremental"
+            and run.get("incrementalCompilerVersion") != MEASURE_COMPILER_VERSION
         ):
             raise Conflict(
                 "The incremental engine changed after this job was submitted. Resubmit the build; existing values were preserved."
@@ -47,7 +46,7 @@ class IncrementalBuildCoordinator:
             RunLookup(run_id=artifact["runId"])
         )
         captured_inputs = await CapturedRunInputs.load(
-            repo, artifact["runId"], self.builds.max_objects * 4 + 3
+            repo, artifact["runId"], self.builds.max_objects * 6 + 3
         )
         objects = captured_inputs.objects
         populations = captured_inputs.populations
@@ -58,7 +57,10 @@ class IncrementalBuildCoordinator:
             )
         try:
             manifests = MaterialisationManifest(
-                objects, populations, managed, run["resourceId"]
+                objects,
+                populations,
+                managed,
+                run.get("baseDimensionId", run["resourceId"]),
             ).all()
         except (MetadataError, KeyError) as error:
             raise Conflict(
@@ -71,7 +73,7 @@ class IncrementalBuildCoordinator:
     ):
         snapshots = {}
         if previous:
-            for lid in populations:
+            for lid in manifests:
                 binding = await metadata_repositories(repo).bindings.find(
                     BindingLookup(
                         model_id=model,
@@ -104,14 +106,14 @@ class IncrementalBuildCoordinator:
             limit=self.builds.max_objects + 1,
         )
         reuse_only = (
-            {binding["resourceId"] for binding in active} == set(populations)
+            {binding["resourceId"] for binding in active} == set(manifests)
             and bool(snapshots)
-            and set(snapshots) == set(populations)
+            and set(snapshots) == set(manifests)
             and all(
                 snapshots[lid]["materialisationManifest"] == manifests[lid]
                 and snapshots[lid]["populationArtifactId"]
                 == populations[lid]["artifactId"]
-                for lid in populations
+                for lid in manifests
             )
         )
         dirty_references = set()

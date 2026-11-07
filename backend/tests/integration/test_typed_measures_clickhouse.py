@@ -19,7 +19,7 @@ def ref(client, oid, tx, native, column, non_time, time=None):
             "definition": {
                 "measureType": "referenced",
                 "transactionId": tx,
-                "nativePlanningLevelId": native,
+                "nativeDimensionId": native,
                 "valueColumnId": column,
                 "aggregation": {"nonTime": non_time, "time": time or non_time},
             },
@@ -40,7 +40,7 @@ def calc(
             "business": {},
             "definition": {
                 "measureType": "calculated",
-                "nativePlanningLevelId": native,
+                "nativeDimensionId": native,
                 "formula": {"displayText": oid, "expression": expression},
                 "calculationType": calculation,
                 **({"aggregation": aggregation} if aggregation else {}),
@@ -67,7 +67,7 @@ def test_typed_native_rollups_formulas_attributes_and_mixed_states(clickhouse_ap
         },
     )
     assert created.status_code == 201, created.text
-    level = created.json()["planningLevel"]
+    level = created.json()["dimension"]
     lid = level["objectId"]
     product, location = level["definition"]["grain"]["keyIds"]
     dimsource = managed(
@@ -75,7 +75,7 @@ def test_typed_native_rollups_formulas_attributes_and_mixed_states(clickhouse_ap
     )
     assert_post(
         client,
-        "/dimensions",
+        "/dimension-members",
         {
             "objectId": "Product",
             "name": "Product",
@@ -108,15 +108,15 @@ def test_typed_native_rollups_formulas_attributes_and_mixed_states(clickhouse_ap
         for key, value in level.items()
         if key not in {"modelId", "revisionId", "version", "createdAt", "updatedAt"}
     }
-    update["definition"]["dimensionBindings"] = [
+    update["definition"]["memberBindings"] = [
         {
-            "dimensionId": "Product",
-            "keyMappings": [{"grainColumnId": product, "dimensionColumnId": "id"}],
+            "memberCatalogId": "Product",
+            "keyMappings": [{"grainColumnId": product, "memberColumnId": "id"}],
             "selectedAttributeColumnIds": [],
         }
     ]
     response = client.put(
-        BASE + "/planning-levels/" + lid, json=update, headers={"If-Match": "1"}
+        BASE + "/dimensions/" + lid, json=update, headers={"If-Match": "1"}
     )
     assert response.status_code == 200, response.text
     create(
@@ -128,7 +128,7 @@ def test_typed_native_rollups_formulas_attributes_and_mixed_states(clickhouse_ap
             "definition": {
                 "population": {
                     "operation": "distinct_projection",
-                    "sourcePlanningLevelId": lid,
+                    "sourceDimensionId": lid,
                 },
                 "grain": {
                     "keyIds": [product],
@@ -194,9 +194,9 @@ def test_typed_native_rollups_formulas_attributes_and_mixed_states(clickhouse_ap
             "type": "call",
             "function": "concat",
             "arguments": [
-                {"type": "attributeRef", "dimensionId": "Product", "columnId": "brand"},
+                {"type": "attributeRef", "memberCatalogId": "Product", "columnId": "brand"},
                 {"type": "literal", "value": " / "},
-                {"type": "attributeRef", "planningLevelId": lid, "columnId": product},
+                {"type": "attributeRef", "dimensionId": lid, "columnId": product},
             ],
         },
     )
@@ -225,7 +225,7 @@ def test_typed_native_rollups_formulas_attributes_and_mixed_states(clickhouse_ap
         column.get("measureId") for column in native["columns"]
     ]
     query = {
-        "rows": [{"planningLevelId": lid, "columnId": product}],
+        "rows": [{"dimensionId": lid, "columnId": product}],
         "measures": [
             "Status",
             "Dispatch",
@@ -236,7 +236,7 @@ def test_typed_native_rollups_formulas_attributes_and_mixed_states(clickhouse_ap
             "NextDispatch",
         ],
     }
-    response = client.post(BASE + "/planning-view/query", json=query)
+    response = client.post(BASE + "/decision-view/query", json=query)
     assert response.status_code == 200, response.text
     result = response.json()
     p1 = next(
@@ -253,9 +253,9 @@ def test_typed_native_rollups_formulas_attributes_and_mixed_states(clickhouse_ap
     assert p1[0][7] == "2026-11-05"
     # A coarse referenced status remains native and rolls up; never copied to Base.
     response = client.post(
-        BASE + "/planning-view/query",
+        BASE + "/decision-view/query",
         json={
-            "rows": [{"planningLevelId": "product_level", "columnId": product}],
+            "rows": [{"dimensionId": "product_level", "columnId": product}],
             "measures": ["NativeStatus"],
         },
     )
@@ -263,18 +263,18 @@ def test_typed_native_rollups_formulas_attributes_and_mixed_states(clickhouse_ap
     assert response.json()["cellStates"][0][0] == "mixed"
 
     # Reusing a coarser mixed representation must not lose its conflict marker.
-    response = client.post(BASE + "/planning-view/query", json={"measures": ["Status"]})
+    response = client.post(BASE + "/decision-view/query", json={"measures": ["Status"]})
     assert response.status_code == 200, response.text
     assert response.json()["rows"] == [[None]]
     assert response.json()["cellStates"] == [["mixed"]]
     capabilities = client.get(BASE + "/measures/NativeStatus/capabilities").json()
     assert not next(
-        item for item in capabilities["levels"] if item["planningLevelId"] == lid
+        item for item in capabilities["levels"] if item["dimensionId"] == lid
     )["readable"]
     response = client.post(
-        BASE + "/planning-view/query",
+        BASE + "/decision-view/query",
         json={
-            "rows": [{"planningLevelId": lid, "columnId": location}],
+            "rows": [{"dimensionId": lid, "columnId": location}],
             "measures": ["NativeStatus"],
         },
     )
@@ -290,17 +290,17 @@ def test_typed_native_rollups_formulas_attributes_and_mixed_states(clickhouse_ap
     )
     assert build_values(client)["state"] == "succeeded"
     view = {
-        "rows": [{"planningLevelId": lid, "columnId": product}],
+        "rows": [{"dimensionId": lid, "columnId": product}],
         "measures": ["Qty"],
     }
-    context = client.post(BASE + "/planning-view/query", json=view).json()[
+    context = client.post(BASE + "/decision-view/query", json=view).json()[
         "editContext"
     ]
     run = await_run(
         client,
         BASE,
         client.post(
-            BASE + "/planning-view/edits",
+            BASE + "/decision-view/edits",
             json={
                 "view": view,
                 "measureId": "Qty",
@@ -312,7 +312,7 @@ def test_typed_native_rollups_formulas_attributes_and_mixed_states(clickhouse_ap
         ),
     )
     assert run["state"] == "succeeded", run
-    response = client.post(BASE + "/planning-view/query", json=query)
+    response = client.post(BASE + "/decision-view/query", json=query)
     assert response.status_code == 200, response.text
     result = response.json()
     row_index = next(
@@ -336,7 +336,7 @@ def test_typed_dates_survive_calendar_resolution(clickhouse_app):
     )
     assert_post(
         client,
-        "/dimensions",
+        "/dimension-members",
         {
             "objectId": "Time",
             "name": "Time",
@@ -370,7 +370,7 @@ def test_typed_dates_survive_calendar_resolution(clickhouse_app):
         },
     )
     config = {
-        "dimensionId": "Time",
+        "memberCatalogId": "Time",
         "startColumnId": "col_2",
         "endColumnId": "col_3",
         "selectedColumnIds": ["week"],
@@ -397,7 +397,7 @@ def test_typed_dates_survive_calendar_resolution(clickhouse_app):
         },
     )
     assert created.status_code == 201, created.text
-    level = created.json()["planningLevel"]["objectId"]
+    level = created.json()["dimension"]["objectId"]
     assert build(client, level)["state"] == "succeeded"
     ref(client, "Start", "Promo", level, "col_2", "min")
     ref(client, "Status", "Promo", level, "col_4", "single_value")
@@ -444,7 +444,7 @@ def test_ordered_typed_aggregation_carries_the_selected_cells_state(
     calendar = managed(client, "OrderedCalendar", b"day\n2026-01-01\n2026-01-02\n")
     assert_post(
         client,
-        "/dimensions",
+        "/dimension-members",
         {
             "objectId": "Time",
             "name": "Time",
@@ -482,7 +482,7 @@ def test_ordered_typed_aggregation_carries_the_selected_cells_state(
         },
     )
     assert created.status_code == 201, created.text
-    level = created.json()["planningLevel"]
+    level = created.json()["dimension"]
     lid = level["objectId"]
     product, day = level["definition"]["grain"]["keyIds"]
     payload = {
@@ -490,15 +490,15 @@ def test_ordered_typed_aggregation_carries_the_selected_cells_state(
         for key, value in level.items()
         if key not in {"modelId", "revisionId", "version", "createdAt", "updatedAt"}
     }
-    payload["definition"]["dimensionBindings"] = [
+    payload["definition"]["memberBindings"] = [
         {
-            "dimensionId": "Time",
-            "keyMappings": [{"grainColumnId": day, "dimensionColumnId": "day"}],
+            "memberCatalogId": "Time",
+            "keyMappings": [{"grainColumnId": day, "memberColumnId": "day"}],
             "selectedAttributeColumnIds": [],
         }
     ]
     response = client.put(
-        BASE + "/planning-levels/" + lid, json=payload, headers={"If-Match": "1"}
+        BASE + "/dimensions/" + lid, json=payload, headers={"If-Match": "1"}
     )
     assert response.status_code == 200, response.text
     create(
@@ -510,7 +510,7 @@ def test_ordered_typed_aggregation_carries_the_selected_cells_state(
             "definition": {
                 "population": {
                     "operation": "distinct_projection",
-                    "sourcePlanningLevelId": lid,
+                    "sourceDimensionId": lid,
                 },
                 "grain": {
                     "keyIds": [product],
@@ -531,9 +531,9 @@ def test_ordered_typed_aggregation_carries_the_selected_cells_state(
     run = build_values(client)
     assert run["state"] == "succeeded", run
     result = client.post(
-        BASE + "/planning-view/query",
+        BASE + "/decision-view/query",
         json={
-            "rows": [{"planningLevelId": "product", "columnId": product}],
+            "rows": [{"dimensionId": "product", "columnId": product}],
             "measures": ["Status"],
         },
     )
@@ -563,7 +563,7 @@ def test_adding_typed_formula_preserves_legacy_numeric_edit(
         },
     )
     assert response.status_code == 201, response.text
-    level = response.json()["planningLevel"]
+    level = response.json()["dimension"]
     lid = level["objectId"]
     product = level["definition"]["grain"]["keyIds"][0]
     assert build(client, lid)["state"] == "succeeded"
@@ -577,17 +577,17 @@ def test_adding_typed_formula_preserves_legacy_numeric_edit(
     )
     assert build_values(client)["state"] == "succeeded"
     view = {
-        "rows": [{"planningLevelId": lid, "columnId": product}],
+        "rows": [{"dimensionId": lid, "columnId": product}],
         "measures": ["Qty"],
     }
-    context = client.post(BASE + "/planning-view/query", json=view).json()[
+    context = client.post(BASE + "/decision-view/query", json=view).json()[
         "editContext"
     ]
     edit = await_run(
         client,
         BASE,
         client.post(
-            BASE + "/planning-view/edits",
+            BASE + "/decision-view/edits",
             json={
                 "view": view,
                 "measureId": "Qty",
@@ -634,7 +634,7 @@ def test_adding_typed_formula_preserves_legacy_numeric_edit(
     )
     assert run["state"] == "succeeded", run
     response = client.post(
-        BASE + "/planning-view/query", json={**view, "measures": ["Qty", "Status"]}
+        BASE + "/decision-view/query", json={**view, "measures": ["Qty", "Status"]}
     )
     assert response.status_code == 200, response.text
     assert response.json()["rows"] == [["P1", "99.0", "High"]]

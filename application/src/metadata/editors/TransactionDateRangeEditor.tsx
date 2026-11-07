@@ -2,7 +2,7 @@ import type { ResolutionDateRange, SourceColumn } from '../types'
 import { Select } from './Fields'
 
 export type ResolutionCalendar = {
-  dimensionId: string
+  memberCatalogId: string
   name: string
   dateColumnId: string
   dateColumnName: string
@@ -15,7 +15,7 @@ export function newDateRange(
 ): ResolutionDateRange {
   const calendar = calendars.length === 1 ? calendars[0] : undefined
   return {
-    dimensionId: calendar?.dimensionId ?? '',
+    memberCatalogId: calendar?.memberCatalogId ?? '',
     calendarKeyColumnId: calendar?.suggestions[grainId] ?? '',
     startColumnId: '',
     endColumnId: '',
@@ -36,7 +36,7 @@ export function TransactionDateRangeEditor({
   name: string
   columns: SourceColumn[]
 }) {
-  const calendar = calendars.find((c) => c.dimensionId === value.dimensionId)
+  const calendar = calendars.find((c) => c.memberCatalogId === value.memberCatalogId)
   const endpoints = columns
     .filter(
       (c) => /^(Date32|Date|String)$/.test(c.physicalType) || c.physicalType.includes('String'),
@@ -56,14 +56,14 @@ export function TransactionDateRangeEditor({
       <div className="meta-grid">
         <Select
           label="Range Time dimension"
-          value={value.dimensionId}
-          items={calendars.map((c) => ({ value: c.dimensionId, label: c.name }))}
-          onChange={(dimensionId) =>
+          value={value.memberCatalogId}
+          items={calendars.map((c) => ({ value: c.memberCatalogId, label: c.name }))}
+          onChange={(memberCatalogId) =>
             onChange({
               ...value,
-              dimensionId,
+              memberCatalogId,
               calendarKeyColumnId:
-                calendars.find((c) => c.dimensionId === dimensionId)?.suggestions[grainId] ?? '',
+                calendars.find((c) => c.memberCatalogId === memberCatalogId)?.suggestions[grainId] ?? '',
             })
           }
         />

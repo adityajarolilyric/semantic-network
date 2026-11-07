@@ -1,5 +1,11 @@
+import { useGrainCatalog } from '../useGrainCatalog'
+import { resolveMeasureGrain } from '../grainCatalog'
 import { CompatibilityGraphPanel } from '../CompatibilityGraphPanel'
-import { FormulaBuilder, type FormulaFunction } from '../FormulaBuilder'
+import {
+  FormulaBuilder,
+  type FormulaFunction,
+  type FormulaMeasureAvailability,
+} from '../FormulaBuilder'
 import { metadataApi } from '../api'
 import { MeasureBaseVisibility } from './MeasureBaseVisibility'
 import { FieldHelp } from '../../components/FieldHelp'
@@ -22,7 +28,7 @@ export const defaultAggregation: Aggregation = {
   allNullResult: 'null',
 }
 export function MeasureEditor({
-  initial,
+  initial: suppliedInitial,
   data,
   editing,
   onSave,
@@ -32,19 +38,21 @@ export function MeasureEditor({
   baseLevelId,
   quick = false,
 }: EditorProps<Measure> & { base?: string; baseLevelId?: string | null; quick?: boolean }) {
+  const initial = resolveMeasureGrain(suppliedInitial, data)
   const [advanced, setAdvanced] = useState(false)
   const [showCompatibility, setShowCompatibility] = useState(false)
   const showSettings = !quick || advanced
+  const dimensionMembers = useGrainCatalog(data, base)
   const [value, set] = useState(initial)
   const [text, setText] = useState(
     !quick && initial.definition.measureType === 'calculated'
       ? formatFormula(
           initial.definition.formula.expression,
           data.measures,
-          data.planningLevels.find((l) => l.objectId === initial.definition.nativePlanningLevelId)
+          dimensionMembers.levels.find((l) => l.objectId === initial.definition.nativeGrainId)
             ?.definition.grain.columns,
           undefined,
-          data.planningLevels.find((l) => l.objectId === initial.definition.nativePlanningLevelId),
+          dimensionMembers.levels.find((l) => l.objectId === initial.definition.nativeGrainId),
         )
       : '',
   )
@@ -55,6 +63,31 @@ export function MeasureEditor({
   const [attributeError, setAttributeError] = useState('')
   const [functions, setFunctions] = useState<FormulaFunction[]>([])
   const [functionError, setFunctionError] = useState('')
+  const [measureAvailability, setMeasureAvailability] = useState<FormulaMeasureAvailability>({})
+  const [measureError, setMeasureError] = useState('')
+  useEffect(() => {
+    setMeasureAvailability({})
+    setMeasureError('')
+    if (!base || d.measureType !== 'calculated' || !d.nativeGrainId) return
+    const controller = new AbortController()
+    const query = new URLSearchParams({ nativeGrainId: d.nativeGrainId, objectId: value.objectId })
+    void metadataApi
+      .request<{ measureId: string; available: boolean; reason: string }[]>(
+        base + '/measures/formula/measures?' + query,
+        'GET',
+        undefined,
+        undefined,
+        controller.signal,
+      )
+      .then((items) => {
+        if (!controller.signal.aborted)
+          setMeasureAvailability(Object.fromEntries(items.map((item) => [item.measureId, item])))
+      })
+      .catch((error) => {
+        if (!controller.signal.aborted) setMeasureError(error.message)
+      })
+    return () => controller.abort()
+  }, [base, d.measureType, d.nativeGrainId, value.objectId, data.measures])
   useEffect(() => {
     setFunctions([])
     setFunctionError('')
@@ -79,13 +112,11 @@ export function MeasureEditor({
   useEffect(() => {
     setAttributes([])
     setAttributeError('')
-    if (!base || d.measureType !== 'calculated' || !d.nativePlanningLevelId) return
+    if (!base || d.measureType !== 'calculated' || !d.nativeGrainId) return
     const controller = new AbortController()
     void metadataApi
       .request<FormulaAttribute[]>(
-        base +
-          '/measures/formula/attributes?planningLevelId=' +
-          encodeURIComponent(d.nativePlanningLevelId),
+        base + '/measures/formula/attributes?dimensionId=' + encodeURIComponent(d.nativeGrainId),
         'GET',
         undefined,
         undefined,
@@ -98,17 +129,16 @@ export function MeasureEditor({
         if (!controller.signal.aborted) setAttributeError(error.message)
       })
     return () => controller.abort()
-  }, [base, d.measureType, d.nativePlanningLevelId])
+  }, [base, d.measureType, d.nativeGrainId])
   useEffect(() => {
     if (!attributes.length || initial.definition.measureType !== 'calculated') return
     const original = formatFormula(
       initial.definition.formula.expression,
       data.measures,
-      data.planningLevels.find(
-        (level) => level.objectId === initial.definition.nativePlanningLevelId,
-      )?.definition.grain.columns,
+      dimensionMembers.levels.find((level) => level.objectId === initial.definition.nativeGrainId)
+        ?.definition.grain.columns,
       undefined,
-      data.planningLevels.find((l) => l.objectId === initial.definition.nativePlanningLevelId),
+      dimensionMembers.levels.find((l) => l.objectId === initial.definition.nativeGrainId),
     )
     setText((current) =>
       current === original
@@ -117,12 +147,10 @@ export function MeasureEditor({
               ? initial.definition.formula.expression
               : { type: 'literal', value: 0 },
             data.measures,
-            data.planningLevels.find((l) => l.objectId === initial.definition.nativePlanningLevelId)
+            dimensionMembers.levels.find((l) => l.objectId === initial.definition.nativeGrainId)
               ?.definition.grain.columns,
             attributes,
-            data.planningLevels.find(
-              (l) => l.objectId === initial.definition.nativePlanningLevelId,
-            ),
+            dimensionMembers.levels.find((l) => l.objectId === initial.definition.nativeGrainId),
           )
         : current,
     )
@@ -207,7 +235,7 @@ export function MeasureEditor({
           name: value.name,
           displayText: text,
           languageVersion: 'planning-v1',
-          nativePlanningLevelId: d.nativePlanningLevelId,
+          nativeGrainId: d.nativeGrainId,
           calculationType: d.calculationType,
         }
       : null
@@ -246,7 +274,7 @@ export function MeasureEditor({
   const calculationTypeGroupId = useId()
   const changeMeasureType = (type: 'referenced' | 'calculated') => {
     const common = {
-      nativePlanningLevelId: '',
+      nativeGrainId: '',
       resultType: { type: 'number' as const, nullable: true },
       editable: false,
     }
@@ -309,23 +337,39 @@ export function MeasureEditor({
         </div>
       </fieldset>
     ) : null
+  const nativeDimensionIds = new Set(
+    data.transactions.map((transaction) => transaction.definition.dimensionId),
+  )
+  const outputGrainItems = dimensionMembers.levels
+    .filter((level) => level.owner.kind === 'transaction' || nativeDimensionIds.has(level.objectId))
+    .map((level) => ({
+      value: dimensionMembers.selection(level.objectId, level.owner),
+      label: level.name,
+    }))
   const outputLevelControl =
     d.measureType === 'calculated' ? (
       <div className="measure-output-level">
         <Select
-          label="Output Planning Level"
-          value={d.nativePlanningLevelId}
-          items={options(data.planningLevels)}
-          onChange={(nativePlanningLevelId) => update({ nativePlanningLevelId })}
+          label="Output grain"
+          value={dimensionMembers.selection(d.nativeGrainId, d.outputGrain)}
+          items={outputGrainItems}
+          onChange={async (id) => {
+            try {
+              const level = await dimensionMembers.resolve(id)
+              update({ nativeGrainId: level.objectId, outputGrain: level.owner })
+            } catch (error) {
+              setError(error instanceof Error ? error.message : 'Could not select Dimension.')
+            }
+          }}
         />
       </div>
     ) : (
-      <div className="measure-output-level" role="group" aria-label="Output Planning Level">
+      <div className="measure-output-level" role="group" aria-label="Output grain">
         <span className="field-label-with-help">
-          Output Planning Level <FieldHelp label="Output Planning Level" />
+          Output grain <FieldHelp label="Output grain" />
         </span>
         <strong>
-          {data.planningLevels.find((level) => level.objectId === d.nativePlanningLevelId)?.name ??
+          {dimensionMembers.levels.find((level) => level.objectId === d.nativeGrainId)?.name ??
             'Choose a transaction'}
         </strong>
       </div>
@@ -472,7 +516,8 @@ export function MeasureEditor({
                 const transaction = data.transactions.find((t) => t.objectId === transactionId)!
                 update({
                   transactionId,
-                  nativePlanningLevelId: transaction.definition.planningLevelId,
+                  nativeGrainId:
+                    transaction.definition.dimensionId ?? transaction.effectiveGrainId ?? '',
                   valueColumnId: '',
                 })
               }}
@@ -511,25 +556,27 @@ export function MeasureEditor({
         <>
           {counted && (
             <p className="meta-hint">
-              Counts evaluate inputs at Output Planning Level and recompute when viewed at a coarser
-              grain. They count planning intersections, not raw transaction records.
+              Counts evaluate inputs at Output DimensionMembers and recompute when viewed at a
+              coarser grain. They count planning intersections, not raw transaction records.
             </p>
           )}
           <FormulaBuilder
             value={text}
             onChange={setText}
             measures={data.measures.filter((measure) => measure.objectId !== value.objectId)}
+            measureAvailability={measureAvailability}
+            measureError={measureError}
             attributes={attributes}
             functions={functions}
             data={data}
             validation={validation}
             attributeError={attributeError}
             functionError={functionError}
-            levelSelected={!!d.nativePlanningLevelId}
+            levelSelected={!!d.nativeGrainId}
             compact={quick}
             disabled={busy || validatingSave}
           />
-          {base && d.nativePlanningLevelId && (
+          {base && d.nativeGrainId && (
             <>
               <button
                 type="button"
@@ -542,7 +589,7 @@ export function MeasureEditor({
               {showCompatibility && (
                 <CompatibilityGraphPanel
                   base={base}
-                  planningLevelId={d.nativePlanningLevelId}
+                  dimensionId={d.nativeGrainId}
                   measureIds={[...formulaInputs].slice(0, 12)}
                 />
               )}
@@ -654,7 +701,7 @@ export function MeasureEditor({
         numeric &&
         (d.measureType === 'referenced' ||
           (d.calculationType === 'CalculateFirst' &&
-            !(baseLevelId && d.nativePlanningLevelId === baseLevelId))) && (
+            !(baseLevelId && d.nativeGrainId === baseLevelId))) && (
           <>
             <h3>Dis-Aggregation policies</h3>
             <p className="meta-hint">
@@ -702,7 +749,7 @@ export function MeasureEditor({
       {showSettings && numeric && !counted && (
         <MeasureBaseVisibility
           definition={d}
-          levels={data.planningLevels}
+          levels={dimensionMembers.levels}
           base={base}
           baseLevelId={baseLevelId}
         />

@@ -1,10 +1,13 @@
 """Named access to immutable job inputs, including existing persisted formats."""
 
-from ..repositories.metadata import metadata_repositories
-from ..repositories.metadata.criteria import RunInputLookup
-
 from dataclasses import dataclass
 from typing import Any, NamedTuple
+from functools import cached_property
+
+from .grain_contexts import resolve_grain_contexts
+
+from ..repositories.metadata import metadata_repositories
+from ..repositories.metadata.criteria import RunInputLookup
 
 Document = dict[str, Any]
 
@@ -40,6 +43,10 @@ class CapturedRunInputs:
             for item in self.documents
             if not item["inputId"].startswith("__")
         ]
+
+    @cached_property
+    def graph(self):
+        return resolve_grain_contexts(self.objects)
 
     def group(self, prefix):
         return {

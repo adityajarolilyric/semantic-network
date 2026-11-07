@@ -1,12 +1,5 @@
 """Measure candidate execution and guarded activation; HTTP services capture intent."""
 
-from ..repositories.metadata import metadata_repositories
-from ..repositories.metadata.criteria import (
-    ArtifactLookup,
-    BindingLookup,
-    RunInputLookup,
-)
-
 from dataclasses import dataclass
 from time import perf_counter
 from uuid import uuid4
@@ -16,18 +9,29 @@ from ..core.metadata import revision_scope as scope
 from ..core.metadata import utc_now as now
 from ..domain.measure_policies import MEASURE_TYPE_POLICY
 from ..engine.captured_inputs import CapturedRunInputs
-from ..engine.contracts import PlanningPlan, digest
+from ..engine.contracts import Check, DimensionPlan, ExecutionPlan, digest
 from ..engine.date_range_resolution import calendar_source_ids
 from ..engine.incremental import (
     IncrementalMeasureCompiler,
 )
+from .in_place_values import update_columns
+from .storage_layout import time_key_ids
+from ..warehouse.sql import quote_identifier as q
 from ..engine.measure_compiler import (
     MeasureCompiler,
 )
+from ..engine.measure_edits import MeasureEditCompiler
 from ..engine.table_storage import STORAGE_POLICY
 from ..engine.transaction_resolution import (
     prepare_resolution_profiles,
 )
+from ..repositories.metadata import metadata_repositories
+from ..repositories.metadata.criteria import (
+    ArtifactLookup,
+    BindingLookup,
+    RunInputLookup,
+)
+from ..schemas.decision_view import DecisionViewEdit
 
 
 @dataclass(frozen=True)
@@ -45,16 +49,17 @@ class MeasureBuildHandler:
 
     async def execute_run(self, run, worker):
         builds = self.builds
+        await builds.storage.recover(run["modelId"], run["revisionId"])
         if run.get("storagePolicy") != STORAGE_POLICY:
             raise Conflict(
                 "This build predates the table-storage upgrade. Submit a new build."
             )
         builds.incremental.validate_runtime_policy(run)
         captured_inputs = await CapturedRunInputs.load(
-            builds.store.repository, run["runId"], builds.max_objects * 4 + 3
+            builds.store.repository, run["runId"], builds.max_objects * 6 + 3
         )
         docs = captured_inputs.documents
-        objects = captured_inputs.objects
+        objects = captured_inputs.graph
         populations = captured_inputs.populations
         managed = captured_inputs.managed_artifacts
         managed_definitions = captured_inputs.managed_definitions
@@ -78,7 +83,9 @@ class MeasureBuildHandler:
         required_sources = set(managed)
         if needed_transactions is not None:
             required_sources = {
-                o["definition"]["sourceId"] for o in objects if o["kind"] == "dimension"
+                o["definition"]["sourceId"]
+                for o in objects
+                if o["kind"] == "dimensionMembers"
             }
             for tx in objects:
                 if (
@@ -103,13 +110,15 @@ class MeasureBuildHandler:
                 *snapshots.values(),
             ]
         )
+        for population in populations.values():
+            for check in population.get("checks", []):
+                await builds.executor.checks(
+                    ExecutionPlan(None, (Check(check["code"], check["sql"]),), None)
+                )
         edit_document = next(
             (d["document"] for d in docs if d["inputId"] == "__edit"), None
         )
         if run.get("isEdit"):
-            from ..engine.measure_edits import MeasureEditCompiler
-            from ..schemas.planning_view import PlanningViewEdit
-
             if edit_document is None:
                 raise Conflict(
                     "The edit job context is missing. Refresh and submit a new edit."
@@ -120,9 +129,9 @@ class MeasureBuildHandler:
                 objects,
                 populations,
                 managed,
-                run["resourceId"],
+                run.get("baseDimensionId", run["resourceId"]),
                 snapshots,
-                PlanningViewEdit.model_validate(edit_document),
+                DecisionViewEdit.model_validate(edit_document),
             )
         else:
             resolution_profiles = await prepare_resolution_profiles(
@@ -148,7 +157,7 @@ class MeasureBuildHandler:
                 objects,
                 populations,
                 managed,
-                run["resourceId"],
+                run.get("baseDimensionId", run["resourceId"]),
                 previous,
                 resolution_profiles,
                 builds.settings.resolution_max_rows,
@@ -156,27 +165,33 @@ class MeasureBuildHandler:
                     {
                         "snapshots": snapshots,
                         "manifests": manifests,
+                        "forced_measures": run.get("forcedMeasures", []),
                     }
                     if run.get("buildMode") == "incremental"
                     else {}
                 ),
             )
         compiler.max_nodes = builds.settings.measure_max_nodes
+        compiler.native_workset = (
+            set(run["dirtyMeasures"])
+            if run.get("buildMode") == "incremental" and not run.get("isEdit")
+            else None
+        )
         outcomes = []
         order = [
             run["resourceId"],
             *(
-                planning_level_id
-                for planning_level_id in populations
-                if planning_level_id != run["resourceId"]
+                dimension_id
+                for dimension_id in manifests
+                if dimension_id != run["resourceId"]
             ),
         ]
-        for planning_level_id in order:
+        for dimension_id in order:
             level_started = perf_counter()
-            compiled, unavailable = compiler.compile_level(planning_level_id)
+            compiled, unavailable = compiler.compile_level(dimension_id)
             if (
                 run.get("isEdit")
-                and set(snapshots[planning_level_id].get("measureColumns", {}))
+                and set(snapshots[dimension_id].get("measureColumns", {}))
                 & unavailable.keys()
             ):
                 raise MetadataError(
@@ -189,13 +204,16 @@ class MeasureBuildHandler:
                     "Compiled measure graph exceeds the configured SQL-size limit.",
                 )
             compiled_at = perf_counter()
-            step = "values_" + planning_level_id
+            step = "values_" + dimension_id
             await worker.step(
                 run,
                 step,
                 "running",
                 planHash=digest(compiled.sql),
                 compilerVersion=compiled.compiler_version,
+                queryMemoryBytes=builds.executor.execution_settings()[
+                    "max_memory_usage"
+                ],
                 unavailable=unavailable,
             )
             prechecks_started = perf_counter()
@@ -207,28 +225,98 @@ class MeasureBuildHandler:
                 "artifactId": aid,
                 "runId": run["runId"],
                 "resourceKind": "measureValues",
-                "resourceId": planning_level_id,
+                "resourceId": dimension_id,
                 "kind": "table",
                 "state": "candidate",
                 "createdAt": now(),
                 "inputHash": run["inputHash"],
                 "attempt": run["fence"],
             }
+            previous_target = snapshots.get(dimension_id)
+            changed_columns = (
+                update_columns(
+                    previous_target,
+                    populations[dimension_id],
+                    manifests[dimension_id],
+                    compiled,
+                    run.get("forcedMeasures", []),
+                )
+                if run.get("networkRunId")
+                and not run.get("isEdit")
+                and not run.get("recoveryBuild")
+                else None
+            )
 
             async def record(repo):
                 await worker.fenced(repo, run)
                 artifact.update(
                     await builds.storage.reserve(
-                        repo, artifact, objects_by_id[planning_level_id]["name"]
+                        repo, artifact, objects_by_id[dimension_id]["name"]
                     )
                 )
+                if run.get("networkRunId") and not run.get("isEdit"):
+                    measure_order = list(
+                        dict.fromkeys(
+                            dependency
+                            for mid in compiler.measures
+                            for dependency in compiler.dependencies.ordered(mid)
+                        )
+                    )
+                    artifact.update(
+                        recoveryBuild=run.get("recoveryBuild", False),
+                        writeMode="in_place"
+                        if changed_columns is not None
+                        else "column_build",
+                        updateColumnIds=changed_columns
+                        if changed_columns is not None
+                        else [
+                            c["columnId"]
+                            for c in compiled.schema.columns
+                            if c.get("measureId")
+                            or c.get("coverageFor")
+                            or c.get("mixedFor")
+                        ],
+                        measureOrder=measure_order,
+                        measureNodes={
+                            mid: compiler.cache.get((mid, dimension_id))
+                            for mid in compiler.measures
+                        },
+                    )
+                    if changed_columns is None:
+                        population_columns = populations[dimension_id]["columns"]
+                        artifact["populationQuery"] = (
+                            "SELECT "
+                            + ", ".join(
+                                q(c["columnId"]) + " AS " + q(c["name"])
+                                for c in population_columns
+                            )
+                            + " FROM ("
+                            + compiler.population(dimension_id)
+                            + ")"
+                        )
+                    await builds.gate.mark_writing(repo, run)
                 await metadata_repositories(repo).artifacts.insert(artifact)
 
             await builds.store.transaction(record)
-            keys = tuple(compiler.keys(planning_level_id))
-            plan = PlanningPlan(None, compiled.schema, keys, (), (), (), False)
+            keys = tuple(compiler.keys(dimension_id))
+            plan = DimensionPlan(None, compiled.schema, keys, (), (), (), False)
+            artifact["timeKeyIds"] = list(
+                time_key_ids(objects_by_id[dimension_id], objects)
+            )
+            artifact["sourceSnapshot"] = (
+                {
+                    k: previous_target[k]
+                    for k in ("storageMode", "physicalName", "sortKeyIds", "columns")
+                    if k in previous_target
+                }
+                if previous_target
+                else None
+            )
             outcome = await builds.executor.build(artifact, compiled, plan)
-            if outcome["rowCount"] != populations[planning_level_id]["rowCount"]:
+            if (
+                populations[dimension_id].get("rowCount") is not None
+                and outcome["rowCount"] != populations[dimension_id]["rowCount"]
+            ):
                 raise MetadataError(
                     "measure_cardinality",
                     "Measure merging changed the planning population row count.",
@@ -241,10 +329,10 @@ class MeasureBuildHandler:
                 **outcome,
                 "state": "ready",
                 "builtAt": now(),
-                "levelId": planning_level_id,
+                "levelId": dimension_id,
                 "generationId": run["runId"],
                 "numericPolicy": MEASURE_TYPE_POLICY,
-                "materialisationManifest": manifests.get(planning_level_id),
+                "materialisationManifest": manifests.get(dimension_id),
                 "keyColumns": {
                     c["columnId"]: c.get("storageName", c["name"])
                     for c in outcome["columns"]
@@ -266,32 +354,57 @@ class MeasureBuildHandler:
                     if c.get("mixedFor")
                 },
                 "unavailable": unavailable,
-                "populationArtifactId": populations[planning_level_id]["artifactId"],
+                "populationArtifactId": populations[dimension_id]["artifactId"],
                 "compilerVersion": compiled.compiler_version,
                 "derivations": [
                     {
                         "measureId": n.measure_id,
-                        "planningLevelId": n.level_id,
+                        "dimensionId": n.level_id,
                         "operation": n.operation,
                     }
                     for n in compiler.nodes
-                    if n.level_id == planning_level_id
+                    if n.level_id == dimension_id
                 ],
             }
             outcomes.append(populated)
+            if run.get("networkRunId") and not run.get("isEdit"):
+                # Later target grains can read completed Base/native values rather
+                # than re-expanding the same source and formula graphs.
+                for mid in populated["measureColumns"]:
+                    stored = compiler.stored_measure(
+                        mid, dimension_id, {dimension_id: populated}
+                    )
+                    compiler.cache[(mid, dimension_id)] = stored
+                    if (
+                        compiler.measures[mid]["definition"]["nativeGrainId"]
+                        == dimension_id
+                    ):
+                        compiler.cache[(mid, "__native_seed")] = stored
+                final_read, _ = compiler.compile_level(
+                    dimension_id, include_checks=False
+                )
+            else:
+                final_read = compiled
             await worker.step(
                 run,
                 step,
                 "succeeded",
                 rowCount=outcome["rowCount"],
+                sql=final_read.formatted_sql,
+                queryMemoryBytes=builds.executor.execution_settings()[
+                    "max_memory_usage"
+                ],
+                calculationSql=compiled.formatted_sql,
                 artifactId=aid,
                 reusedMeasures=sorted(
                     {
                         n.measure_id
                         for n in compiler.nodes
-                        if n.level_id == planning_level_id and n.operation == "reuse"
+                        if n.level_id == dimension_id and n.operation == "reuse"
                     }
                 ),
+                writeMode=outcome.get("writeMode", "new_generation"),
+                updatedColumns=outcome.get("updatedColumns", []),
                 timingsMs={
                     "compile": round((compiled_at - level_started) * 1000, 3),
                     "preChecks": round(prechecks_ms, 3),
@@ -311,9 +424,8 @@ class MeasureBuildActivation:
 
     async def activate(self, run, worker, candidate: MeasureBuildCandidate):
         builds = self.builds
-        outcomes, populations, snapshots, previous = (
+        outcomes, snapshots, previous = (
             candidate.artifacts,
-            candidate.populations,
             candidate.snapshots,
             candidate.previous,
         )
@@ -382,7 +494,9 @@ class MeasureBuildActivation:
             if len(old_bindings) > builds.max_objects:
                 raise Conflict("Measure bindings exceed the metadata object limit.")
             for old in old_bindings:
-                if old["resourceId"] not in populations:
+                if old["resourceId"] not in {
+                    artifact["levelId"] for artifact in outcomes
+                }:
                     await metadata_repositories(repo).bindings.delete(
                         BindingLookup(
                             model_id=run["modelId"],
@@ -400,4 +514,6 @@ class MeasureBuildActivation:
                 run, current, generationId=run["runId"]
             )
 
-        await builds.store.transaction(activate)
+        await builds.storage.activate(
+            outcomes, lambda: builds.store.transaction(activate)
+        )

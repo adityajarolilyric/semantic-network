@@ -1,10 +1,11 @@
 """Resolve inclusive source ranges against an explicit daily calendar before mapping."""
 
-from .filters import dimension_filter_columns
 from ..core.errors import MetadataError
-from ..warehouse.repository import quote_identifier as q
+from ..warehouse.sql import quote_identifier as q
 from .contracts import Check, digest
 from .date_range_resolution import strict_date
+from .filters import dimension_filter_columns
+from .object_inputs import input_columns
 
 
 def effective_calendar_objects(objects, managed):
@@ -27,7 +28,6 @@ class CalendarResolutionPlanner:
         self.objects = {o["objectId"]: o for o in objects}
         self.tx = transaction
         self.config = transaction["definition"].get("calendarResolution")
-        from .object_inputs import input_columns
 
         self.source_columns = input_columns(transaction, source_columns)
         self.date_id = (
@@ -39,10 +39,10 @@ class CalendarResolutionPlanner:
         if not self.config:
             return
         cfg = self.config
-        dim = self.objects.get(cfg["dimensionId"])
+        dim = self.objects.get(cfg["memberCatalogId"])
         if (
             not dim
-            or dim["kind"] != "dimension"
+            or dim["kind"] != "dimensionMembers"
             or not dim["isTimeDim"]
             or dim["definition"]["time"]["baseGrain"] != "day"
         ):
@@ -89,7 +89,7 @@ class CalendarResolutionPlanner:
     def column_id(self, cid):
         return (
             "txcal_"
-            + digest([self.tx["objectId"], self.config["dimensionId"], cid])[:24]
+            + digest([self.tx["objectId"], self.config["memberCatalogId"], cid])[:24]
         )
 
     def added_columns(self):
@@ -114,8 +114,8 @@ class CalendarResolutionPlanner:
                     **source,
                     "columnId": self.column_id(col["columnId"]),
                     "name": name,
-                    "dimensionId": self.dimension["objectId"],
-                    "dimensionColumnId": col["columnId"],
+                    "memberCatalogId": self.dimension["objectId"],
+                    "memberColumnId": col["columnId"],
                     "role": "calendarAttribute",
                 }
             )

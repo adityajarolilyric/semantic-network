@@ -7,6 +7,8 @@ names come exclusively from the registry, never from user-provided SQL.
 from sqlglot import exp
 
 from ..core.errors import MetadataError
+from ..engine.measure_contracts import COMPLETE, VALUE
+from ..engine.typed_formulas import attribute_alias
 from .expressions import count_key
 
 
@@ -32,12 +34,9 @@ class FormulaSqlCompiler:
             return exp.convert(node["value"])
         if kind in {"measureRef", "count"}:
             key = node["measureId"] if kind == "measureRef" else count_key(node)
-            from ..engine.measure_compiler import VALUE
 
             value = self.column(VALUE, self.references[key])
             if kind == "count":
-                from ..engine.measure_compiler import COMPLETE
-
                 # An absent group is a known zero; a present unknown/Mixed count stays NULL.
                 return function(
                     "if",
@@ -47,12 +46,10 @@ class FormulaSqlCompiler:
                 )
             return value
         if kind == "attributeRef":
-            from ..engine.typed_formulas import attribute_alias
-
             return self.column(attribute_alias(node), "p")
         if kind == "grainRef":
             coordinate = self.host.relationships.outputs(
-                self.measure["definition"]["nativePlanningLevelId"]
+                self.measure["definition"]["nativeGrainId"]
             ).get(node["grainColumnId"])
             resolved = (
                 self.host.relationships.resolve(self.target, coordinate)

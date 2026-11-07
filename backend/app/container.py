@@ -1,27 +1,34 @@
-from .services.compatibility import CompatibilityService
-from .services.transaction_measures import TransactionMeasureFactory
 from dataclasses import dataclass
 
 from .core.config import Settings
+from .engine.semantic_network import SemanticNetworkHandler
+from .engine.managed_builds import ManagedTableBuildHandler
+from .engine.artifacts import ArtifactCollector
 from .engine.worker import EngineWorker
 from .repositories.base import MetadataStore
+from .services.compatibility import CompatibilityService
 from .services.contracts import ContractService
+from .services.decision_view import DecisionViewService
+from .services.dimension_builds import DimensionBuildService
+from .services.dimension_members import DimensionMembersService
 from .services.dimensions import DimensionService
+from .services.dimension_commands import DimensionCommandService
 from .services.evidence import EvidenceService
 from .services.examples import ExampleService
 from .services.managed_tables import ManagedTableService
+from .services.pivot_suggestions import PivotSuggestionService
 from .services.measure_builds import MeasureBuildService
 from .services.measures import MeasureService
 from .services.models import ModelService
-from .services.planning_builds import PlanningBuildService
-from .services.planning_levels import PlanningLevelService
-from .services.planning_view import PlanningViewService
 from .services.revisions import RevisionService
+from .services.semantic_network import SemanticNetworkService
 from .services.source_registration import SourceRegistrationService
 from .services.sources import SourceService
 from .services.transaction_grains import TransactionGrainService
+from .services.transaction_measures import TransactionMeasureFactory
 from .services.transaction_resolution import TransactionResolutionService
 from .services.transactions import TransactionService
+from .services.upload_metadata import UploadMetadataService
 from .services.workspace import WorkspaceService
 from .services.workspace_gate import WorkspaceGate
 from .services.workspace_reset import WorkspaceResetService
@@ -46,7 +53,7 @@ class ServiceContainer:
         self.revisions = RevisionService(*args)
         self.sources = SourceService(*args)
         self.dimensions = DimensionService(*args)
-        self.planning_levels = PlanningLevelService(*args)
+        self.dimension_members = DimensionMembersService(*args, self.dimensions)
         self.measures = MeasureService(*args)
         self.transaction_measure_factory = TransactionMeasureFactory(self.measures)
         self.transactions = TransactionService(
@@ -69,33 +76,56 @@ class ServiceContainer:
             self.source_registration,
         )
         self.managed_tables.workspace_gate = self.workspace_gate
-        self.engine_worker = EngineWorker(self.managed_tables)
+        self.pivot_suggestions = PivotSuggestionService(
+            *args, self.managed_tables, self.settings
+        )
+        self.upload_metadata = UploadMetadataService(
+            *args, self.workspace, self.managed_tables, self.transactions
+        )
+        self.warehouse_sources.upload_metadata = self.upload_metadata
         self.revisions.managed_tables = self.managed_tables
-        self.planning_builds = PlanningBuildService(
+        self.dimension_builds = DimensionBuildService(
             self.store, self.settings, self.managed_tables
         )
-        self.revisions.planning_builds = self.planning_builds
+        self.revisions.dimension_builds = self.dimension_builds
         self.measure_builds = MeasureBuildService(
-            self.store, self.settings, self.planning_builds, self.managed_tables
+            self.store, self.settings, self.dimension_builds, self.managed_tables
         )
-        self.engine_worker.register("planningLevel", self.planning_builds.handler)
-        self.engine_worker.register(
-            "planningLevelPreview", self.planning_builds.handler
-        )
-        self.engine_worker.register("measureSet", self.measure_builds.handler)
-        self.transaction_resolution = TransactionResolutionService(
-            self.store, self.settings, self.planning_builds, self.managed_tables
-        )
-        self.transaction_grains = TransactionGrainService(
+        self.semantic_network = SemanticNetworkService(
             self.store,
             self.settings,
-            self.planning_builds,
-            self.transaction_resolution,
-            self.transaction_measure_factory,
+            self.dimension_builds,
+            self.measure_builds,
+            self.managed_tables,
         )
-        self.planning_view = PlanningViewService(
+        network_handler = SemanticNetworkHandler(self.semantic_network)
+        self.engine_worker = EngineWorker(
+            self.store,
+            handlers={
+                "managedTable": ManagedTableBuildHandler(self.managed_tables),
+                "dimension": self.dimension_builds.handler,
+                "dimensionPreview": self.dimension_builds.handler,
+                "measureSet": self.measure_builds.handler,
+                "semanticNetwork": network_handler,
+                "dimensionSet": network_handler,
+            },
+            collector=ArtifactCollector(
+                self.managed_tables, self.dimension_builds.storage
+            ),
+            workspace_gate=self.workspace_gate,
+        )
+        self.dimension_commands = DimensionCommandService(
+            *args, self.dimensions, self.semantic_network
+        )
+        self.transaction_resolution = TransactionResolutionService(
+            self.store, self.settings, self.dimension_builds, self.managed_tables
+        )
+        self.transaction_grains = TransactionGrainService(
+            self.transactions, self.transaction_resolution
+        )
+        self.decision_view = DecisionViewService(
             self.store, self.settings, self.measure_builds
         )
         self.compatibility = CompatibilityService(
-            self.store, self.settings, self.planning_view
+            self.store, self.settings, self.decision_view
         )

@@ -1,16 +1,16 @@
 """Typed, bounded filter trees compiled against stable output column IDs."""
 
+import math
+import re
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
-import re
-import math
 
 from pydantic import ValidationError
 from sqlglot import exp
 
 from ..core.errors import MetadataError
 from ..schemas.filters import FilterDefinition
-from ..warehouse.repository import quote_identifier as q
+from ..warehouse.sql import quote_identifier as q
 
 NULL_OPS = {"is_null", "is_not_null"}
 EMPTY_OPS = {"is_empty", "is_not_empty"}

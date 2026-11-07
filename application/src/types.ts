@@ -14,6 +14,7 @@ export type WarehouseStatus = {
 }
 export type TableCatalog = { tables: WarehouseTable[]; truncated: boolean }
 export type TablePreview = {
+  sql?: string | null
   table: string
   columns: WarehouseColumn[]
   rows: (string | null)[][]
@@ -22,6 +23,7 @@ export type TablePreview = {
   limit: number
 }
 export type CsvImportResult = {
+  semanticSetupComplete?: boolean
   table: string
   rowCount: number
   columns: WarehouseColumn[]

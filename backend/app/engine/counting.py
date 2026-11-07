@@ -4,8 +4,8 @@ from sqlglot import exp, parse_one
 
 from ..core.errors import MetadataError
 from ..formula_language.sql import function
-from .measure_compiler import COMPLETE, VALUE
-from ..warehouse.repository import quote_identifier as q
+from ..warehouse.sql import quote_identifier as q
+from .measure_contracts import COMPLETE, VALUE
 
 
 class CountCompiler:
@@ -14,13 +14,13 @@ class CountCompiler:
 
     def compile(self, node, measure, target):
         host = self.host
-        source = measure["definition"]["nativePlanningLevelId"]
+        source = measure["definition"]["nativeGrainId"]
         if not source or host.relationships.analyze(source, target)[
             "relationship"
         ] not in {"same", "equivalent", "roll_up"}:
             raise MetadataError(
                 "measure_path_unavailable",
-                "the measure’s Output Planning Level must determine the requested grain; count results cannot be distributed.",
+                "the measure’s Output Dimension must determine the requested grain; count results cannot be distributed.",
             )
         if node["function"] == "count_rows":
             query = host.cte(
@@ -31,7 +31,7 @@ class CountCompiler:
                 **measure,
                 "definition": {
                     **measure["definition"],
-                    "nativePlanningLevelId": source,
+                    "nativeGrainId": source,
                     "resultType": {"type": "number", "nullable": True},
                     "formula": {"expression": node["arguments"][0]},
                 },

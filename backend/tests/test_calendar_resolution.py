@@ -41,7 +41,7 @@ def metadata():
     }
     dim = {
         "objectId": "time",
-        "kind": "dimension",
+        "kind": "dimensionMembers",
         "isTimeDim": True,
         "definition": {
             "sourceId": "calendar",
@@ -62,7 +62,7 @@ def metadata():
         "objectId": "promotion",
         "definition": {
             "calendarResolution": {
-                "dimensionId": "time",
+                "memberCatalogId": "time",
                 "startColumnId": "start",
                 "endColumnId": "end",
                 "selectedColumnIds": ["week", "month"],
@@ -77,14 +77,14 @@ def test_calendar_schema_preserves_sources_and_ids_when_selection_changes():
     original = deepcopy((objects, tx, cols))
     p = CalendarResolutionPlanner(objects, tx, cols)
     schema = p.schema()
-    week = next(c for c in schema if c.get("dimensionColumnId") == "week")
+    week = next(c for c in schema if c.get("memberColumnId") == "week")
     assert week["name"] == "Calendar_week"
     assert len({c["name"] for c in schema}) == len(schema)
     assert (objects, tx, cols) == original
     tx["definition"]["calendarResolution"]["selectedColumnIds"] = ["week"]
     other = CalendarResolutionPlanner(objects, tx, cols)
     assert (
-        next(c for c in other.schema() if c.get("dimensionColumnId") == "week")[
+        next(c for c in other.schema() if c.get("memberColumnId") == "week")[
             "columnId"
         ]
         == week["columnId"]
@@ -119,13 +119,13 @@ def test_calendar_metadata_rejects_unresolvable_configuration(mutation, code):
 def test_absent_calendar_definition_retains_legacy_serialization():
     definition = TransactionDefinition(
         sourceId="s",
-        planningLevelId="native",
+        dimensionId="native",
         keyMappings=[{"sourceColumnId": "c", "grainColumnId": "g"}],
     )
     assert "calendarResolution" not in definition.model_dump()
     with pytest.raises(ValidationError):
         CalendarResolution(
-            dimensionId="t",
+            memberCatalogId="t",
             startColumnId="s",
             endColumnId="e",
             selectedColumnIds=["week", "week"],

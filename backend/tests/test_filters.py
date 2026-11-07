@@ -108,7 +108,7 @@ def test_invalid_columns_arity_and_tree_limits():
 def test_absent_transaction_filters_preserve_old_serialization():
     old = {
         "sourceId": "source",
-        "planningLevelId": "level",
+        "dimensionId": "level",
         "keyMappings": [{"sourceColumnId": "key", "grainColumnId": "key"}],
     }
     result = TransactionDefinition.model_validate(old).model_dump()

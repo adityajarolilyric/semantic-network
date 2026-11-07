@@ -1,9 +1,9 @@
 from sqlglot import exp, parse_one
 
 from ..core.errors import MetadataError
-from ..warehouse.repository import quote_identifier, quote_literal
 from ..engine.checks import CheckDiagnostics, WarehouseCheckRunner
 from ..engine.contracts import digest
+from ..warehouse.sql import quote_identifier, quote_literal
 
 
 class ClickHouseExecutor:
@@ -173,7 +173,6 @@ class ClickHouseExecutor:
             raise MetadataError(
                 "unknown_column", "Choose an attribute column from the selected table."
             )
-        from ..warehouse.repository import quote_identifier
 
         def operation(connect):
             result = connect().query(

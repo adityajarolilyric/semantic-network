@@ -1,6 +1,9 @@
-"""Derive referenced measure definitions from a transaction creation command."""
+"""Derive and refresh referenced measures for Transaction commands."""
+
+from copy import deepcopy
 
 from ..core.errors import MetadataError
+from ..domain.transaction_measures import rebind_transaction_measures
 from ..domain.typed_values import result_type as referenced_result_type
 from ..engine.calendar_resolution import CalendarResolutionPlanner
 from ..engine.contracts import digest
@@ -12,6 +15,23 @@ class TransactionMeasureFactory:
 
     def __init__(self, measures):
         self.measures = measures
+
+    def refresh_documents(self, previous, transaction, objects):
+        """Prepare relocated references and their closed scalar calculation chains."""
+        rebound = rebind_transaction_measures(previous, transaction, objects)
+        replacements = {measure["objectId"]: measure for measure in rebound}
+        context = [replacements.get(obj["objectId"], obj) for obj in objects]
+        return [
+            self.measures.prepare_document(
+                {
+                    **deepcopy(measure),
+                    "version": measure["version"] + 1,
+                    "updatedAt": transaction["updatedAt"],
+                },
+                context,
+            )
+            for measure in rebound
+        ]
 
     def create_documents(self, transaction, selections, objects):
         if not selections:
@@ -80,7 +100,6 @@ class TransactionMeasureFactory:
                         "measureType": "referenced",
                         "transactionId": transaction["objectId"],
                         "valueColumnId": selection.valueColumnId,
-                        "nativePlanningLevelId": definition["planningLevelId"],
                         "editable": selection.editable,
                         "aggregation": selection.aggregation.model_dump(),
                         "allocation": selection.allocation.model_dump()

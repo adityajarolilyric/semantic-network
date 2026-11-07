@@ -1,3 +1,4 @@
+import { grainCatalog } from './grainCatalog'
 import { useEffect, useRef, useState } from 'react'
 import { MeasureEditor } from './editors/MeasureEditor'
 import { identity, type Measure, type Snapshot } from './types'
@@ -26,7 +27,8 @@ export function QuickCalculatedMeasure({
     business: { unit: null, aliases: [] },
     definition: {
       measureType: 'calculated',
-      nativePlanningLevelId: baseLevelId,
+      nativeGrainId: baseLevelId,
+      outputGrain: grainCatalog(data).find((grain) => grain.objectId === baseLevelId)?.owner,
       calculationType: 'AggregateFirst',
       resultType: { type: 'number', nullable: true },
       editable: false,
@@ -55,7 +57,7 @@ export function QuickCalculatedMeasure({
     >
       <h2 id="quick-measure-title">Create Measure</h2>
       <p className="meta-hint">
-        {data.planningLevels.find((l) => l.objectId === baseLevelId)?.name} · AggregateFirst
+        {grainCatalog(data).find((l) => l.objectId === baseLevelId)?.name} · AggregateFirst
       </p>
       {error && (
         <p role="alert" className="meta-error">

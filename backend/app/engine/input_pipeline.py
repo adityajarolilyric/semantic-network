@@ -1,11 +1,12 @@
 """Object transformation previews use the same input operators as execution."""
 
+from dataclasses import replace
 from enum import StrEnum
 
 from ..core.errors import MetadataError
-from ..warehouse.repository import quote_identifier as quote_identifier
+from ..warehouse.sql import quote_identifier as quote_identifier
 from .calendar_resolution import CalendarResolutionCompiler
-from .filters import dimension_filter_columns, FilterCompiler
+from .filters import FilterCompiler, dimension_filter_columns
 from .transaction_resolution import ResolvedTransaction
 
 
@@ -32,7 +33,6 @@ class InputPipelineCompiler:
             filters = owner["definition"].get("filters")
             if not filters:
                 return resolved
-            from dataclasses import replace
 
             query = FilterCompiler.apply(
                 "SELECT * FROM " + quote_identifier(resolved.node),

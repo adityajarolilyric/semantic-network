@@ -11,7 +11,7 @@ from backend.app.schemas.transactions import TransactionDefinition
 def config():
     return {
         "sourceId": "source",
-        "planningLevelId": "native",
+        "dimensionId": "native",
         "mappingMode": "resolve_multi_grain",
         "resolution": {
             "axes": [
@@ -38,7 +38,7 @@ def planner(definition=None):
     ).model_dump()
     level = {
         "objectId": "native",
-        "kind": "planningLevel",
+        "kind": "dimension",
         "definition": {
             "population": {"operation": "source", "sourceId": "source"},
             "grain": {
@@ -51,7 +51,7 @@ def planner(definition=None):
                     }
                 ],
             },
-            "dimensionBindings": [],
+            "memberBindings": [],
         },
     }
     cols = [
@@ -129,7 +129,7 @@ def test_date_range_contract_requires_time_policy_and_one_exclusive_axis():
     axis = d["resolution"]["axes"][0]
     axis["rules"] = []
     axis["dateRange"] = {
-        "dimensionId": "Time",
+        "memberCatalogId": "Time",
         "calendarKeyColumnId": "week",
         "startColumnId": "start",
         "endColumnId": "end",
@@ -147,7 +147,7 @@ def test_date_range_contract_requires_time_policy_and_one_exclusive_axis():
 def test_range_calendar_mapping_respects_the_bound_native_time_key():
     level = {
         "objectId": "native",
-        "kind": "planningLevel",
+        "kind": "dimension",
         "definition": {
             "population": {"operation": "source", "sourceId": "population"},
             "grain": {
@@ -160,11 +160,11 @@ def test_range_calendar_mapping_respects_the_bound_native_time_key():
                     }
                 ],
             },
-            "dimensionBindings": [
+            "memberBindings": [
                 {
-                    "dimensionId": "Time",
+                    "memberCatalogId": "Time",
                     "keyMappings": [
-                        {"grainColumnId": "week", "dimensionColumnId": "week"}
+                        {"grainColumnId": "week", "memberColumnId": "week"}
                     ],
                     "selectedAttributeColumnIds": [],
                 }
@@ -173,7 +173,7 @@ def test_range_calendar_mapping_respects_the_bound_native_time_key():
     }
     dimension = {
         "objectId": "Time",
-        "kind": "dimension",
+        "kind": "dimensionMembers",
         "isTimeDim": True,
         "definition": {
             "sourceId": "calendar",
@@ -200,7 +200,7 @@ def test_range_calendar_mapping_respects_the_bound_native_time_key():
         {
             "grainColumnId": "week",
             "dateRange": {
-                "dimensionId": "Time",
+                "memberCatalogId": "Time",
                 "calendarKeyColumnId": "day",
                 "startColumnId": "start",
                 "endColumnId": "end",

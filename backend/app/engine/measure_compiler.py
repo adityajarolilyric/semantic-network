@@ -1,19 +1,34 @@
-from dataclasses import dataclass
+from copy import deepcopy
+from dataclasses import dataclass, replace
 
 from sqlglot import parse_one
 
 from ..core.errors import MetadataError
-from ..warehouse.repository import quote_identifier as q
-from ..warehouse.repository import quote_literal as lit
+from ..formula_language.expressions import contains_counts, count_key
+from ..formula_language.sql import FormulaSqlCompiler
+from ..warehouse.sql import quote_identifier as q
+from ..warehouse.sql import quote_literal as lit
+from .aggregation import AggregationOperator, AggregationPlan
+from .compilation_checkpoint import CompilationCheckpoint
+from .measure_dependencies import MeasureDependencies
 from .compilation_context import CompilationContext
 from .contracts import Check, ExecutionPlan, RelationSchema
-from .filters import dimension_filter_columns
-from .planning_compiler import PlanningLevelCompiler
+from .counting import CountCompiler
+from .date_range_resolution import RangeMeasureAggregator
+from .dimension_compiler import DimensionSqlRenderer
+from .filters import FilterCompiler, dimension_filter_columns
+from .input_pipeline import InputPipelineCompiler, PreviewTarget
+from .snapshot_reads import snapshot_read
+from .shared_reads import combine_shared_reads
+from .native_aggregation import direct_transaction_group
+from .measure_contracts import COMPLETE as COMPLETE
+from .measure_contracts import VALUE as VALUE
 from .relationships import Coordinate, LevelRelationshipAnalyzer
+from .representations import RepresentationPolicy
 from .table_storage import GENERATION, column_sql, token
+from .transaction_resolution import ResolvedTransaction, TransactionResolutionCompiler
+from .typed_formulas import attribute_alias, attribute_coordinate
 
-VALUE = "__value"
-COMPLETE = "__complete"
 LEGACY_MEASURE_COMPILER_VERSION = (
     "measure-v4-aggregation-derived-round6-sqlglot-27.28.1"
 )
@@ -29,7 +44,7 @@ class MeasureNode:
     operation: str
 
 
-class MeasureCompiler(PlanningLevelCompiler):
+class MeasureCompiler(DimensionSqlRenderer):
     """Compile a measure dependency DAG into ClickHouse CTEs; no client SQL."""
 
     def __init__(
@@ -48,14 +63,14 @@ class MeasureCompiler(PlanningLevelCompiler):
             database, objects, managed, resolution_max_rows=resolution_max_rows
         )
         self.objects = self.context.objects
+        self.dependencies = MeasureDependencies(self.context.graph)
         self.input_checks = self.context.input_checks
-        self.measures = {
-            k: v for k, v in self.objects.items() if v["kind"] == "measure"
-        }
+        self.measures = self.context.graph.by_kind.get("measure", {})
         self.levels = {
-            k: v for k, v in self.objects.items() if v["kind"] == "planningLevel"
+            **self.context.graph.by_kind.get("dimension", {}),
+            **self.context.graph.by_kind.get("grain", {}),
         }
-        self.relationships = LevelRelationshipAnalyzer(objects)
+        self.relationships = LevelRelationshipAnalyzer(self.context.graph)
         self.populations, self.managed, self.base_id = populations, managed, base_id
         self.previous = previous
         self.resolution_profiles = resolution_profiles or {}
@@ -63,12 +78,16 @@ class MeasureCompiler(PlanningLevelCompiler):
         self.transaction_relations = {}
         self.object_inputs = self.context.object_inputs
         self.ctes = self.context.ctes
+        self.cte_dependencies = self.context.cte_dependencies
         self.cache, self.visiting, self.nodes = {}, set(), []
         self.coverage_nodes = {}
         self.mixed_nodes = set()
         self.assertions = self.input_checks
         self.max_nodes = 1024
         self._lookup_checks = set()
+        self.shared_relations = {}
+        self.native_groups = {}
+        self.native_workset = None
 
     def object_input(self, owner, relation):
         self.context.max_nodes = self.max_nodes
@@ -76,27 +95,19 @@ class MeasureCompiler(PlanningLevelCompiler):
 
     def stored_measure(self, mid, level, snapshots):
         artifact = snapshots.get(level, {})
-        if mid not in artifact.get("measureColumns", {}):
-            raise MetadataError(
-                "measure_path_unavailable",
-                "This measure was not materialised at this level in the captured generation.",
-            )
-        column = next(c for c in artifact["columns"] if c.get("measureId") == mid)
-        selected = [
-            q(artifact["keyColumns"][k]) + " AS " + q(k) for k in self.keys(level)
-        ]
-        selected.append(column_sql(column) + " AS " + q(VALUE))
-        body = f"FROM {self.table(artifact['physicalName'])} WHERE {q(GENERATION)}={lit(token(artifact))}"
-        coverage = artifact.get("coverageColumns", {}).get(mid)
-        flag = q(coverage) if coverage else "toUInt8(1)"
-        mixed_column = artifact.get("mixedColumns", {}).get(mid)
-        if mixed_column:
-            flag = f"if(coalesce({q(mixed_column)},0),toUInt8(2),{flag})"
-        selected.append(flag + " AS " + q(COMPLETE))
-        result = self.cte(f"SELECT {', '.join(selected)} {body}")
-        if coverage:
+        read = snapshot_read(
+            self.table(artifact.get("viewName", artifact["physicalName"]))
+            if artifact
+            else "__missing_snapshot",
+            artifact,
+            mid,
+            self.keys(level),
+        )
+        result = self.cte(read.query.sql(dialect="clickhouse"))
+        self.shared_relations[result] = read.query
+        if read.coverage:
             self.coverage_nodes[result] = True
-        if mixed_column:
+        if read.mixed:
             self.mixed_nodes.add(result)
         return result
 
@@ -105,7 +116,21 @@ class MeasureCompiler(PlanningLevelCompiler):
 
     def population(self, level):
         artifact = self.populations[level]
-        return f"SELECT {', '.join(column_sql(c) + ' AS ' + q(c['columnId']) for c in artifact['columns'])} FROM {self.table(artifact['physicalName'])} WHERE {q(GENERATION)}={lit(token(artifact))}"
+        if artifact.get("query"):
+            return artifact.get("logicalQuery", artifact["query"])
+        if artifact.get("storageMode") == "current" and artifact.get("viewName"):
+            artifact = {
+                **artifact,
+                "columns": [
+                    {**c, "storageName": c["name"]} for c in artifact["columns"]
+                ],
+            }
+        query = f"SELECT {', '.join(column_sql(c) + ' AS ' + q(c['columnId']) for c in artifact['columns'])} FROM {self.table(artifact.get('viewName', artifact['physicalName']))}"
+        return (
+            query
+            if artifact.get("storageMode") == "current"
+            else query + f" WHERE {q(GENERATION)}={lit(token(artifact))}"
+        )
 
     def cte(self, sql):
         self.context.max_nodes = self.max_nodes
@@ -169,30 +194,16 @@ class MeasureCompiler(PlanningLevelCompiler):
         return result
 
     def resolve_transaction(self, transaction_id):
-        from .transaction_resolution import TransactionResolutionCompiler
-
         if transaction_id not in self.transaction_relations:
             tx = self.objects[transaction_id]
             if tx["definition"].get("mappingMode") != "resolve_multi_grain":
-                from .calendar_resolution import CalendarResolutionCompiler
-                from .transaction_resolution import ResolvedTransaction
-
-                if tx["definition"].get("calendarResolution"):
-                    c = CalendarResolutionCompiler(self, tx)
-                    node = c.compile()
-                    input_cols = c.p.schema()
-                else:
-                    table, input_cols = self.object_input(
-                        tx, self.managed[tx["definition"]["sourceId"]]
-                    )
-                    node = self.cte(
-                        "SELECT "
-                        + ", ".join(
-                            q(c["name"]) + " AS " + q(c["columnId"]) for c in input_cols
-                        )
-                        + " FROM "
-                        + table
-                    )
+                target = (
+                    PreviewTarget.CALENDAR_INPUT
+                    if tx["definition"].get("calendarResolution")
+                    else PreviewTarget.PIVOT_INPUT
+                )
+                resolved_input = InputPipelineCompiler(self).compile(tx, target)
+                node, input_cols = resolved_input.node, resolved_input.columns
                 cols = [{**col, "storageName": col["columnId"]} for col in input_cols]
                 result = ResolvedTransaction(
                     node, cols, tx["definition"]["keyMappings"], node, [node], node
@@ -218,10 +229,6 @@ class MeasureCompiler(PlanningLevelCompiler):
         return self.transaction_relations[transaction_id]
 
     def filter_transaction(self, transaction, resolved):
-        from dataclasses import replace
-
-        from .filters import FilterCompiler
-
         filters = transaction["definition"].get("filters")
         if not filters:
             return resolved
@@ -232,7 +239,7 @@ class MeasureCompiler(PlanningLevelCompiler):
 
     def compile_native_measure(self, measure):
         d = measure["definition"]
-        level = d["nativePlanningLevelId"]
+        level = d["nativeGrainId"]
         tx = self.objects[d["transactionId"]]["definition"]
         if tx.get("mappingMode") == "resolve_multi_grain" or (
             tx.get("calendarResolution") or tx.get("pivot") or tx.get("filters")
@@ -248,33 +255,18 @@ class MeasureCompiler(PlanningLevelCompiler):
             table = self.table(source["physicalName"])
             columns = self.source_columns(tx["sourceId"])
             mappings = tx["keyMappings"]
-        value = q(columns[d["valueColumnId"]]["name"])
-        group = ", ".join(q(columns[m["sourceColumnId"]]["name"]) for m in mappings)
-        selected = ", ".join(
-            q(columns[m["sourceColumnId"]]["name"]) + " AS " + q(m["grainColumnId"])
-            for m in mappings
-        )
-        agg = self.aggregate(
-            self.widen(value, measure), d["aggregation"]["nonTime"], d["aggregation"]
-        )
         typed = d["resultType"]["type"] in {"string", "date", "boolean"}
-        mixed = (
-            f"toUInt8(uniqExact({self.widen(value, measure)})>1)"
-            if typed and d["aggregation"]["nonTime"] == "single_value"
-            else "toUInt8(0)"
-        )
         grouped = None
+        value_column, mixed_column = VALUE, "__mixed"
         if tx.get("mappingMode") == "resolve_multi_grain" or (
             tx.get("calendarResolution") or tx.get("pivot") or tx.get("filters")
         ):
-            from .date_range_resolution import RangeMeasureAggregator
-
             grouped = RangeMeasureAggregator(
                 self, self.objects[d["transactionId"]], resolved, measure
             ).compile()
         if grouped is None:
-            grouped = self.cte(
-                f"SELECT {selected}, {agg} AS {q(VALUE)}, {mixed} AS __mixed, toUInt8(1) AS __present FROM {table} GROUP BY {group}"
+            grouped, value_column, mixed_column = direct_transaction_group(
+                self, measure, table, columns, mappings
             )
         self.assertions.append(
             Check(
@@ -284,8 +276,9 @@ class MeasureCompiler(PlanningLevelCompiler):
         )
         absent = "0" if d["missingTransactionValue"] == "zero" else "NULL"
         result = self.cte(
-            f"SELECT {', '.join('p.' + q(k) + ' AS ' + q(k) for k in self.keys(level))}, if(coalesce(a.__present,0)=0,{absent},a.{q(VALUE)}) AS {q(VALUE)}{', if(coalesce(a.__mixed,0),toUInt8(2),toUInt8(1)) AS ' + q(COMPLETE) if typed else ''} FROM ({self.population(level)}) p LEFT JOIN {q(grouped)} a ON {self.join_keys('p', 'a', level)}"
+            f"SELECT {', '.join('p.' + q(k) + ' AS ' + q(k) for k in self.keys(level))}, if(coalesce(a.__present,0)=0,{absent},a.{q(value_column)}) AS {q(VALUE)}, {f'if(coalesce(a.{q(mixed_column)},0),toUInt8(2),toUInt8(1))' if typed else 'toUInt8(1)'} AS {q(COMPLETE)} FROM ({self.population(level)}) p LEFT JOIN {q(grouped)} a ON {self.join_keys('p', 'a', level)}"
         )
+        self.shared_relations[result] = parse_one(self.ctes[result], read="clickhouse")
 
         if typed:
             self.mixed_nodes.add(result)
@@ -304,7 +297,7 @@ class MeasureCompiler(PlanningLevelCompiler):
             + q(COMPLETE),
         ]
         joins = []
-        dimensions = {}
+        dimension_members = {}
         for alias, coordinate in coordinates.items():
             if coordinate is None:
                 raise MetadataError(
@@ -317,17 +310,17 @@ class MeasureCompiler(PlanningLevelCompiler):
                 dim_id = coordinate.dimension_id
                 dim = self.objects[dim_id]
                 definition = dim["definition"]
-                if dim_id not in dimensions:
+                if dim_id not in dimension_members:
                     binding = next(
                         b
-                        for b in self.levels[level]["definition"]["dimensionBindings"]
-                        if b["dimensionId"] == dim_id
+                        for b in self.levels[level]["definition"]["memberBindings"]
+                        if b["memberCatalogId"] == dim_id
                     )
                     source = self.managed[definition["sourceId"]]
                     input_table, input_cols = self.object_input(dim, source)
                     columns = {c["columnId"]: c for c in input_cols}
-                    alias_dim = "lookup_" + str(len(dimensions))
-                    dimensions[dim_id] = alias_dim
+                    alias_dim = "lookup_" + str(len(dimension_members))
+                    dimension_members[dim_id] = alias_dim
                     dim_sql = (
                         "SELECT "
                         + ", ".join(
@@ -343,7 +336,7 @@ class MeasureCompiler(PlanningLevelCompiler):
                         dim_sql = f"SELECT * FROM ({dim_sql}) WHERE {self.filter_sql(definition['filters'], dimension_filter_columns(definition, input_cols))}"
                     dim_sql = self.reduced_lookup(
                         dim_sql,
-                        [m["dimensionColumnId"] for m in binding["keyMappings"]],
+                        [m["memberColumnId"] for m in binding["keyMappings"]],
                         [
                             c.dimension_column_id
                             for c in coordinates.values()
@@ -356,7 +349,7 @@ class MeasureCompiler(PlanningLevelCompiler):
                         + " = "
                         + alias_dim
                         + "."
-                        + q(m["dimensionColumnId"])
+                        + q(m["memberColumnId"])
                         for m in binding["keyMappings"]
                     )
                     joins.append(
@@ -369,7 +362,7 @@ class MeasureCompiler(PlanningLevelCompiler):
                     if marker not in self._lookup_checks:
                         self._lookup_checks.add(marker)
                         keys = ", ".join(
-                            q(m["dimensionColumnId"]) for m in binding["keyMappings"]
+                            q(m["memberColumnId"]) for m in binding["keyMappings"]
                         )
                         self.assertions.append(
                             Check(
@@ -378,13 +371,13 @@ class MeasureCompiler(PlanningLevelCompiler):
                             )
                         )
                 expression = (
-                    dimensions[dim_id] + "." + q(coordinate.dimension_column_id)
+                    dimension_members[dim_id] + "." + q(coordinate.dimension_column_id)
                 )
             selected.append(expression + " AS " + q(alias))
         # Force lookup match guards even when an outer aggregate prunes unused columns.
         guards = [
             f"throwIf(coalesce({a}.__coordinate_match,0)=0,'SEMANTIC_UNMATCHED_DIMENSION')=0"
-            for a in dimensions.values()
+            for a in dimension_members.values()
         ]
         return (
             f"SELECT {', '.join(selected)} FROM {q(query)} r INNER JOIN ({self.population(level)}) p ON {self.join_keys('r', 'p', level)} {' '.join(joins)}"
@@ -392,7 +385,7 @@ class MeasureCompiler(PlanningLevelCompiler):
         )
 
     def ordering(self, level):
-        for dim in self.relationships.dimensions.values():
+        for dim in self.relationships.dimension_members.values():
             if not dim["isTimeDim"]:
                 continue
             cid = dim["definition"]["time"]["orderingColumnId"]
@@ -400,7 +393,7 @@ class MeasureCompiler(PlanningLevelCompiler):
             symbol = Coordinate(
                 frozenset(
                     {
-                        ("dimension", dim["objectId"], cid),
+                        ("dimensionMembers", dim["objectId"], cid),
                         (
                             "source",
                             dim["definition"]["sourceId"],
@@ -439,51 +432,21 @@ class MeasureCompiler(PlanningLevelCompiler):
         target_ids = ["__target_" + k for k in self.keys(target)]
         time_ids = [k for k in self.keys(source) if source_outputs[k].is_time]
         non_time_ids = [k for k in self.keys(source) if not source_outputs[k].is_time]
-        stages = (
-            ["nonTime", "time"]
-            if policy.get("order", "nonTimeThenTime") == "nonTimeThenTime"
-            else ["time", "nonTime"]
-        )
-        pending = {"nonTime": non_time_removed, "time": time_removed}
-        for stage in stages:
-            if not pending[stage]:
-                continue
-            pending[stage] = False
-            extra = (
-                time_ids
-                if stage == "nonTime" and pending["time"]
-                else non_time_ids
-                if stage == "time" and pending["nonTime"]
-                else []
-            )
-            groups = list(dict.fromkeys([*target_ids, *extra]))
-            value = self.aggregate(
-                "aggregation_input." + q(VALUE),
-                policy[stage],
+        aggregation = AggregationOperator.compile(
+            self,
+            data,
+            AggregationPlan(
+                tuple(target_ids),
+                tuple(time_ids),
+                tuple(non_time_ids),
+                time_removed,
+                non_time_removed,
                 policy,
-                q("__time_order") if order_symbol else None,
-                "aggregation_input." + q(COMPLETE) if has_mixed else None,
-            )
-            order_extra = (
-                ", min(__time_order) AS __time_order"
-                if order_symbol and stage == "nonTime" and pending["time"]
-                else ""
-            )
-            from .value_states import mixed_group
-
-            conflict = (
-                mixed_group(
-                    policy[stage],
-                    "aggregation_input." + q(VALUE),
-                    "aggregation_input." + q(COMPLETE),
-                    q("__time_order") if order_symbol else None,
-                )
-                if has_mixed or policy[stage] == "single_value"
-                else "0"
-            )
-            has_mixed = has_mixed or policy[stage] == "single_value"
-            flag = f"if({conflict},toUInt8(2),min(aggregation_input.{q(COMPLETE)}))"
-            data = f"SELECT {', '.join(q(k) for k in groups)}, if(({conflict}) OR min(aggregation_input.{q(COMPLETE)})=0,NULL,{value}) AS {q(VALUE)}, {flag} AS {q(COMPLETE)}{order_extra} FROM ({data}) AS aggregation_input GROUP BY {', '.join(q(k) for k in groups)}"
+                bool(order_symbol),
+            ),
+            has_mixed,
+        )
+        data, has_mixed = aggregation.sql, aggregation.has_mixed
 
         mapped = self.cte(
             f"SELECT {', '.join(q('__target_' + k) + ' AS ' + q(k) for k in self.keys(target))}, {q(VALUE)}, {q(COMPLETE)} FROM ({data})"
@@ -528,7 +491,7 @@ class MeasureCompiler(PlanningLevelCompiler):
         self.assertions.append(
             Check(
                 "no_disaggregation_children",
-                f"SELECT p.* FROM {q(parent)} p LEFT JOIN (SELECT {grouped},toUInt8(1) AS __matched FROM {q(child)} GROUP BY {grouped}) c ON {on} WHERE coalesce(c.__matched,0)=0 AND isNotNull(p.{q(VALUE)}) LIMIT 20",
+                f"SELECT {', '.join('p.' + q(k) for k in [*self.keys(source), VALUE])} FROM {q(parent)} p LEFT JOIN (SELECT {grouped},toUInt8(1) AS __matched FROM {q(child)} GROUP BY {grouped}) c ON {on} WHERE coalesce(c.__matched,0)=0 AND isNotNull(p.{q(VALUE)}) LIMIT 20",
             )
         )
         outputs = self.relationships.outputs(target)
@@ -585,8 +548,6 @@ class MeasureCompiler(PlanningLevelCompiler):
         return result
 
     def compile_formula(self, node, measure, target, refs):
-        from ..formula_language.sql import FormulaSqlCompiler
-
         return (
             FormulaSqlCompiler(self, measure, target, refs)
             .compile(node)
@@ -603,14 +564,10 @@ class MeasureCompiler(PlanningLevelCompiler):
             if node["type"] == "measureRef":
                 refs.setdefault(node["measureId"], "d" + str(len(refs)))
             elif node["type"] == "count":
-                from ..formula_language.expressions import count_key
-
                 key = count_key(node)
                 counts[key] = node
                 refs.setdefault(key, "d" + str(len(refs)))
             elif node["type"] == "attributeRef":
-                from .typed_formulas import attribute_alias, attribute_coordinate
-
                 attributes[attribute_alias(node)] = attribute_coordinate(
                     self, node, target
                 )
@@ -626,11 +583,9 @@ class MeasureCompiler(PlanningLevelCompiler):
         dependencies = {}
         for mid, alias in refs.items():
             if mid in counts:
-                from .counting import CountCompiler
-
                 count_cache_key = (
                     mid,
-                    measure["definition"]["nativePlanningLevelId"],
+                    measure["definition"]["nativeGrainId"],
                     target,
                 )
                 if count_cache_key not in self.cache:
@@ -639,7 +594,21 @@ class MeasureCompiler(PlanningLevelCompiler):
                     )
                 dep = self.cache[count_cache_key]
             else:
-                dep = self.compile_measure_at_level(mid, target)
+                try:
+                    dep = self.compile_measure_at_level(mid, target)
+                except MetadataError as error:
+                    if error.code not in {
+                        "measure_path_unavailable",
+                        "formula_grain_unavailable",
+                    }:
+                        raise
+                    name = self.measures.get(mid, {}).get("name", "Missing measure")
+                    grain = self.levels[target].get("name", "requested grain")
+                    raise MetadataError(
+                        error.code,
+                        f'"{measure["name"]}" requires "{name}" at "{grain}": {error.message}',
+                        details=error.details,
+                    ) from error
             dependencies[mid] = dep
             joins.append(
                 f"LEFT JOIN {q(dep)} {alias} ON " + self.join_keys("p", alias, target)
@@ -684,6 +653,7 @@ class MeasureCompiler(PlanningLevelCompiler):
         return result
 
     def compile_seed_measure(self, measure_id):
+        self.dependencies.ordered(measure_id)
         key = (measure_id, "__native_seed")
         if key in self.cache:
             return self.cache[key]
@@ -699,7 +669,7 @@ class MeasureCompiler(PlanningLevelCompiler):
                 self.compile_native_measure(measure)
                 if measure["definition"]["measureType"] == "referenced"
                 else self.compile_calculated_measure(
-                    measure, measure["definition"]["nativePlanningLevelId"]
+                    measure, measure["definition"]["nativeGrainId"]
                 )
             )
             self.cache[key] = result
@@ -708,6 +678,7 @@ class MeasureCompiler(PlanningLevelCompiler):
             self.visiting.remove(key)
 
     def compile_measure_at_level(self, measure_id, target):
+        self.dependencies.ordered(measure_id)
         key = (measure_id, target)
         if key in self.cache:
             return self.cache[key]
@@ -720,19 +691,17 @@ class MeasureCompiler(PlanningLevelCompiler):
         try:
             measure = self.measures[measure_id]
             d = measure["definition"]
-            native = d["nativePlanningLevelId"]
+            native = d["nativeGrainId"]
             relation = self.relationships.analyze(native, target)["relationship"]
             if d.get("calculationType") == "AggregateFirst":
-                from ..formula_language.expressions import contains_counts
-
                 if contains_counts(d["formula"]["expression"]):
-                    counting = d["nativePlanningLevelId"]
+                    counting = d["nativeGrainId"]
                     if not counting or self.relationships.analyze(counting, target)[
                         "relationship"
                     ] not in {"same", "equivalent", "roll_up"}:
                         raise MetadataError(
                             "measure_path_unavailable",
-                            "Counts can only recalculate at the measure’s Output Planning Level or coarser.",
+                            "Counts can only recalculate at the measure’s Output Dimension or coarser.",
                         )
                     relation = "same"
                 via_base = all(
@@ -901,7 +870,6 @@ class MeasureCompiler(PlanningLevelCompiler):
             return self.cast_value(expression, measure)
         # Unavailable finer cells are separate from the native NULL contract.
         # Preserve the guard on complete cells; unknown distributions may be NULL.
-        from copy import deepcopy
 
         nullable = deepcopy(measure)
         nullable["definition"]["resultType"]["nullable"] = True
@@ -911,19 +879,13 @@ class MeasureCompiler(PlanningLevelCompiler):
             value = f"if(({guard})=0,{value},NULL)"
         return value, typ
 
-    def compile_level(self, target):
+    def compile_level(self, target, *, include_checks=True):
         available, unavailable = {}, {}
+        placement = RepresentationPolicy(self.context.graph, self.base_id)
         for mid, measure in self.measures.items():
-            checkpoint = (
-                dict(self.ctes),
-                dict(self.cache),
-                dict(self.transaction_relations),
-                list(self.assertions),
-                set(self._lookup_checks),
-                list(self.nodes),
-                dict(self.coverage_nodes),
-                set(self.mixed_nodes),
-            )
+            if not placement.includes(mid, target):
+                continue
+            checkpoint = CompilationCheckpoint.capture(self)
             try:
                 available[mid] = self.compile_measure_at_level(mid, target)
             except MetadataError as exc:
@@ -932,18 +894,9 @@ class MeasureCompiler(PlanningLevelCompiler):
                     "formula_grain_unavailable",
                 ):
                     raise
-                (
-                    self.ctes,
-                    self.cache,
-                    self.transaction_relations,
-                    self.assertions,
-                    self._lookup_checks,
-                    self.nodes,
-                    self.coverage_nodes,
-                    self.mixed_nodes,
-                ) = checkpoint
+                checkpoint.restore()
                 unavailable[mid] = {"code": exc.code, "message": exc.message}
-                if measure["definition"]["nativePlanningLevelId"] == target:
+                if measure["definition"]["nativeGrainId"] == target:
                     raise
         columns = [dict(c) for c in self.populations[target]["columns"]]
         used = {c["name"] for c in columns}
@@ -973,9 +926,7 @@ class MeasureCompiler(PlanningLevelCompiler):
                     or measure["definition"]["resultType"]["nullable"],
                     "role": "measure",
                     "measureId": mid,
-                    "nativePlanningLevelId": measure["definition"][
-                        "nativePlanningLevelId"
-                    ],
+                    "nativeGrainId": measure["definition"]["nativeGrainId"],
                     "editableAtLevel": self.relationships.can_edit(measure, target),
                 }
             )
@@ -1022,9 +973,20 @@ class MeasureCompiler(PlanningLevelCompiler):
         sql = self.with_sql(
             f"SELECT {', '.join(selected)} FROM ({self.population(target)}) p {' '.join(joins)}"
         )
-        checks = tuple(Check(c.code, self.with_sql(c.sql)) for c in self.assertions)
+        checks = tuple(
+            Check(
+                c.code,
+                combine_shared_reads(
+                    parse_one(self.with_sql(c.sql), read="clickhouse"),
+                    self.shared_relations,
+                ).sql(dialect="clickhouse"),
+            )
+            for c in (self.assertions if include_checks else ())
+        )
         return ExecutionPlan(
-            parse_one(sql, read="clickhouse"),
+            combine_shared_reads(
+                parse_one(sql, read="clickhouse"), self.shared_relations
+            ),
             checks,
             RelationSchema(tuple(columns)),
             MEASURE_COMPILER_VERSION,

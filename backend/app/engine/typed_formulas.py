@@ -1,6 +1,7 @@
 """Stable attribute aliases and resolved coordinates for formula evaluation."""
 
 from ..core.errors import MetadataError
+from ..domain.grains import transaction_column_reference
 from .contracts import digest
 from .relationships import Coordinate
 
@@ -10,12 +11,17 @@ def attribute_alias(node):
 
 
 def attribute_coordinate(host, node, target):
-    if node.get("dimensionId"):
+    if node.get("memberCatalogId"):
         coordinate = Coordinate(
-            frozenset({("dimension", node["dimensionId"], node["columnId"])})
+            frozenset({("dimensionMembers", node["memberCatalogId"], node["columnId"])})
         )
+    elif node.get("transactionId"):
+        grain_id, column_id = transaction_column_reference(
+            node["transactionId"], node["columnId"], list(host.objects.values())
+        )
+        coordinate = host.relationships.outputs(grain_id).get(column_id)
     else:
-        coordinate = host.relationships.outputs(node["planningLevelId"]).get(
+        coordinate = host.relationships.outputs(node["dimensionId"]).get(
             node["columnId"]
         )
     resolved = host.relationships.resolve(target, coordinate) if coordinate else None

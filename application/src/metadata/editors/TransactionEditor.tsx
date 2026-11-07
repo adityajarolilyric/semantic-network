@@ -1,3 +1,5 @@
+import { ViewSqlButton } from '../../components/ViewSqlButton'
+import { useDimensionCatalog } from '../useDimensionCatalog'
 import {
   TransactionMeasureEditor,
   measureValueColumns,
@@ -7,12 +9,12 @@ import {
 } from './TransactionMeasureEditor'
 import { FilterEditor } from './FilterEditor'
 import { useFilterColumns } from './useFilterColumns'
-import { TransactionTransformations } from './TransactionTransformations'
+import { TransformationsPanel } from './TransformationsPanel'
 import { ObjectPivotEditor } from './ObjectPivotEditor'
 import { RawDataPreview } from './RawDataPreview'
 import { useEffect, useRef } from 'react'
 import { metadataApi } from '../api'
-import { PlanningResult, type PlanningTableStatus } from '../PlanningTablePanel'
+import { PlanningResult, type DimensionTableStatus } from '../DimensionTablePanel'
 import {
   TransactionResolutionEditor,
   newResolution,
@@ -21,21 +23,8 @@ import {
 import { FieldHelp } from '../../components/FieldHelp'
 import { useState } from 'react'
 import { TransactionCalendarEditor } from './TransactionCalendarEditor'
-import { inputOf, type PlanningLevel, type SourceColumn, type Transaction } from '../types'
-import {
-  Actions,
-  IdentityFields,
-  options,
-  Select,
-  Check,
-  Checks,
-  Text,
-  type EditorProps,
-} from './Fields'
-type GrainCreated = {
-  transaction: Transaction & { version: number }
-  planningLevel: PlanningLevel & { version: number }
-}
+import { type Dimension, type SourceColumn, type Transaction } from '../types'
+import { Actions, IdentityFields, options, Select, Check, Checks, type EditorProps } from './Fields'
 export function TransactionEditor({
   initial,
   data,
@@ -44,7 +33,6 @@ export function TransactionEditor({
   onCancel,
   busy,
   base,
-  onCreated,
 }: EditorProps<Transaction> & {
   base?: string
   onCreated?: (transaction: Transaction & { version: number }, close: boolean) => void
@@ -64,26 +52,20 @@ export function TransactionEditor({
         }
       : initial,
   )
+  const dimensionMembers = useDimensionCatalog(data, base)
   const [measureDrafts, setMeasureDrafts] = useState<TransactionMeasureDraft[]>([])
-  const [createGrain, setCreateGrain] = useState(!editing)
-  const [grainKeys, setGrainKeys] = useState<string[]>([])
-  const [grainName, setGrainName] = useState('')
+  const [createGrain, setCreateGrain] = useState(!editing || !initial.definition.dimensionId)
+  const [grainKeys, setGrainKeys] = useState<string[]>(
+    initial.definition.grainColumnIds ??
+      initial.definition.keyMappings.map((mapping) => mapping.sourceColumnId),
+  )
   const [onboardingBusy, setOnboardingBusy] = useState(false)
-  const [onboardingError, setOnboardingError] = useState('')
-  const [createdLevel, setCreatedLevel] = useState<PlanningLevel | null>(null)
-  const onboardingRequest = useRef(false)
-  const mounted = useRef(true)
-  useEffect(() => {
-    mounted.current = true
-    return () => {
-      mounted.current = false
-    }
-  }, [])
+  const [createdLevel, setCreatedLevel] = useState<Dimension | null>(null)
   const [calendarColumns, setCalendarColumns] = useState<SourceColumn[]>([])
   const [pivotColumns, setPivotColumns] = useState<SourceColumn[] | null>(null)
   const form = useRef<HTMLFormElement>(null)
   const [preview, setPreview] = useState<
-    (PlanningTableStatus & { diagnostics?: Record<string, number> }) | null
+    (DimensionTableStatus & { diagnostics?: Record<string, number> }) | null
   >(null)
   const [previewBusy, setPreviewBusy] = useState(false)
   const [error, setError] = useState('')
@@ -94,7 +76,7 @@ export function TransactionEditor({
   const d = value.definition
   const update = (patch: Partial<typeof d>) =>
     set((current) => ({ ...current, definition: { ...current.definition, ...patch } }))
-  const level = data.planningLevels.find((l) => l.objectId === d.planningLevelId) ?? createdLevel
+  const level = dimensionMembers.levels.find((l) => l.objectId === d.dimensionId) ?? createdLevel
   const source = data.sources.find((s) => s.objectId === d.sourceId)
   const pivotReady = !d.pivot?.enabled || pivotColumns !== null
   const inputColumns = d.pivot?.enabled ? (pivotColumns ?? []) : (source?.definition.columns ?? [])
@@ -141,77 +123,30 @@ export function TransactionEditor({
     calendarResolution: d.calendarResolution ?? null,
     filters: d.filters ?? null,
     grainColumnIds: grainKeys,
-    planningLevelName:
-      grainName || ((value.name || source?.name || 'Transaction') + ' grain').slice(0, 200),
   })
   async function saveTransaction() {
-    setOnboardingError('')
-    if (!measuresReady) return
-    if (!createGrain && !editing && measureDrafts.length) {
-      if (!base || onboardingRequest.current) return
-      onboardingRequest.current = true
-      setOnboardingBusy(true)
-      setError('')
-      try {
-        const created = await metadataApi.request<Transaction & { version: number }>(
-          base + '/transactions',
-          'POST',
-          { ...value, measures: transactionMeasureSelections(measureDrafts) },
-        )
-        if (mounted.current) {
-          onCreated?.(created, true)
-          if (!onCreated) onCancel()
+    if (!measuresReady || (createGrain && !grainKeys.length)) return
+    const definition = createGrain
+      ? {
+          ...d,
+          dimensionId: null,
+          grainColumnIds: grainKeys,
+          keyMappings: [],
+          mappingMode: 'direct' as const,
+          resolution: null,
         }
-      } catch (error) {
-        if (mounted.current)
-          setError(
-            error instanceof Error ? error.message : 'Could not create transaction and measures.',
-          )
-      } finally {
-        onboardingRequest.current = false
-        setOnboardingBusy(false)
-      }
-      return
-    }
-    if (!createGrain) {
-      await onSave(value)
-      return
-    }
-    if (!base || onboardingRequest.current) return
-    onboardingRequest.current = true
-    setOnboardingBusy(true)
-    let created: GrainCreated | null = null
-    try {
-      created = await metadataApi.request<GrainCreated>(
-        base + '/transactions/from-grain',
-        'POST',
-        grainPayload(true),
-      )
-      setCreatedLevel(created.planningLevel)
-      await metadataApi.managedOperation(
-        base + '/planning-levels/' + created.planningLevel.objectId + '/build',
-        undefined,
-        created.planningLevel.version,
-      )
-      if (mounted.current) {
-        onCreated?.(created.transaction, true)
-        if (!onCreated) onCancel()
-      }
-    } catch (error) {
-      if (!mounted.current) return
-      if (created) {
-        set(inputOf(created.transaction))
-        setCreateGrain(false)
-        onCreated?.(created.transaction, false)
-        setOnboardingError(
-          'Metadata was saved, but the planning-level build failed. Correct or rebuild it in Planning Levels. ' +
-            (error instanceof Error ? error.message : ''),
-        )
-      } else setError(error instanceof Error ? error.message : 'Could not create planning level.')
-    } finally {
-      onboardingRequest.current = false
-      setOnboardingBusy(false)
-    }
+      : {
+          ...d,
+          grainColumnIds:
+            d.mappingMode === 'direct'
+              ? d.keyMappings.map((mapping) => mapping.sourceColumnId)
+              : [],
+        }
+    await onSave({
+      ...value,
+      definition,
+      ...(!editing ? { measures: transactionMeasureSelections(measureDrafts) } : {}),
+    })
   }
   return (
     <form
@@ -244,7 +179,8 @@ export function TransactionEditor({
           />
         </div>
 
-        <TransactionTransformations
+        <TransformationsPanel
+          label="Transaction transformations"
           tabs={[
             {
               label: 'Filters',
@@ -289,45 +225,63 @@ export function TransactionEditor({
                 <>
                   {!d.resolution?.axes.some((a) => a.dateRange) && (
                     <>
-                      <Check
-                        label="Resolve a date range using a calendar"
-                        value={!!d.calendarResolution}
-                        disabled={!pivotReady}
-                        onChange={(enabled) => {
-                          setCalendarColumns([])
-                          update({
-                            calendarResolution: enabled
-                              ? {
-                                  dimensionId: '',
-                                  startColumnId: '',
-                                  endColumnId: '',
-                                  selectedColumnIds: [],
-                                }
-                              : null,
-                            resolution: d.resolution
-                              ? {
-                                  ...d.resolution,
-                                  values: d.resolution.values.map((v) => ({
-                                    ...v,
-                                    timeMode: enabled ? 'copy' : null,
-                                  })),
-                                }
-                              : d.resolution,
-                          })
-                        }}
-                      />
-                      {d.calendarResolution && source && pivotReady && (
+                      {source && pivotReady && (
                         <TransactionCalendarEditor
-                          value={d.calendarResolution}
-                          onChange={(calendarResolution) => update({ calendarResolution })}
+                          configured={!!d.calendarResolution}
+                          value={
+                            d.calendarResolution ?? {
+                              memberCatalogId: '',
+                              startColumnId: '',
+                              endColumnId: '',
+                              selectedColumnIds: [],
+                            }
+                          }
+                          onChange={(calendarResolution) => {
+                            setCalendarColumns([])
+                            update({
+                              calendarResolution,
+                              resolution: d.resolution
+                                ? {
+                                    ...d.resolution,
+                                    values: d.resolution.values.map((v) => ({
+                                      ...v,
+                                      timeMode: 'copy',
+                                    })),
+                                  }
+                                : d.resolution,
+                            })
+                          }}
                           columns={inputColumns}
                           pivot={d.pivot}
                           onColumns={setCalendarColumns}
                           base={base}
                           sourceId={source.objectId}
                           transactionId={value.objectId}
-                          levelId={d.planningLevelId}
+                          levelId={d.dimensionId ?? ''}
                         />
+                      )}
+                      {d.calendarResolution && (
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          onClick={() => {
+                            setCalendarColumns([])
+                            update({
+                              calendarResolution: null,
+                              resolution: d.resolution
+                                ? {
+                                    ...d.resolution,
+                                    values: d.resolution.values.map((v) => ({
+                                      ...v,
+                                      timeMode: null,
+                                    })),
+                                  }
+                                : d.resolution,
+                            })
+                          }}
+                        >
+                          Clear date resolution
+                        </button>
                       )}
                     </>
                   )}
@@ -348,8 +302,8 @@ export function TransactionEditor({
             <div className="measure-type-switch">
               {(
                 [
-                  ['create_grain', 'No Planning Level'],
-                  ['direct', 'Map to Planning Level'],
+                  ['create_grain', 'Grain keys only'],
+                  ['direct', 'Bind to a Dimension'],
                 ] as const
               ).map(([mode, label]) => (
                 <label className="measure-type-option" key={mode}>
@@ -358,7 +312,6 @@ export function TransactionEditor({
                     name="transaction-mapping"
                     value={mode}
                     checked={createGrain ? mode === 'create_grain' : mode === 'direct'}
-                    disabled={mode === 'create_grain' && editing}
                     onChange={() => {
                       setCreateGrain(mode === 'create_grain')
                       update({
@@ -380,23 +333,32 @@ export function TransactionEditor({
           </fieldset>
           {!createGrain && (
             <Select
-              label="Native planning level"
-              value={d.planningLevelId}
-              items={options(data.planningLevels)}
-              onChange={(planningLevelId) => {
-                const l = data.planningLevels.find((l) => l.objectId === planningLevelId)
-                update({
-                  planningLevelId,
-                  resolution:
-                    d.mappingMode === 'resolve_multi_grain' && l ? newResolution(l) : null,
-                  keyMappings:
-                    d.mappingMode === 'resolve_multi_grain'
-                      ? []
-                      : (l?.definition.grain.keyIds ?? []).map((grainColumnId) => ({
-                          grainColumnId,
-                          sourceColumnId: '',
-                        })),
-                })
+              label="Dimension"
+              value={dimensionMembers.selection(d.dimensionId ?? '')}
+              items={dimensionMembers.items}
+              onChange={async (memberCatalogId) => {
+                setOnboardingBusy(true)
+                setError('')
+                try {
+                  const l = await dimensionMembers.resolve(memberCatalogId)
+                  setCreatedLevel(l)
+                  update({
+                    dimensionId: l.objectId,
+                    resolution:
+                      d.mappingMode === 'resolve_multi_grain' && l ? newResolution(l) : null,
+                    keyMappings:
+                      d.mappingMode === 'resolve_multi_grain'
+                        ? []
+                        : (l?.definition.grain.keyIds ?? []).map((grainColumnId) => ({
+                            grainColumnId,
+                            sourceColumnId: '',
+                          })),
+                  })
+                } catch (error) {
+                  setError(error instanceof Error ? error.message : 'Could not select Dimension.')
+                } finally {
+                  setOnboardingBusy(false)
+                }
               }}
             />
           )}
@@ -422,19 +384,9 @@ export function TransactionEditor({
           {createGrain ? (
             <>
               <p className="meta-hint">
-                Choose the columns that define one planning intersection. Save metadata creates and
-                builds a planning level with distinct observed combinations, then links this
-                Transaction automatically. Transaction records are preserved for measure
-                aggregation.
+                Select the grain keys used to group measure values. Multiple source records at the
+                same grain are allowed.
               </p>
-              <Text
-                label="Planning level name"
-                value={
-                  grainName ||
-                  ((value.name || source?.name || 'Transaction') + ' grain').slice(0, 200)
-                }
-                onChange={setGrainName}
-              />
               <Checks
                 label="Transaction grain columns"
                 selected={grainKeys}
@@ -444,11 +396,16 @@ export function TransactionEditor({
                 }))}
                 onChange={setGrainKeys}
               />
-              <p className="meta-hint">
-                The population uses this Pivot and Date resolution output before selecting distinct
-                grain keys. You can edit it or add Dimension bindings in Planning Levels later.
-                Future Transactions do not automatically expand its population.
-              </p>
+              <Select
+                label="Time key (optional)"
+                required={false}
+                value={d.timeColumnId ?? ''}
+                items={grainKeys.map((key) => ({
+                  value: key,
+                  label: grainColumns.find((column) => column.columnId === key)?.name ?? key,
+                }))}
+                onChange={(timeColumnId) => update({ timeColumnId: timeColumnId || null })}
+              />
             </>
           ) : d.mappingMode === 'resolve_multi_grain' && d.resolution && level && source ? (
             <>
@@ -473,7 +430,7 @@ export function TransactionEditor({
                   <Select
                     key={m.grainColumnId}
                     label={
-                      (level?.name ?? 'Native Planning Level') +
+                      (level?.name ?? 'Dimension') +
                       '.' +
                       (level?.definition.grain.columns.find(
                         (c) => c.grainColumnId === m.grainColumnId,
@@ -495,8 +452,8 @@ export function TransactionEditor({
                 ))}
               </div>
               <p className="meta-hint">
-                Transaction data will be aggregated by these native planning-level keys before it is
-                left joined to the planning level.
+                Transaction data will be aggregated by these native dimension keys before it is left
+                joined to the Dimension.
               </p>
             </>
           )}
@@ -510,11 +467,7 @@ export function TransactionEditor({
             loading={!pivotReady || (!!d.calendarResolution && !calendarColumns.length)}
           />
         )}
-        {onboardingError && (
-          <p className="meta-error" role="alert">
-            {onboardingError}
-          </p>
-        )}
+
         {error && (
           <p className="meta-error" role="alert">
             {error}
@@ -534,10 +487,7 @@ export function TransactionEditor({
             )}
             <PlanningResult
               data={preview}
-              name={
-                value.name +
-                (createGrain && !d.filters ? ' — proposed planning population' : ' — transformed')
-              }
+              name={value.name + ' — transformed'}
               showRefresh={false}
             />
           </>
@@ -599,6 +549,33 @@ export function TransactionEditor({
             >
               {previewBusy ? 'Loading preview…' : 'Preview'}
             </button>
+            <ViewSqlButton
+              disabled={
+                !base ||
+                busy ||
+                previewBusy ||
+                onboardingBusy ||
+                (createGrain && !grainKeys.length) ||
+                !pivotReady ||
+                (d.mappingMode === 'resolve_multi_grain' && !resolutionComplete(d.resolution)) ||
+                (!!d.calendarResolution && !calendarColumns.length)
+              }
+              loadSql={(signal) => {
+                if (!form.current?.reportValidity())
+                  throw new Error('Complete the required fields first.')
+                return metadataApi.request(
+                  base +
+                    (createGrain
+                      ? '/transactions/from-grain/preview'
+                      : '/transactions/resolution/preview') +
+                    '?sql_only=true',
+                  'POST',
+                  createGrain ? grainPayload() : value,
+                  undefined,
+                  signal,
+                )
+              }}
+            />
           </Actions>
         )}
       />

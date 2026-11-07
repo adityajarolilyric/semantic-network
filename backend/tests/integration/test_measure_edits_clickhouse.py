@@ -2,7 +2,7 @@
 from uuid import uuid4
 import pytest
 from .test_csv_clickhouse import clickhouse_app  # noqa: F401
-from .test_planning_view_clickhouse import seed_view, field, query_view
+from .test_decision_view_clickhouse import seed_view, field, query_view
 from .test_measures_clickhouse import BASE, build_values, values, update_measure
 from .test_managed_clickhouse import await_run
 
@@ -39,7 +39,7 @@ def edit(
         assert response.status_code == 200, response.text
         context = response.json()["editContext"]
     return client.post(
-        BASE + "/planning-view/edits",
+        BASE + "/decision-view/edits",
         json={
             "view": view,
             "measureId": mid,
@@ -89,11 +89,14 @@ def test_edit_coarser_equal_base_first_formulas_rebuild_and_two_tables(clickhous
     assert stale.status_code == 409, stale.text
     count = int(
         admin.command(
-            "SELECT count() FROM system.tables WHERE database={db:String} AND engine='MergeTree' AND startsWith(comment,'semanticTable:')",
+            "SELECT count() FROM system.tables WHERE database={db:String} AND engine='MergeTree' AND startsWith(comment,'semanticCurrent:')",
             parameters={"db": database},
         )
     )
-    assert count == 6
+    documents = client.app.state.container.store.documents
+    active_ids = {b['artifactId'] for b in documents['engine_artifact_bindings']}
+    current_tables = {a['physicalName'] for a in documents['engine_artifacts'] if a['artifactId'] in active_ids and a.get('kind') == 'table' and a.get('storageMode') == 'current'}
+    assert count == len(current_tables)
     # No replay: rebuilding reads the original transactions again.
     assert build_values(client)["state"] == "succeeded"
     result, cols = values(client, "base")
@@ -274,7 +277,7 @@ def test_independent_native_measure_can_define_disaggregation_and_survives_other
     clickhouse_app,
 ):
     from .test_planning_clickhouse import managed, create, build
-    from .test_planning_view_clickhouse import dimension
+    from .test_decision_view_clickhouse import dimension
     from .test_measures_clickhouse import transaction, measure
 
     client, _, _, _ = clickhouse_app
@@ -287,7 +290,7 @@ def test_independent_native_measure_can_define_disaggregation_and_survives_other
         client,
         {
             "objectId": "independent",
-            "kind": "planningLevel",
+            "kind": "dimension",
             "name": "Independent",
             "displayName": "Independent",
             "definition": {
@@ -309,11 +312,11 @@ def test_independent_native_measure_can_define_disaggregation_and_survives_other
                         }
                     ],
                 },
-                "dimensionBindings": [
+                "memberBindings": [
                     {
-                        "dimensionId": "Item",
+                        "memberCatalogId": "Item",
                         "keyMappings": [
-                            {"grainColumnId": "item", "dimensionColumnId": "item"}
+                            {"grainColumnId": "item", "memberColumnId": "item"}
                         ],
                         "selectedAttributeColumnIds": [],
                     }
@@ -329,13 +332,13 @@ def test_independent_native_measure_can_define_disaggregation_and_survives_other
         client,
         {
             "objectId": "independent_group",
-            "kind": "planningLevel",
+            "kind": "dimension",
             "name": "Independent category",
             "displayName": "Independent category",
             "definition": {
                 "population": {
                     "operation": "distinct_projection",
-                    "sourcePlanningLevelId": "independent",
+                    "sourceDimensionId": "independent",
                 },
                 "grain": {
                     "keyIds": ["category"],
@@ -351,6 +354,7 @@ def test_independent_native_measure_can_define_disaggregation_and_survives_other
         },
     )
     assert build(client, "independent_group")["state"] == "succeeded"
+    transaction(client, "independent_group_tx", source, "independent_group", [("category", "col_2")])
     editable(client)
     data, cols = values(client, "base")
     assert "IndependentQty" not in cols
@@ -403,10 +407,10 @@ def test_edit_native_time_measure_without_base_time_uses_native_and_common_coars
     calendar = managed(client, "NativeDates", b"day\n2026-01-01\n2026-01-02\n")
     assert_post(
         client,
-        "/dimensions",
+        "/dimension-members",
         {
             "objectId": "Time",
-            "kind": "dimension",
+            "kind": "dimensionMembers",
             "name": "Time",
             "displayName": "Time",
             "isTimeDim": True,
@@ -440,7 +444,7 @@ def test_edit_native_time_measure_without_base_time_uses_native_and_common_coars
         client,
         {
             "objectId": "native_time",
-            "kind": "planningLevel",
+            "kind": "dimension",
             "name": "Product Time",
             "displayName": "Product Time",
             "definition": {
@@ -460,18 +464,18 @@ def test_edit_native_time_measure_without_base_time_uses_native_and_common_coars
                         },
                     ],
                 },
-                "dimensionBindings": [
+                "memberBindings": [
                     {
-                        "dimensionId": "Product",
+                        "memberCatalogId": "Product",
                         "keyMappings": [
-                            {"grainColumnId": "product", "dimensionColumnId": "product"}
+                            {"grainColumnId": "product", "memberColumnId": "product"}
                         ],
                         "selectedAttributeColumnIds": [],
                     },
                     {
-                        "dimensionId": "Time",
+                        "memberCatalogId": "Time",
                         "keyMappings": [
-                            {"grainColumnId": "day", "dimensionColumnId": "day"}
+                            {"grainColumnId": "day", "memberColumnId": "day"}
                         ],
                         "selectedAttributeColumnIds": [],
                     },
@@ -513,7 +517,7 @@ def test_edit_native_time_measure_without_base_time_uses_native_and_common_coars
                 "business": {},
                 "definition": {
                     "measureType": "calculated",
-                    "nativePlanningLevelId": "native_time",
+                    "nativeDimensionId": "native_time",
                     "calculationType": calculation,
                     "resultType": {"type": "number", "nullable": True},
                     "aggregation": {

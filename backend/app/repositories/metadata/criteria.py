@@ -68,6 +68,7 @@ class RevisionLookup(Criteria):
 
 @dataclass(frozen=True)
 class ObjectLookup(Criteria):
+    member_catalog_id: str | Unset = lookup_field("memberCatalogId")
     model_id: str | Unset = lookup_field("modelId")
     revision_id: str | Unset = lookup_field("revisionId")
     object_id: str | Unset = lookup_field("objectId")
@@ -100,6 +101,7 @@ class ContractLookup(Criteria):
 
 @dataclass(frozen=True)
 class RunLookup(Criteria):
+    publication_pending: bool | Unset = lookup_field("publicationPending")
     model_id: str | Unset = lookup_field("modelId")
     revision_id: str | Unset = lookup_field("revisionId")
     run_id: str | Unset = lookup_field("runId")
@@ -120,6 +122,10 @@ class RunLookup(Criteria):
 
 @dataclass(frozen=True)
 class ArtifactLookup(Criteria):
+    cleanup_pending: bool | Unset = lookup_field("cleanupPending")
+    storage_mode: str | Unset = lookup_field("storageMode")
+    physical_name: str | Unset = lookup_field("physicalName")
+    generation_token: str | Unset = lookup_field("generationToken")
     model_id: str | Unset = lookup_field("modelId")
     revision_id: str | Unset = lookup_field("revisionId")
     resource_kind: str | Unset = lookup_field("resourceKind")

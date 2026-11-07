@@ -10,13 +10,13 @@ class RevisionCreate(Schema):
     revisionId: Identifier
     expectedModelVersion: int = Field(ge=1)
     parentRevisionId: Identifier | None = None
-    basePlanningLevelId: Identifier | None = None
+    baseDimensionId: Identifier | None = None
     changeReason: Description = ""
     metadataContractVersion: int = Field(default=1, ge=1, le=2)
 
 
 class RevisionUpdate(Schema):
-    basePlanningLevelId: Identifier | None
+    baseDimensionId: Identifier | None
     changeReason: Description
 
 
@@ -25,11 +25,12 @@ class PublishRevision(Schema):
 
 
 class RevisionDocument(Schema):
+    metadataVocabulary: str = "dimensions-v1"
     modelId: Identifier
     revisionId: Identifier
     revisionNumber: int = Field(ge=1)
     parentRevisionId: Identifier | None
-    basePlanningLevelId: Identifier | None
+    baseDimensionId: Identifier | None
     changeReason: Description
     metadataContractVersion: int
     approvalStatus: Literal["draft", "published"]

@@ -1,16 +1,20 @@
-from abc import ABC, abstractmethod
-from functools import cached_property
 import asyncio
-from datetime import date, datetime
-from decimal import Decimal
 import json
 import logging
 import re
+from abc import ABC, abstractmethod
+from datetime import date, datetime
+from decimal import Decimal
+from functools import cached_property
 from uuid import uuid4
+
+import clickhouse_connect
 
 from ..core.config import Settings
 from ..core.errors import Conflict, MetadataError, NotFound
 from .csv_parser import ParsedCsv
+from .query_execution import WarehouseQueryExecutor
+from .sql_trace import current_trace, RecordingClient
 from .schemas import (
     CsvImportResult,
     TableCatalog,
@@ -18,6 +22,8 @@ from .schemas import (
     WarehouseColumn,
     WarehouseTable,
 )
+from .sql import quote_identifier as quote_identifier
+from .sql import quote_literal as quote_literal
 
 logger = logging.getLogger("metadata.warehouse")
 STAGING_PREFIX = "__csv_ingest_"
@@ -35,8 +41,6 @@ class WarehouseUnavailable(MetadataError):
 class WarehouseRepository(ABC):
     @cached_property
     def queries(self):
-        from .query_execution import WarehouseQueryExecutor
-
         return WarehouseQueryExecutor(self)
 
     @abstractmethod
@@ -60,14 +64,6 @@ class WarehouseRepository(ABC):
 
     @abstractmethod
     async def close(self) -> None: ...
-
-
-def quote_identifier(value: str) -> str:
-    return "`" + value.replace("\\", "\\\\").replace("`", "\\`") + "`"
-
-
-def quote_literal(value: str) -> str:
-    return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
 def validate_table_name(table: str):
@@ -118,8 +114,6 @@ class ClickHouseWarehouseRepository(WarehouseRepository):
 
     def connect(self):
         if self.client is None:
-            import clickhouse_connect
-
             self.client = clickhouse_connect.get_client(
                 host=self.settings.clickhouse_host,
                 port=self.settings.clickhouse_port,
@@ -136,7 +130,13 @@ class ClickHouseWarehouseRepository(WarehouseRepository):
     async def run(self, operation):
         async with self.lock:
             try:
-                task = asyncio.create_task(asyncio.to_thread(operation, self.connect))
+                trace = current_trace()
+                if trace is None:
+                    connect = self.connect
+                else:
+                    def connect():
+                        return RecordingClient(self.connect(), trace)
+                task = asyncio.create_task(asyncio.to_thread(operation, connect))
                 try:
                     return await asyncio.shield(task)
                 except asyncio.CancelledError:
@@ -236,7 +236,7 @@ class ClickHouseWarehouseRepository(WarehouseRepository):
             rows = client.query(
                 """SELECT t.name, t.engine, t.total_rows, count(c.name)
                 FROM system.tables AS t LEFT JOIN system.columns AS c ON t.database = c.database AND t.name = c.table
-                WHERE t.database = {db:String} AND t.is_temporary = 0 AND NOT startsWith(t.name, {prefix:String}) AND NOT startsWith(t.name, '.') AND NOT startsWith(t.name, '__semantic_') AND NOT startsWith(t.comment, 'semanticTable:') AND NOT startsWith(t.comment, 'semanticArtifact:')
+                WHERE t.database = {db:String} AND t.is_temporary = 0 AND NOT startsWith(t.name, {prefix:String}) AND NOT startsWith(t.name, '.') AND NOT startsWith(t.name, '__semantic_') AND NOT startsWith(t.comment, 'semanticTable:') AND NOT startsWith(t.comment, 'semanticArtifact:') AND NOT startsWith(t.comment, 'semanticCurrent:')
                 GROUP BY t.name, t.engine, t.total_rows ORDER BY t.name LIMIT 1001""",
                 parameters={
                     "db": self.settings.clickhouse_database,
@@ -275,7 +275,7 @@ class ClickHouseWarehouseRepository(WarehouseRepository):
         def operation(connect):
             client = connect()
             info = self.table_info(client, table)
-            if not info or info[1].startswith(("semanticTable:", "semanticArtifact:")):
+            if not info or info[1].startswith(("semanticTable:", "semanticArtifact:", "semanticCurrent:")):
                 raise NotFound("Source table")
             columns = self.columns(client, table)
             total = int(client.command(f"SELECT count() FROM {self.qualify(table)}"))
@@ -291,6 +291,7 @@ class ClickHouseWarehouseRepository(WarehouseRepository):
                 },
             )
             return TablePreview(
+                sql=f"SELECT {selected} FROM {self.qualify(table)}",
                 table=table,
                 columns=columns,
                 rows=[

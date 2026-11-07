@@ -1,4 +1,20 @@
+from copy import deepcopy
+from datetime import timedelta
+from hashlib import sha256
+from uuid import uuid4
+
+from ..core.errors import Conflict, ImmutableRevision, MetadataError
+from ..engine.compiler import ClickHouseCompiler
+from ..engine.contracts import digest
+from ..engine.executor import ClickHouseExecutor
 from ..engine.managed_inputs import ManagedInputVerifier
+from ..engine.planner import ManagedTablePlanner
+from ..engine.resolver import EffectiveSchemaResolver
+from ..engine.source_view_names import (
+    VIEW_NAMING_POLICY,
+    source_view_name,
+    source_view_role,
+)
 from ..repositories.metadata import metadata_repositories
 from ..repositories.metadata.criteria import (
     ArtifactLookup,
@@ -9,16 +25,6 @@ from ..repositories.metadata.criteria import (
     RevisionLookup,
     RunLookup,
 )
-from datetime import timedelta
-from copy import deepcopy
-from uuid import uuid4
-
-from ..core.errors import Conflict, ImmutableRevision, MetadataError
-from ..engine.compiler import ClickHouseCompiler
-from ..engine.contracts import digest
-from ..engine.executor import ClickHouseExecutor
-from ..engine.planner import ManagedTablePlanner
-from ..engine.resolver import EffectiveSchemaResolver
 from ..schemas.managed_tables import ManagedDefinition
 from ..schemas.sources import SourceRegistration
 from .base import Service, now, scope
@@ -54,7 +60,9 @@ class ManagedTableService(Service):
         )
         if rev["metadataContractVersion"] == 1 and rev["approvalStatus"] == "published":
             known = {d["sourceId"] for d in documents}
-            for source in await self.objects(self.store.repository, model, revision):
+            for source in await self.graph_objects(
+                self.store.repository, model, revision
+            ):
                 if (
                     source["kind"] == "source"
                     and source["definition"]["inScope"]
@@ -129,10 +137,8 @@ class ManagedTableService(Service):
                 )
             return self.public_run(replay)
         # Raw registration is deliberately separate: a failed first build leaves it unmanaged.
-        source_id = (
-            "source_" + __import__("hashlib").sha256(table.encode()).hexdigest()[:24]
-        )
-        objects = await self.objects(self.store.repository, model, revision)
+        source_id = "source_" + sha256(table.encode()).hexdigest()[:24]
+        objects = await self.graph_objects(self.store.repository, model, revision)
         source = next(
             (
                 o
@@ -250,7 +256,7 @@ class ManagedTableService(Service):
                         "Repair may only rebuild the saved managed definition."
                     )
             plan = self.planner.plan(source, payload)
-            objects = await self.objects(repo, model, revision)
+            objects = await self.graph_objects(repo, model, revision)
             managed = await metadata_repositories(repo).managed_tables.list(
                 ManagedTableLookup(model_id=model, revision_id=revision),
                 order_by="sourceId",
@@ -264,7 +270,7 @@ class ManagedTableService(Service):
             for obj in effective:
                 if obj["objectId"] == source_id:
                     obj["definition"]["inScope"] = True
-            self.validate(effective, rev["basePlanningLevelId"])
+            self.validate(effective, rev["baseDimensionId"])
             run_id, artifact_id = "run_" + uuid4().hex, "artifact_" + uuid4().hex
             run = {
                 **query,
@@ -300,7 +306,10 @@ class ManagedTableService(Service):
                     "sourceId": source_id,
                     "artifactId": artifact_id,
                     "runId": run_id,
-                    "physicalName": "__semantic_view_" + artifact_id[9:],
+                    "physicalName": source_view_name(
+                        source, artifact_id, source_view_role(source, objects)
+                    ),
+                    "viewNamingPolicy": VIEW_NAMING_POLICY,
                     "definitionHash": run["definitionHash"],
                     "columns": plan.definition["columns"],
                     "state": "candidate",
@@ -325,11 +334,22 @@ class ManagedTableService(Service):
         result = {
             k: run[k] for k in ("runId", "state", "createdAt", "updatedAt", "error")
         }
+        if result["state"] == "waiting":
+            result["state"] = "running"
         result.update(
             resourceKind=run.get("resourceKind", "managedTable"),
             resourceId=run.get("resourceId", run.get("sourceId")),
         )
-        for key in ("buildMode", "reused", "generationId"):
+        for key in (
+            "buildMode",
+            "reused",
+            "generationId",
+            "measureRunId",
+            "dimensionIndex",
+            "dimensionIds",
+            "childRunId",
+            "queryMemoryBytes",
+        ):
             if key in run:
                 result[key] = run[key]
         if "sourceId" in run:
@@ -348,7 +368,31 @@ class ManagedTableService(Service):
                 RunLookup(model_id=model, revision_id=revision, run_id=run_id),
                 "Engine run",
             )
-            if run["state"] in ("queued", "running"):
+            if run["state"] in ("queued", "running", "waiting"):
+                if run.get("resourceKind") in {"semanticNetwork", "dimensionSet"}:
+                    # Cancel queued/running work owned by this command as well.
+                    for key in (run.get("childRunId"), run["runId"] + "_values"):
+                        if not key:
+                            continue
+                        child = await metadata_repositories(repo).runs.find(
+                            RunLookup(run_id=key)
+                            if key == run.get("childRunId")
+                            else RunLookup(
+                                model_id=model,
+                                revision_id=revision,
+                                idempotency_key=key,
+                            )
+                        )
+                        if child and child["state"] in ("queued", "running", "waiting"):
+                            await metadata_repositories(repo).runs.replace(
+                                RunLookup(run_id=child["runId"], fence=child["fence"]),
+                                {
+                                    **child,
+                                    "state": "cancelled",
+                                    "fence": child["fence"] + 1,
+                                    "updatedAt": now(),
+                                },
+                            )
                 run = {
                     **run,
                     "state": "cancelled",
@@ -376,14 +420,14 @@ class ManagedTableService(Service):
             updated = deepcopy(source)
             updated["definition"]["inScope"] = False
             updated.update(version=source["version"] + 1, updatedAt=now())
-            objects = await self.objects(repo, model, revision)
+            objects = await self.graph_objects(repo, model, revision)
             effective = await EffectiveSchemaResolver.load(
                 repo,
                 model,
                 revision,
                 [updated if o["objectId"] == source_id else o for o in objects],
             )
-            self.validate(effective, rev["basePlanningLevelId"])
+            self.validate(effective, rev["baseDimensionId"])
             await metadata_repositories(repo).objects.replace(
                 ObjectLookup(
                     model_id=model,
@@ -407,7 +451,9 @@ class ManagedTableService(Service):
         logical = self.planner.plan(source, payload)
         return {"columns": list(logical.schema.columns)}
 
-    async def preview(self, model, revision, source_id, payload=None):
+    async def preview(
+        self, model, revision, source_id, payload=None, *, sql_only=False
+    ):
         source = await self.source(self.store.repository, model, revision, source_id)
         table = None
         if payload is None:
@@ -429,9 +475,11 @@ class ManagedTableService(Service):
                 ArtifactLookup(artifact_id=binding["artifactId"]), "Artifact"
             )
             table = artifact["physicalName"]
-        await self.executor.inspect(source)
         logical = self.planner.plan(source, payload)
         compiled = self.compiler.compile(logical)
+        if sql_only:
+            return {"sql": compiled.formatted_sql, "dialect": "clickhouse"}
+        await self.executor.inspect(source)
         if table:
             await self.executor.verify(artifact, compiled)
         return await self.executor.preview(compiled, table)
@@ -536,7 +584,7 @@ class ManagedTableService(Service):
         )
         if rev["metadataContractVersion"] < 2:
             return rev["version"]
-        for source in await self.objects(repo, model, revision):
+        for source in await self.graph_objects(repo, model, revision):
             if source["kind"] != "source" or not source["definition"]["inScope"]:
                 continue
             current = await self.get(model, revision, source["objectId"])
@@ -567,7 +615,7 @@ class ManagedTableService(Service):
             self.check_version(rev, expected)
             if rev["approvalStatus"] != "draft":
                 raise ImmutableRevision()
-            for source in await self.objects(repo, model, revision):
+            for source in await self.graph_objects(repo, model, revision):
                 if source["kind"] == "source" and source["definition"]["inScope"]:
                     current = await metadata_repositories(repo).managed_tables.require(
                         ManagedTableLookup(

@@ -52,10 +52,10 @@ test('create a planning table with population and dimension attributes, preview 
   const dimSource = sources.find((s: { name: string }) => s.name === 'UI_ProductDim')
   expect(
     (
-      await page.request.post(base + '/dimensions', {
+      await page.request.post(base + '/dimension-members', {
         data: {
           objectId: 'dim_product',
-          kind: 'dimension',
+          kind: 'dimensionMembers',
           name: 'Product',
           displayName: 'Product',
           isTimeDim: false,
@@ -85,8 +85,8 @@ test('create a planning table with population and dimension attributes, preview 
   ).toBeTruthy()
   await page.goto(`/?model=${model}&revision=draft_1&tab=levels`)
   const nav = page.getByRole('navigation', { name: 'Workspace', exact: true })
-  await nav.getByRole('button', { name: 'Planning Levels', exact: true }).click()
-  await page.getByRole('button', { name: 'Create planning level', exact: true }).click()
+  await nav.getByRole('button', { name: 'Dimensions', exact: true }).click()
+  await page.getByRole('button', { name: 'Create dimension', exact: true }).click()
   await page.getByLabel('Name', { exact: true }).fill('Product Planning')
   await page
     .getByLabel('Population table', { exact: true })
@@ -104,7 +104,7 @@ test('create a planning table with population and dimension attributes, preview 
   )
   await page.getByLabel('Add dimension', { exact: true }).selectOption({ label: 'Product' })
   await page
-    .getByLabel('Product planning-level column 1', { exact: true })
+    .getByLabel('Product dimension column 1', { exact: true })
     .selectOption({ label: 'product' })
   await page
     .getByLabel('Product dimension column 1', { exact: true })
@@ -136,13 +136,13 @@ test('create a planning table with population and dimension attributes, preview 
   )
   let builds = 0
   page.on('request', (request) => {
-    if (request.url().endsWith('/planning-levels/editor/draft/build')) builds++
+    if (request.url().endsWith('/dimensions/editor/draft/build')) builds++
   })
   await page.getByRole('button', { name: 'Preview', exact: true }).click()
   await expect(
     page.getByText('Built preview (metadata not saved): 2 rows.', { exact: false }),
   ).toBeVisible()
-  expect((await (await page.request.get(base + '/planning-levels')).json()).items).toHaveLength(0)
+  expect((await (await page.request.get(base + '/dimensions')).json()).items).toHaveLength(0)
   await page.getByRole('button', { name: 'Save', exact: true }).click()
   await page
     .locator('.meta-object-card')
@@ -154,7 +154,7 @@ test('create a planning table with population and dimension attributes, preview 
   await expect(panel.getByRole('status')).toContainText('Table: ready')
   await page.getByRole('button', { name: 'Preview', exact: true }).click()
   expect(builds).toBe(1)
-  await expect(page.getByLabel('Planning level actions').getByRole('button')).toHaveText([
+  await expect(page.getByLabel('Dimension actions').getByRole('button')).toHaveText([
     'Cancel',
     'Preview',
     'Save',
@@ -164,7 +164,7 @@ test('create a planning table with population and dimension attributes, preview 
   await expect(page.getByRole('table')).toHaveClass('data-table')
   await expect(page.getByText('2/2 rows', { exact: true })).toBeVisible()
   await expect(page.getByLabel('Rows per page')).toHaveCount(0)
-  await page.screenshot({ path: 'test-results/planning-level-editor.png', fullPage: true })
+  await page.screenshot({ path: 'test-results/dimension-editor.png', fullPage: true })
   await page.setViewportSize({ width: 390, height: 844 })
   const filterPanel = page
     .locator('.transformation-section')
@@ -190,14 +190,14 @@ test('create a planning table with population and dimension attributes, preview 
   ).toBeChecked()
   await page.getByRole('button', { name: 'Cancel', exact: true }).click()
   await page
-    .getByLabel('Base planning level', { exact: true })
+    .getByLabel('Base dimension', { exact: true })
     .selectOption({ label: 'Product Planning' })
   await expect(page.getByText('Loading saved metadata…', { exact: true })).toHaveCount(0)
-  await page.getByRole('button', { name: 'Create planning level', exact: true }).click()
+  await page.getByRole('button', { name: 'Create dimension', exact: true }).click()
   await page.getByLabel('Name', { exact: true }).fill('Category Planning')
-  await page.getByRole('radio', { name: 'From Existing Planning Level', exact: true }).check()
+  await page.getByRole('radio', { name: 'From Existing Dimension', exact: true }).check()
   await page
-    .getByLabel('Parent planning level', { exact: true })
+    .getByLabel('Parent dimension', { exact: true })
     .selectOption({ label: 'Product Planning' })
   const retained = page.getByRole('group', { name: 'Select keys from Parent keys', exact: true })
   const attributes = page.getByRole('group', { name: 'Select attributes from Parent', exact: true })
@@ -212,7 +212,7 @@ test('create a planning table with population and dimension attributes, preview 
     .check()
   await page.getByLabel('Add dimension', { exact: true }).selectOption({ label: 'Product' })
   await page
-    .getByLabel('Product planning-level column 1', { exact: true })
+    .getByLabel('Product dimension column 1', { exact: true })
     .selectOption({ label: 'Category' })
   await page
     .getByLabel('Product dimension column 1', { exact: true })
@@ -230,28 +230,28 @@ test('create a planning table with population and dimension attributes, preview 
   await page.getByRole('button', { name: 'Preview', exact: true }).click()
   await expect(page.getByRole('cell', { name: 'C1', exact: true })).toBeVisible()
   await page.getByRole('button', { name: 'Cancel', exact: true }).click()
-  const savedLevels = (await (await page.request.get(base + '/planning-levels')).json()).items
+  const savedLevels = (await (await page.request.get(base + '/dimensions')).json()).items
   const parent = savedLevels.find((level: { name: string }) => level.name === 'Product Planning')
   const child = savedLevels.find((level: { name: string }) => level.name === 'Category Planning')
   const submitted: string[] = []
   page.on('request', (request) => {
-    if (request.method() === 'POST' && /\/planning-levels\/[^/]+\/build$/.test(request.url()))
+    if (request.method() === 'POST' && /\/dimensions\/[^/]+\/build$/.test(request.url()))
       submitted.push(request.url().split('/').at(-2)!)
   })
-  await page.getByRole('button', { name: 'Build all planning levels', exact: true }).click()
+  await page.getByRole('button', { name: 'Build all dimensions', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Reload metadata' })).toBeDisabled()
   await expect(
-    page.getByText('All planning levels built. Rebuild measure values in Materialise.', {
+    page.getByText('All dimensions built. Rebuild measure values in Decision View.', {
       exact: true,
     }),
   ).toBeVisible({ timeout: 30_000 })
   expect(submitted).toEqual([parent.objectId, child.objectId])
   for (const level of [parent, child]) {
     const status = await (
-      await page.request.get(`${base}/planning-levels/${level.objectId}/table`)
+      await page.request.get(`${base}/dimensions/${level.objectId}/table`)
     ).json()
     expect(status.state).toBe('ready')
-    const saved = await (await page.request.get(`${base}/planning-levels/${level.objectId}`)).json()
+    const saved = await (await page.request.get(`${base}/dimensions/${level.objectId}`)).json()
     expect(saved.version).toBe(level.version)
   }
 })

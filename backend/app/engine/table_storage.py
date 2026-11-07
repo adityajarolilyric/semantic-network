@@ -1,13 +1,13 @@
-"""Compatibility exports; warehouse I/O lives in warehouse/versioned_storage.py."""
+"""Storage contracts; current publication and legacy reads live in warehouse."""
+
+from ..warehouse.current_storage import STORAGE_POLICY, TableStorage
 
 from ..warehouse.versioned_storage import (
-    token,
-    owner,
-    column_sql,
-    relation_sql,
-    TableStorage,
     GENERATION,
-    STORAGE_POLICY,
+    column_sql,
+    owner,
+    relation_sql,
+    token,
 )
 
 __all__ = [

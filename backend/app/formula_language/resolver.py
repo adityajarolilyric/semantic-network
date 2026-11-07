@@ -92,7 +92,7 @@ class FormulaResolver:
                     (
                         obj
                         for obj in self.objects
-                        if obj["objectId"] == level and obj["kind"] == "planningLevel"
+                        if obj["objectId"] == level and obj["kind"] == "dimension"
                     ),
                     None,
                 )
@@ -110,7 +110,7 @@ class FormulaResolver:
                 if inside_count:
                     return {
                         "type": "attributeRef",
-                        "planningLevelId": level,
+                        "dimensionId": level,
                         "columnId": matches[0]["grainColumnId"],
                     }
                 return {

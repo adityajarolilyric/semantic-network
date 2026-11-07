@@ -1,11 +1,13 @@
 """Execute warehouse checks and format stable, bounded semantic diagnostics."""
 
 from dataclasses import dataclass
-from ..warehouse.query_execution import WarehouseCheckRunner
 
 from ..core.errors import MetadataError
+from ..warehouse.query_execution import WarehouseCheckRunner
 
 PLANNING_CHECK_MESSAGES = {
+    "null_planning_key": "Dimension grain keys cannot be NULL.",
+    "duplicate_planning_key": "The same Dimension grain has conflicting output attributes. Select attributes determined by the grain or correct the source data.",
     "duplicate_pivot_cell": "Duplicate pivot cells must be corrected in the source data.",
     "conflicting_retained_values": "Retained columns must have one value per record key. Correct the source data or select the complete record keys.",
     "resolution_profiles_changed": "Source matching profiles changed during execution. Retry the build or preview.",
@@ -25,6 +27,7 @@ PLANNING_CHECK_MESSAGES = {
     "invalid_resolution_literal": "A matching value cannot be represented by the target attribute's data type.",
     "unmatched_resolution_row": "A transaction assignment matches no valid native planning intersection.",
     "resolution_expansion_limit": "Transaction resolution exceeds its configured expansion limit. Add more selective matching constraints.",
+    "null_transaction_key": "Transaction grain keys cannot be NULL. Filter or correct the source rows.",
     "unmatched_transaction_grain": "A transaction key combination is absent from its native planning population.",
     "no_disaggregation_children": "A populated native measure cell has no matching Base rows.",
     "ambiguous_dimension_lookup": "The mapped dimension values have conflicting combinations of the selected attributes. Select attributes determined by the mapping; extra attributes do not change the planning grain.",

@@ -45,7 +45,7 @@ def rewrite_references(value, mapping):
     return value
 
 
-class PlanningTableRename:
+class DimensionTableRename:
     def __init__(self, store, warehouse, gate, journal_path, target):
         self.store, self.warehouse, self.gate = store, warehouse, gate
         self.path, self.target = Path(journal_path), target
@@ -69,7 +69,7 @@ class PlanningTableRename:
             "engine_artifacts",
             {
                 "kind": "table",
-                "resourceKind": {"$in": ["planningLevel", "measureValues"]},
+                "resourceKind": {"$in": ["dimension", "measureValues"]},
             },
             "artifactId",
         ):
@@ -97,7 +97,7 @@ class PlanningTableRename:
                 {
                     **scope(resource["modelId"], resource["revisionId"]),
                     "objectId": resource["resourceId"],
-                    "kind": "planningLevel",
+                    "kind": "dimension",
                 },
             )
             new = TableStorage.physical_name(
@@ -338,7 +338,7 @@ async def main():
     gate = WorkspaceGate(store)
     await store.open()
     try:
-        migration = PlanningTableRename(store, warehouse, gate, journal_path, target)
+        migration = DimensionTableRename(store, warehouse, gate, journal_path, target)
         if args.apply:
             result = await migration.apply()
             print(

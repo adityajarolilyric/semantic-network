@@ -2,8 +2,8 @@ import { expect, it } from 'vitest'
 import { dimensionKeyOptions } from '../src/metadata/dimensionKeyOptions'
 import {
   emptySnapshot,
+  type DimensionMembers,
   type Dimension,
-  type PlanningLevel,
   type Source,
 } from '../src/metadata/types'
 const envelope = { modelId: 'm', revisionId: 'r', version: 1, createdAt: '', updatedAt: '' }
@@ -24,9 +24,9 @@ const source = (id: string, names: string[]): Source => ({
     })),
   },
 })
-const product: Dimension = {
+const product: DimensionMembers = {
   objectId: 'product',
-  kind: 'dimension',
+  kind: 'dimensionMembers',
   name: 'Product',
   displayName: 'Product',
   description: '',
@@ -54,9 +54,9 @@ function fixture() {
     source('matrix', ['product_id', 'location_id']),
     source('dates', ['date']),
   ].map((s) => ({ ...s, ...envelope }))
-  const level: PlanningLevel = {
+  const level: Dimension = {
     objectId: 'plt',
-    kind: 'planningLevel',
+    kind: 'dimension',
     name: 'PLT',
     displayName: 'PLT',
     description: '',
@@ -88,7 +88,7 @@ function fixture() {
           },
         ],
       },
-      dimensionBindings: [],
+      memberBindings: [],
     },
   }
   return { data, level }
@@ -102,7 +102,7 @@ it('matches a matrix product key without confusing IDs reused by location and ti
 })
 it('filters composite key controls independently and rejects mismatched types', () => {
   const { data, level } = fixture()
-  const composite: Dimension = {
+  const composite: DimensionMembers = {
     ...product,
     definition: {
       ...product.definition,
@@ -124,19 +124,19 @@ it('uses explicit parent bindings through multiple projections even when physica
   const { data, level } = fixture()
   data.sources[1].definition.columns[0].name = 'item_reference'
   data.sources[2].definition.columns[0].name = 'product_id'
-  level.definition.dimensionBindings = [
+  level.definition.memberBindings = [
     {
-      dimensionId: 'product',
-      keyMappings: [{ dimensionColumnId: 'product_key', grainColumnId: 'p' }],
+      memberCatalogId: 'product',
+      keyMappings: [{ memberColumnId: 'product_key', grainColumnId: 'p' }],
       selectedAttributeColumnIds: [],
     },
   ]
-  data.planningLevels = [{ ...level, ...envelope }]
-  const child: PlanningLevel = {
+  data.dimensions = [{ ...level, ...envelope }]
+  const child: Dimension = {
     ...level,
     objectId: 'pt',
     definition: {
-      population: { operation: 'distinct_projection', sourcePlanningLevelId: 'plt' },
+      population: { operation: 'distinct_projection', sourceDimensionId: 'plt' },
       grain: {
         keyIds: ['cp', 'ct'],
         columns: [
@@ -144,16 +144,16 @@ it('uses explicit parent bindings through multiple projections even when physica
           { grainColumnId: 'ct', name: 'Time', populationRef: { sourceGrainColumnId: 't' } },
         ],
       },
-      dimensionBindings: [],
+      memberBindings: [],
     },
   }
-  data.planningLevels.push({ ...child, ...envelope })
-  const grandchild: PlanningLevel = {
+  data.dimensions.push({ ...child, ...envelope })
+  const grandchild: Dimension = {
     ...child,
     objectId: 'p2',
     definition: {
       ...child.definition,
-      population: { operation: 'distinct_projection', sourcePlanningLevelId: 'pt' },
+      population: { operation: 'distinct_projection', sourceDimensionId: 'pt' },
       grain: {
         keyIds: ['gp', 'gt'],
         columns: [
@@ -169,7 +169,7 @@ it('uses explicit parent bindings through multiple projections even when physica
 })
 it('handles source population and missing/cyclic lineage without offering unrelated columns', () => {
   const { data, level } = fixture()
-  const direct: PlanningLevel = {
+  const direct: Dimension = {
     ...level,
     definition: {
       ...level.definition,
@@ -183,11 +183,11 @@ it('handles source population and missing/cyclic lineage without offering unrela
   expect(dimensionKeyOptions(direct, product, 'product_key', data)).toEqual([
     { value: 'p', label: 'Product' },
   ])
-  const cyclic: PlanningLevel = {
+  const cyclic: Dimension = {
     ...direct,
     definition: {
       ...direct.definition,
-      population: { operation: 'distinct_projection', sourcePlanningLevelId: 'plt' },
+      population: { operation: 'distinct_projection', sourceDimensionId: 'plt' },
       grain: {
         keyIds: ['p'],
         columns: [
@@ -196,7 +196,7 @@ it('handles source population and missing/cyclic lineage without offering unrela
       },
     },
   }
-  data.planningLevels = [{ ...cyclic, ...envelope }]
+  data.dimensions = [{ ...cyclic, ...envelope }]
   expect(dimensionKeyOptions(cyclic, product, 'product_key', data)).toEqual([])
 })
 
@@ -204,7 +204,7 @@ it('does not offer another dimension’s generic id key just because its name an
   const { data, level } = fixture()
   data.sources[0].definition.columns[0].name = 'id'
   data.sources[2].definition.columns[0].name = 'id'
-  data.dimensions = [
+  data.dimensionMembers = [
     { ...product, ...envelope },
     {
       ...product,
@@ -214,7 +214,7 @@ it('does not offer another dimension’s generic id key just because its name an
       definition: { ...product.definition, sourceId: 'dates' },
     },
   ]
-  const population: PlanningLevel = {
+  const population: Dimension = {
     ...level,
     definition: {
       ...level.definition,

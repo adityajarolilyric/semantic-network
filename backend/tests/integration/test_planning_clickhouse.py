@@ -30,7 +30,7 @@ def managed(client, table, data):
 def level(source, oid="pl_main", attribute=True):
     return {
         "objectId": oid,
-        "kind": "planningLevel",
+        "kind": "dimension",
         "name": oid,
         "displayName": oid,
         "definition": {
@@ -54,13 +54,13 @@ def level(source, oid="pl_main", attribute=True):
             ]
             if attribute
             else [],
-            "dimensionBindings": [],
+            "memberBindings": [],
         },
     }
 
 
 def create(client, payload):
-    response = client.post(BASE + "/planning-levels", json=payload)
+    response = client.post(BASE + "/dimensions", json=payload)
     assert response.status_code == 201, response.text
     return response.json()
 
@@ -70,14 +70,14 @@ def build(client, oid, version=1):
         client,
         BASE,
         client.post(
-            BASE + "/planning-levels/" + oid + "/build",
+            BASE + "/dimensions/" + oid + "/build",
             headers={"If-Match": str(version), "Idempotency-Key": uuid4().hex},
         ),
     )
 
 
 def table(client, oid):
-    response = client.get(BASE + "/planning-levels/" + oid + "/table?preview=true")
+    response = client.get(BASE + "/dimensions/" + oid + "/table?preview=true")
     assert response.status_code == 200, response.text
     return response.json()
 
@@ -87,7 +87,7 @@ def test_source_attributes_build_and_stale_detection(clickhouse_app):
     source = managed(client, "Population", b"product,category\nP1,C1\nP2,C2\n")
     payload = level(source)
     create(client, payload)
-    preview = client.post(BASE + "/planning-levels/preview/population", json=payload)
+    preview = client.post(BASE + "/dimensions/preview/population", json=payload)
     assert preview.status_code == 200, preview.text
     assert preview.json()["estimatedRows"] == 2
     result = build(client, "pl_main")
@@ -98,7 +98,7 @@ def test_source_attributes_build_and_stale_detection(clickhouse_app):
     assert [c["role"] for c in data["columns"]] == ["key", "attribute"]
     payload["definition"]["populationAttributes"] = []
     response = client.put(
-        BASE + "/planning-levels/pl_main", json=payload, headers={"If-Match": "1"}
+        BASE + "/dimensions/pl_main", json=payload, headers={"If-Match": "1"}
     )
     assert response.status_code == 200, response.text
     stale = table(client, "pl_main")
@@ -149,13 +149,13 @@ def test_cartesian_collision_and_projection(clickhouse_app):
     assert [c["name"] for c in data["columns"]][:2] == ["id", "Time__id"]
     child = {
         "objectId": "pl_product",
-        "kind": "planningLevel",
+        "kind": "dimension",
         "name": "Product",
         "displayName": "Product",
         "definition": {
             "population": {
                 "operation": "distinct_projection",
-                "sourcePlanningLevelId": "pl_main",
+                "sourceDimensionId": "pl_main",
             },
             "grain": {
                 "keyIds": ["product"],
@@ -193,7 +193,7 @@ def test_reject_invalid_grain(clickhouse_app, rows, expected):
     run = build(client, "pl_main")
     assert run["state"] == "failed" and run["error"]["code"] == expected, run
     assert (
-        client.get(BASE + "/planning-levels/pl_main/table").json()["rowCount"] is None
+        client.get(BASE + "/dimensions/pl_main/table").json()["rowCount"] is None
     )
 
 
@@ -213,7 +213,7 @@ def test_non_primary_attribute_lookup_and_population_attribute_mapping(
     dim_source = managed(client, "Categories", b"code,label\n" + dim_rows)
     dim = {
         "objectId": "dim_category",
-        "kind": "dimension",
+        "kind": "dimensionMembers",
         "name": "Category",
         "displayName": "Category",
         "isTimeDim": False,
@@ -238,14 +238,14 @@ def test_non_primary_attribute_lookup_and_population_attribute_mapping(
             "attributeColumnIds": ["code", "label"],
         },
     }
-    response = client.post(BASE + "/dimensions", json=dim)
+    response = client.post(BASE + "/dimension-members", json=dim)
     assert response.status_code == 201, response.text
     payload = level(source)
-    payload["definition"]["dimensionBindings"] = [
+    payload["definition"]["memberBindings"] = [
         {
-            "dimensionId": "dim_category",
+            "memberCatalogId": "dim_category",
             "keyMappings": [
-                {"populationColumnId": "category", "dimensionColumnId": "code"}
+                {"populationColumnId": "category", "memberColumnId": "code"}
             ],
             "selectedAttributeColumnIds": ["label"],
         }
@@ -269,7 +269,7 @@ def test_row_limit_and_failed_build_retains_previous_table(clickhouse_app):
     run = build(client, "pl_main")
     assert run["error"]["code"] == "duplicate_planning_key", run
     assert table(client, "pl_main")["rows"] == before["rows"]
-    client.app.state.container.planning_builds.executor.settings.planning_max_rows = 1
+    client.app.state.container.dimension_builds.executor.settings.planning_max_rows = 1
     run = build(client, "pl_main")
     assert run["error"]["code"] == "planning_row_limit", run
 
@@ -283,7 +283,7 @@ def test_previews_cap_at_50_without_truncating_materialized_table(clickhouse_app
     )
     payload = level(source)
     create(client, payload)
-    preview = client.post(BASE + "/planning-levels/preview/population", json=payload)
+    preview = client.post(BASE + "/dimensions/preview/population", json=payload)
     assert preview.status_code == 200, preview.text
     assert len(preview.json()["rows"]) == 50
     assert preview.json()["rowCount"] == 150
@@ -314,13 +314,13 @@ def test_projection_rejects_attributes_that_vary_at_new_grain(clickhouse_app):
     assert build(client, "pl_main")["state"] == "succeeded"
     child = {
         "objectId": "pl_product",
-        "kind": "planningLevel",
+        "kind": "dimension",
         "name": "Product",
         "displayName": "Product",
         "definition": {
             "population": {
                 "operation": "distinct_projection",
-                "sourcePlanningLevelId": "pl_main",
+                "sourceDimensionId": "pl_main",
             },
             "grain": {
                 "keyIds": ["product"],
@@ -359,7 +359,7 @@ def test_composite_dimension_lookup_and_scoped_filters(clickhouse_app):
     )
     dim = {
         "objectId": "dim_member",
-        "kind": "dimension",
+        "kind": "dimensionMembers",
         "name": "Member",
         "displayName": "Member",
         "isTimeDim": False,
@@ -393,18 +393,18 @@ def test_composite_dimension_lookup_and_scoped_filters(clickhouse_app):
             },
         },
     }
-    response = client.post(BASE + "/dimensions", json=dim)
+    response = client.post(BASE + "/dimension-members", json=dim)
     assert response.status_code == 201, response.text
     payload = level(source)
     payload["definition"]["populationAttributes"].append(
         {"columnId": "region", "name": "region", "populationRef": {"columnId": "col_3"}}
     )
-    payload["definition"]["dimensionBindings"] = [
+    payload["definition"]["memberBindings"] = [
         {
-            "dimensionId": "dim_member",
+            "memberCatalogId": "dim_member",
             "keyMappings": [
-                {"populationColumnId": "category", "dimensionColumnId": "code"},
-                {"populationColumnId": "region", "dimensionColumnId": "region"},
+                {"populationColumnId": "category", "memberColumnId": "code"},
+                {"populationColumnId": "region", "memberColumnId": "region"},
             ],
             "selectedAttributeColumnIds": ["label"],
         }
@@ -466,7 +466,7 @@ def test_attribute_grain_projection_membership_and_functional_enrichment(
         source = managed(client, name + "Members", rows)
         dim = {
             "objectId": "dim_" + name,
-            "kind": "dimension",
+            "kind": "dimensionMembers",
             "name": name,
             "displayName": name,
             "isTimeDim": False,
@@ -486,19 +486,19 @@ def test_attribute_grain_projection_membership_and_functional_enrichment(
                 "attributeColumnIds": [f"d{i}" for i in range(1, len(names) + 1)],
             },
         }
-        response = client.post(BASE + "/dimensions", json=dim)
+        response = client.post(BASE + "/dimension-members", json=dim)
         assert response.status_code == 201, response.text
         bindings.append(
             {
-                "dimensionId": dim["objectId"],
-                "keyMappings": [{"grainColumnId": names[0], "dimensionColumnId": "d1"}],
+                "memberCatalogId": dim["objectId"],
+                "keyMappings": [{"grainColumnId": names[0], "memberColumnId": "d1"}],
                 "selectedAttributeColumnIds": ["d2"],
             }
         )
         coarse_bindings.append(
             {
-                "dimensionId": dim["objectId"],
-                "keyMappings": [{"grainColumnId": name, "dimensionColumnId": "d2"}],
+                "memberCatalogId": dim["objectId"],
+                "keyMappings": [{"grainColumnId": name, "memberColumnId": "d2"}],
                 "selectedAttributeColumnIds": [],
             }
         )
@@ -516,7 +516,7 @@ def test_attribute_grain_projection_membership_and_functional_enrichment(
         client,
         {
             "objectId": "plc",
-            "kind": "planningLevel",
+            "kind": "dimension",
             "name": "PLC",
             "displayName": "PLC",
             "definition": {
@@ -532,33 +532,33 @@ def test_attribute_grain_projection_membership_and_functional_enrichment(
                         for i, n in enumerate(["product", "location", "customer"], 1)
                     ],
                 },
-                "dimensionBindings": bindings,
+                "memberBindings": bindings,
             },
         },
     )
     rev = client.get(BASE).json()
     response = client.put(
         BASE,
-        json={"basePlanningLevelId": "plc", "changeReason": ""},
+        json={"baseDimensionId": "plc", "changeReason": ""},
         headers={"If-Match": str(rev["version"])},
     )
     assert response.status_code == 200, response.text
     assert build(client, "plc")["state"] == "succeeded"
     child = {
         "objectId": "bzs",
-        "kind": "planningLevel",
+        "kind": "dimension",
         "name": "BrandZoneSoldTo",
         "displayName": "BrandZoneSoldTo",
         "definition": {
             "population": {
                 "operation": "distinct_projection",
-                "sourcePlanningLevelId": "plc",
+                "sourceDimensionId": "plc",
             },
             "grain": {
                 "keyIds": ["Product", "Location", "Customer"],
                 "columns": coarse_columns,
             },
-            "dimensionBindings": coarse_bindings,
+            "memberBindings": coarse_bindings,
         },
     }
     # All bindings have multiple raw members for B1/Z1/S1. Membership must not multiply rows.
@@ -567,23 +567,23 @@ def test_attribute_grain_projection_membership_and_functional_enrichment(
     assert result["state"] == "succeeded", result
     assert table(client, "bzs")["rows"] == [["B1", "Z1", "S1"], ["B2", "Z2", "S2"]]
     objects = (
-        client.get(BASE + "/planning-levels").json()["items"]
-        + client.get(BASE + "/dimensions").json()["items"]
+        client.get(BASE + "/dimensions").json()["items"]
+        + client.get(BASE + "/dimension-members").json()["items"]
     )
     analyzer = LevelRelationshipAnalyzer(objects)
     assert analyzer.analyze("plc", "bzs")["relationship"] == "roll_up"
     assert analyzer.analyze("bzs", "plc")["relationship"] == "roll_down"
 
-    child["definition"]["dimensionBindings"][0]["selectedAttributeColumnIds"] = ["d3"]
+    child["definition"]["memberBindings"][0]["selectedAttributeColumnIds"] = ["d3"]
     response = client.put(
-        BASE + "/planning-levels/bzs", json=child, headers={"If-Match": "1"}
+        BASE + "/dimensions/bzs", json=child, headers={"If-Match": "1"}
     )
     assert response.status_code == 200, response.text
     result = build(client, "bzs", 2)
     assert result["state"] == "succeeded", result
     before = table(client, "bzs")
     assert before["rowCount"] == 2 and len(before["columns"]) == 4
-    assert client.get(BASE + "/planning-levels/bzs").json()["definition"]["grain"][
+    assert client.get(BASE + "/dimensions/bzs").json()["definition"]["grain"][
         "keyIds"
     ] == ["Product", "Location", "Customer"]
     # Identical requested attributes across different products are fine; conflicting values are not.
@@ -597,18 +597,18 @@ def test_attribute_grain_projection_membership_and_functional_enrichment(
     ), result
     assert table(client, "bzs")["rows"] == before["rows"]
     # Removing enrichment returns to membership-only semantics, so the extra Category is ignored.
-    child["definition"]["dimensionBindings"][0]["selectedAttributeColumnIds"] = []
+    child["definition"]["memberBindings"][0]["selectedAttributeColumnIds"] = []
     response = client.put(
-        BASE + "/planning-levels/bzs", json=child, headers={"If-Match": "2"}
+        BASE + "/dimensions/bzs", json=child, headers={"If-Match": "2"}
     )
     assert response.status_code == 200, response.text
     assert build(client, "bzs", 3)["state"] == "succeeded"
     # A value which does not occur in the mapped dimension column must still fail membership.
-    child["definition"]["dimensionBindings"][0]["keyMappings"][0][
-        "dimensionColumnId"
+    child["definition"]["memberBindings"][0]["keyMappings"][0][
+        "memberColumnId"
     ] = "d3"
     response = client.put(
-        BASE + "/planning-levels/bzs", json=child, headers={"If-Match": "3"}
+        BASE + "/dimensions/bzs", json=child, headers={"If-Match": "3"}
     )
     assert response.status_code == 200, response.text
     result = build(client, "bzs", 4)
@@ -634,14 +634,14 @@ def test_deleted_planning_resource_is_collected_and_recreated_with_fresh_name(
     identity = {
         "modelId": "default_model",
         "revisionId": "revision_1",
-        "resourceKind": "planningLevel",
+        "resourceKind": "dimension",
         "resourceId": created["objectId"],
     }
     old = client.portal.call(
         container.store.repository.get, "engine_table_resources", identity
     )
     response = client.delete(
-        BASE + "/planning-levels/" + created["objectId"],
+        BASE + "/dimensions/" + created["objectId"],
         headers={"If-Match": str(created["version"])},
     )
     assert response.status_code == 204, response.text
@@ -680,7 +680,7 @@ def test_source_final_distinct_ignores_unselected_columns(clickhouse_app, attrib
     )
     payload = level(source, attribute=attribute)
     create(client, payload)
-    preview = client.post(BASE + "/planning-levels/preview/population", json=payload)
+    preview = client.post(BASE + "/dimensions/preview/population", json=payload)
     assert preview.status_code == 200, preview.text
     assert preview.json()["estimatedRows"] == 2
     run = build(client, "pl_main")
@@ -729,10 +729,10 @@ def test_cartesian_daily_time_selected_as_week_distinct(clickhouse_app):
     }
     create(client, payload)
     # Eight raw Cartesian rows must fit a four-row distinct-output limit.
-    settings = client.app.state.container.planning_builds.executor.settings
+    settings = client.app.state.container.dimension_builds.executor.settings
     previous_limit = settings.planning_max_rows
     settings.planning_max_rows = 4
-    preview = client.post(BASE + "/planning-levels/preview/population", json=payload)
+    preview = client.post(BASE + "/dimensions/preview/population", json=payload)
     assert preview.status_code == 200, preview.text
     assert preview.json()["estimatedRows"] == 4
     run = build(client, "pl_main")
@@ -756,13 +756,13 @@ def test_cartesian_daily_time_selected_as_week_distinct(clickhouse_app):
             "populationRef": {"factorId": "time", "columnId": "col_1"},
         }
     ]
-    preview = client.post(BASE + "/planning-levels/preview/population", json=payload)
+    preview = client.post(BASE + "/dimensions/preview/population", json=payload)
     # Population preview can show the conflicting distinct rows; Build enforces
     # grain uniqueness before activating a physical planning table.
     assert preview.status_code == 200, preview.text
     assert preview.json()["estimatedRows"] == 8
     response = client.put(
-        BASE + "/planning-levels/pl_main", json=payload, headers={"If-Match": "1"}
+        BASE + "/dimensions/pl_main", json=payload, headers={"If-Match": "1"}
     )
     assert response.status_code == 200, response.text
     failed = build(client, "pl_main", version=2)
@@ -780,7 +780,7 @@ def test_projection_keeps_inherited_name_when_dimension_reselects_attribute(
     )
     dim = {
         "objectId": "dim_product",
-        "kind": "dimension",
+        "kind": "dimensionMembers",
         "name": "Product",
         "displayName": "Product",
         "isTimeDim": False,
@@ -805,22 +805,22 @@ def test_projection_keeps_inherited_name_when_dimension_reselects_attribute(
             "attributeColumnIds": ["id", "name"],
         },
     }
-    response = client.post(BASE + "/dimensions", json=dim)
+    response = client.post(BASE + "/dimension-members", json=dim)
     assert response.status_code == 201, response.text
     binding = {
-        "dimensionId": "dim_product",
-        "keyMappings": [{"grainColumnId": "product", "dimensionColumnId": "id"}],
+        "memberCatalogId": "dim_product",
+        "keyMappings": [{"grainColumnId": "product", "memberColumnId": "id"}],
         "selectedAttributeColumnIds": ["name"],
     }
     parent = level(source, attribute=False)
-    parent["definition"]["dimensionBindings"] = [binding]
+    parent["definition"]["memberBindings"] = [binding]
     create(client, parent)
     assert build(client, "pl_main")["state"] == "succeeded"
     inherited = table(client, "pl_main")["columns"][1]["columnId"]
     child = level(source, oid="pl_child", attribute=False)
     child["definition"]["population"] = {
         "operation": "distinct_projection",
-        "sourcePlanningLevelId": "pl_main",
+        "sourceDimensionId": "pl_main",
     }
     child["definition"]["grain"]["columns"][0]["populationRef"] = {
         "sourceGrainColumnId": "product"
@@ -832,7 +832,7 @@ def test_projection_keeps_inherited_name_when_dimension_reselects_attribute(
             "populationRef": {"sourceOutputColumnId": inherited},
         }
     ]
-    child["definition"]["dimensionBindings"] = [binding]
+    child["definition"]["memberBindings"] = [binding]
     create(client, child)
     run = build(client, "pl_child")
     assert run["state"] == "succeeded", run

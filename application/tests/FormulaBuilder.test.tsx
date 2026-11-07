@@ -18,7 +18,7 @@ function setup() {
             key: 'product.brand',
             label: 'Product.Brand',
             valueType: 'string',
-            reference: { type: 'attributeRef', dimensionId: 'product', columnId: 'brand' },
+            reference: { type: 'attributeRef', memberCatalogId: 'product', columnId: 'brand' },
           },
         ]}
         functions={[
@@ -84,7 +84,7 @@ it('marks invalid formulas as errors and clears the error state after validation
         valid: false,
         containsCounts: false,
         diagnostics: [
-          { message: '"Forecast Qty" is unavailable at Output Planning Level "Orders grain".' },
+          { message: '"Forecast Qty" is unavailable at Output Dimension "Orders grain".' },
         ],
       }}
     />,
@@ -105,4 +105,62 @@ it('marks invalid formulas as errors and clears the error state after validation
   )
   expect(screen.getByRole('status')).not.toHaveClass('is-error')
   expect(screen.getByLabelText('Formula')).not.toHaveAttribute('aria-invalid')
+})
+
+it('inserts compatible calculated measures and explains incompatible inputs', async () => {
+  const user = userEvent.setup()
+  const data = emptySnapshot()
+  const template = {
+    modelId: 'm',
+    revisionId: 'r',
+    version: 1,
+    createdAt: '',
+    updatedAt: '',
+    kind: 'measure' as const,
+    description: '',
+    displayName: '',
+    business: { unit: null, aliases: [] },
+    definition: {
+      measureType: 'calculated' as const,
+      nativeGrainId: 'base',
+      calculationType: 'AggregateFirst' as const,
+      resultType: { type: 'number' as const, nullable: true },
+      editable: false,
+      formula: { displayText: '1', expression: { type: 'literal' as const, value: 1 } },
+    },
+  }
+  const measures = [
+    { ...template, objectId: 'blocked', name: 'Unrelated' },
+    { ...template, objectId: 'profit', name: 'Profit' },
+  ] as import('../src/metadata/types').Measure[]
+  function Editor() {
+    const [value, setValue] = useState('')
+    return (
+      <FormulaBuilder
+        value={value}
+        onChange={setValue}
+        measures={measures}
+        measureAvailability={{
+          blocked: { available: false, reason: 'Unrelated has no proven path to Base.' },
+          profit: { available: true, reason: 'Recalculate at Base.' },
+        }}
+        attributes={[]}
+        functions={[]}
+        data={data}
+        validation={null}
+        attributeError=""
+        functionError=""
+        levelSelected
+      />
+    )
+  }
+  render(<Editor />)
+  expect(screen.getByRole('button', { name: 'Unrelated' })).toBeDisabled()
+  expect(screen.getByText('Unrelated has no proven path to Base.')).toBeVisible()
+  expect(screen.getByText('Calculated · Number')).toBeVisible()
+  // Keyboard insertion skips unavailable suggestions and restores the formula caret.
+  await user.click(screen.getByLabelText('Search formula inputs'))
+  await user.keyboard('{Enter}')
+  expect(screen.getByLabelText('Formula')).toHaveValue('[Profit]')
+  expect(screen.getByLabelText('Formula')).toHaveFocus()
 })

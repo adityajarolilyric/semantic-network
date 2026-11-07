@@ -1,27 +1,28 @@
 """Compilation state for input transformations, independent of measures."""
 
+from sqlglot import exp, parse_one
+
 from ..core.errors import MetadataError
-from ..domain.measure_policies import normalize_measure
-from ..warehouse.repository import quote_identifier as q
-from .planning_compiler import PlanningLevelCompiler
+from ..warehouse.sql import quote_identifier as q
+from .compiler import ClickHouseCompiler
+from .contracts import digest
+from .grain_contexts import resolve_grain_contexts
 
 
-class CompilationContext(PlanningLevelCompiler):
+class CompilationContext(ClickHouseCompiler):
     def __init__(self, database, objects, managed, *, resolution_max_rows=1000000):
         super().__init__(database)
-        self.objects = {
-            document["objectId"]: normalize_measure(document) for document in objects
-        }
+        self.graph = resolve_grain_contexts(objects)
+        self.objects = dict(self.graph.by_id)
         self.managed = managed
         self.resolution_max_rows = resolution_max_rows
         self.object_inputs = {}
         self.ctes = {}
+        self.cte_dependencies = {}
         self.assertions = self.input_checks
         self.max_nodes = 1024
 
     def object_input(self, owner, relation):
-        from .contracts import digest
-
         pivot = owner["definition"].get("pivot")
         if not pivot or not pivot.get("enabled", True):
             return super().object_input(owner, relation)
@@ -49,11 +50,30 @@ class CompilationContext(PlanningLevelCompiler):
         return name
 
     def with_sql(self, sql):
+        def dependencies(statement):
+            return {
+                table.name
+                for table in parse_one(statement, read="clickhouse").find_all(exp.Table)
+                if not table.db and table.name in self.ctes
+            }
+
+        pending = list(dependencies(sql)) if self.ctes else []
+        required = set()
+        while pending:
+            name = pending.pop()
+            if name in required:
+                continue
+            required.add(name)
+            if name not in self.cte_dependencies:
+                self.cte_dependencies[name] = dependencies(self.ctes[name])
+            pending.extend(self.cte_dependencies[name])
         return (
             "WITH "
-            + ", ".join(q(k) + " AS (" + v + ")" for k, v in self.ctes.items())
+            + ", ".join(
+                q(k) + " AS (" + v + ")" for k, v in self.ctes.items() if k in required
+            )
             + " "
             + sql
-            if self.ctes
+            if required
             else sql
         )

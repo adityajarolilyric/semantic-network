@@ -1,5 +1,6 @@
-from copy import deepcopy
 import re
+from copy import deepcopy
+
 from ..core.errors import MetadataError
 from ..schemas.managed_tables import ManagedDefinition
 from .contracts import (

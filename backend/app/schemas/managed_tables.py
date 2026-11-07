@@ -1,4 +1,5 @@
 from typing import Literal
+
 from pydantic import (
     Field,
     StrictBool,
@@ -8,6 +9,7 @@ from pydantic import (
     model_serializer,
     model_validator,
 )
+
 from .common import Identifier, Name, Schema
 
 AttributeValue = StrictStr | StrictBool | StrictInt | StrictFloat | None

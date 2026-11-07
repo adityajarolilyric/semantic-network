@@ -16,7 +16,7 @@ def test_default_workspace_is_durable_and_idempotent(settings):
             "/api/v1/models/default_model/revisions/revision_1"
         ).json()
         assert revision["approvalStatus"] == "draft"
-        assert revision["basePlanningLevelId"] is None
+        assert revision["baseDimensionId"] is None
     with TestClient(create_app(settings, store)) as second:
         assert second.post("/api/v1/workspace/bootstrap").json() == first.json()
 

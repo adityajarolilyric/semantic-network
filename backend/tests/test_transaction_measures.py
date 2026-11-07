@@ -52,10 +52,9 @@ def test_selected_measure_defaults_and_atomic_creation(populated, generated):
     measure = created[0]
     assert measure["name"] == "forecast_qty"
     definition = measure["definition"]
-    assert (
-        definition["nativePlanningLevelId"]
-        == transaction["definition"]["planningLevelId"]
-    )
+    assert "nativeDimensionId" not in definition
+    assert "nativeGrainId" not in definition
+    assert definition["transactionId"] == transaction["objectId"]
     assert definition["editable"] is True
     assert definition["resultType"] == {
         "type": "number",
@@ -102,7 +101,7 @@ def test_invalid_selection_leaves_no_partial_metadata(populated, generated, inva
         }
     before = populated.get(ROOT).json()
     measures = populated.get(ROOT + "/measures").json()
-    levels = populated.get(ROOT + "/planning-levels").json()
+    levels = populated.get(ROOT + "/dimensions").json()
     response = populated.post(
         ROOT + ("/transactions/from-grain" if generated else "/transactions"),
         json=payload,
@@ -111,7 +110,7 @@ def test_invalid_selection_leaves_no_partial_metadata(populated, generated, inva
     assert populated.get(ROOT).json() == before
     assert populated.get(ROOT + "/transactions/auto_measures").status_code == 404
     assert populated.get(ROOT + "/measures").json() == measures
-    assert populated.get(ROOT + "/planning-levels").json() == levels
+    assert populated.get(ROOT + "/dimensions").json() == levels
 
 
 @pytest.mark.parametrize("generated", [False, True])
@@ -125,17 +124,12 @@ def test_object_limit_counts_selected_measures(populated, generated):
         for resource in [
             "sources",
             "dimensions",
-            "planning-levels",
             "transactions",
             "measures",
         ]
     )
-    service = (
-        populated.app.state.container.transaction_grains
-        if generated
-        else populated.app.state.container.transactions
-    )
-    service.max_objects = count + (2 if generated else 1)
+    service = populated.app.state.container.transactions
+    service.max_objects = count + 1
     before = populated.get(ROOT).json()
     response = populated.post(
         ROOT + ("/transactions/from-grain" if generated else "/transactions"),

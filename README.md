@@ -55,11 +55,11 @@ Existing `:v1` command aliases remain available. All default commands now use V1
 1. **Sources:** upload up to 10 CSV files sequentially, preview ClickHouse data, enable Managed Tables. One default semantic model and draft revision are initialized automatically; creation, selection and publication controls are not exposed.
 2. **Managed Tables:** save identity or pivot views. Semantic objects consume revision-specific saved managed outputs.
 3. **Dimensions:** expose attributes and column display names, declare keys, and configure the daily Time dimension/calendar when needed.
-4. **Planning Levels:** build populations from intersections, Cartesian factors or distinct parent projections. Grain columns are mandatory; dimension bindings provide optional membership/enrichment and cross-level mappings.
+4. **Dimensions:** build populations from intersections, Cartesian factors or distinct parent projections. Grain columns are mandatory; dimension bindings provide optional membership/enrichment and cross-level mappings.
 5. **Transactions:** map native grain keys directly or resolve mixed-grain assignments. Selector discovery, explicit source order, per-value Split/Copy and date ranges are supported. Daily ranges can map to native Week/Month keys through the calendar.
 6. **Measures:** define referenced or calculated measures, configured Time/NonTime aggregation and disaggregation policies. Independent native levels do not need a path to Base.
 7. **Materialise:** Build Semantic Network and preview planning values. Each revision/level uses one population table and one values table, including during rebuilds.
-8. **Planning View:** choose Rows, Columns and Measures; measures appear as rows. Editable referenced measures can be edited at native or proven coarser grains. Writes go to Base where reachable, otherwise native, and update compatible coarser levels atomically.
+8. **Decision View:** choose Rows, Columns and Measures; measures appear as rows. Editable referenced measures can be edited at native or proven coarser grains. Writes go to Base where reachable, otherwise native, and update compatible coarser levels atomically.
 
 There is no durable edit journal. Rebuilding the semantic network replaces manual edits from source data. Weighted-by-self edits distribute across populated cells while preserving NULL cells; empty or zero-total patterns fail explicitly. None disaggregation means Repeat, and aggregation always follows the configured policy.
 
@@ -69,9 +69,9 @@ Start with the [design guide](docs/README.md), then read the relevant topic:
 
 - [Metadata and authoring](docs/METADATA.md)
 - [Sources and Managed Tables](docs/SOURCES_AND_MANAGED_TABLES.md)
-- [Planning levels](docs/PLANNING_LEVELS.md)
+- [Dimensions](docs/DIMENSIONS.md)
 - [Transactions and date ranges](docs/TRANSACTIONS.md)
 - [Measures and Materialise](docs/MEASURES.md)
-- [Planning View and editing](docs/PLANNING_VIEW.md)
+- [Decision View and editing](docs/DECISION_VIEW.md)
 - [Engine and storage](docs/ENGINE_AND_STORAGE.md)
 - [Operations and verification](docs/OPERATIONS.md)

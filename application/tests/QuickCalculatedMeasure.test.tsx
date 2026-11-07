@@ -8,7 +8,8 @@ import { emptySnapshot } from '../src/metadata/types'
 beforeEach(() => {
   vi.spyOn(metadataApi, 'request').mockImplementation(async (path, _method, body) => {
     if (path.endsWith('/formula/language')) return { functions: [] } as never
-    if (path.includes('/formula/attributes')) return [] as never
+    if (path.includes('/formula/attributes') || path.includes('/formula/measures'))
+      return [] as never
     const text = (body as { displayText: string }).displayText
     return {
       valid: !text.endsWith('('),
@@ -36,15 +37,29 @@ function setup() {
     description: '',
     displayName: '',
   }
-  data.planningLevels = ['base', 'week'].map((id) => ({
+  data.dimensions = ['base', 'week'].map((id) => ({
     ...envelope,
-    kind: 'planningLevel',
+    kind: 'dimension',
     objectId: id,
     name: id,
     definition: {
       population: { operation: 'source', sourceId: 's' },
       grain: { keyIds: [], columns: [] },
-      dimensionBindings: [],
+      memberBindings: [],
+    },
+  }))
+  data.transactions = ['base', 'week'].map((id) => ({
+    ...envelope,
+    kind: 'transaction',
+    objectId: 'tx-' + id,
+    name: id,
+    definition: {
+      sourceId: 's',
+      dimensionId: id,
+      mappingMode: 'direct',
+      keyMappings: [],
+      expectedRowsPerGrain: 'many',
+      unmatchedGrainPolicy: 'reject',
     },
   }))
   data.measures = [
@@ -56,7 +71,7 @@ function setup() {
       business: { unit: null, aliases: [] },
       definition: {
         measureType: 'calculated',
-        nativePlanningLevelId: 'base',
+        nativeGrainId: 'base',
         calculationType: 'AggregateFirst',
         editable: false,
         resultType: { type: 'number', nullable: true },
@@ -93,7 +108,7 @@ it('creates a Base AggregateFirst measure with a compact formula editor', async 
     expect.objectContaining({
       name: 'Double',
       definition: expect.objectContaining({
-        nativePlanningLevelId: 'base',
+        nativeGrainId: 'base',
         calculationType: 'AggregateFirst',
         formula: expect.objectContaining({ displayText: '[FQTY]*2' }),
       }),
@@ -106,7 +121,7 @@ it('retains advanced settings when collapsed and reports save errors', async () 
   await user.type(screen.getByLabelText('Name'), 'Double')
   await user.type(screen.getByLabelText('Formula'), '1+2')
   await user.click(screen.getByRole('button', { name: 'Advanced settings' }))
-  await user.selectOptions(screen.getByLabelText('Output Planning Level'), 'week')
+  await user.selectOptions(screen.getByLabelText('Output grain'), 'dimension:week')
   await user.click(screen.getByRole('radio', { name: 'Calculate first' }))
   await user.click(screen.getByRole('button', { name: 'Hide advanced settings' }))
   await user.click(screen.getByRole('button', { name: 'Save metadata' }))
@@ -114,7 +129,7 @@ it('retains advanced settings when collapsed and reports save errors', async () 
   expect(save).toHaveBeenCalledWith(
     expect.objectContaining({
       definition: expect.objectContaining({
-        nativePlanningLevelId: 'week',
+        nativeGrainId: 'week',
         calculationType: 'CalculateFirst',
         aggregation: expect.objectContaining({ nonTime: 'sum' }),
       }),

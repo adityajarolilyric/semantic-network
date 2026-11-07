@@ -1,24 +1,27 @@
 """Base-or-native writeback against a captured generation, without replay storage."""
 
 from ..core.errors import MetadataError
-from ..warehouse.repository import quote_identifier as q
-from ..warehouse.repository import quote_literal as lit
+from ..domain.grains import transaction_column_reference
+from ..formula_language.expressions import measure_references
+from ..warehouse.sql import quote_identifier as q
+from ..warehouse.sql import quote_literal as lit
 from .contracts import Check
+from .decision_view import TARGET, DecisionViewPlanner, ViewRelationships, virtual_level
+from .grain_contexts import resolve_grain_contexts
 from .measure_compiler import COMPLETE, VALUE, MeasureCompiler
-from .planning_view import TARGET, PlanningViewPlanner, ViewRelationships, virtual_level
 from .table_storage import GENERATION, token
 
 
 class MeasureEditPlanner:
     def __init__(self, objects, base_id, fields):
-        self.objects = {o["objectId"]: o for o in objects}
+        self.objects = {o["objectId"]: o for o in resolve_grain_contexts(objects)}
         self.base_id, self.fields = base_id, fields
         self.relationships = ViewRelationships(objects, fields)
 
     def capability(self, mid, snapshots, draft=True):
         d = self.objects[mid]["definition"]
         allowed = ("same", "equivalent", "roll_up")
-        native = d["nativePlanningLevelId"]
+        native = d["nativeGrainId"]
         anchor = (
             self.base_id
             if all(
@@ -83,17 +86,23 @@ class MeasureEditPlanner:
 
 
 class MeasureEditCompiler(MeasureCompiler):
+    def previous_values_sql(self, artifact):
+        query = f"SELECT * FROM {self.table(artifact.get('viewName', artifact['physicalName']))}"
+        if artifact.get("storageMode") != "current":
+            query += f" WHERE {q(GENERATION)}={lit(token(artifact))}"
+        return query
+
     def __init__(
         self, database, objects, populations, managed, base_id, snapshots, edit
     ):
-        fields = PlanningViewPlanner(objects, base_id).fields(edit.view)
+        fields = DecisionViewPlanner(objects, base_id).fields(edit.view)
         super().__init__(
             database,
             [*objects, virtual_level(fields)],
             populations,
             managed,
             base_id,
-            snapshots[base_id],
+            snapshots.get(base_id) or next(iter(snapshots.values())),
         )
         self.relationships = ViewRelationships(objects, fields)
         self.levels[TARGET] = self.relationships.levels[TARGET]
@@ -101,6 +110,7 @@ class MeasureEditCompiler(MeasureCompiler):
         self.write_id = MeasureEditPlanner(objects, base_id, fields).capability(
             edit.measureId, snapshots
         )["writeLevelId"]
+        self.previous = snapshots[self.write_id]
         self.affected = {edit.measureId}
         changed = True
         while changed:
@@ -149,7 +159,7 @@ class MeasureEditCompiler(MeasureCompiler):
                 and set(old["keyColumns"]) == set(self.keys(target))
             ):
                 weight_join = (
-                    f"LEFT JOIN (SELECT * FROM {self.table(old['physicalName'])} WHERE {q(GENERATION)}={lit(token(old))}) w ON "
+                    f"LEFT JOIN ({self.previous_values_sql(old)}) w ON "
                     + " AND ".join(
                         "c." + q(k) + " = w." + q(old["keyColumns"][k])
                         for k in self.keys(target)
@@ -178,7 +188,7 @@ class MeasureEditCompiler(MeasureCompiler):
         self.assertions.append(
             Check(
                 "no_disaggregation_children",
-                f"SELECT p.* FROM {q(parent)} p LEFT JOIN (SELECT {grouped},toUInt8(1) AS __matched FROM {q(child)} GROUP BY {grouped}) c ON {cover_on} WHERE coalesce(c.__matched,0)=0 AND isNotNull(p.{q(VALUE)}) LIMIT 20",
+                f"SELECT {', '.join('p.' + q(k) for k in [*self.keys(source), VALUE])} FROM {q(parent)} p LEFT JOIN (SELECT {grouped},toUInt8(1) AS __matched FROM {q(child)} GROUP BY {grouped}) c ON {cover_on} WHERE coalesce(c.__matched,0)=0 AND isNotNull(p.{q(VALUE)}) LIMIT 20",
             )
         )
         body = f"FROM {q(child)} c LEFT JOIN {q(parent)} p ON {on} {weight_join}"
@@ -196,15 +206,29 @@ class MeasureEditCompiler(MeasureCompiler):
         return result
 
     def references(self, node):
-        if node["type"] == "measureRef":
-            return {node["measureId"]}
-        if node["type"] == "binary":
-            return self.references(node["left"]) | self.references(node["right"])
-        if node["type"] in {"call", "count"}:
-            return set().union(*(self.references(c) for c in node["arguments"]))
-        return set()
+        return set(measure_references(node))
 
     def stored(self, mid, level):
+        if mid in self.snapshots.get(level, {}).get("measureColumns", {}):
+            return self.stored_measure(mid, level, self.snapshots)
+        measure = self.measures[mid]
+        if measure["definition"].get("calculationType") == "AggregateFirst":
+            return self.compile_calculated_measure(measure, level)
+        native = measure["definition"]["nativeGrainId"]
+        for source in dict.fromkeys([self.base_id, native]):
+            if mid in self.snapshots.get(source, {}).get(
+                "measureColumns", {}
+            ) and self.relationships.analyze(source, level)["relationship"] in {
+                "same",
+                "equivalent",
+                "roll_up",
+            }:
+                return self.rollup(
+                    self.stored_measure(mid, source, self.snapshots),
+                    measure,
+                    source,
+                    level,
+                )
         return self.stored_measure(mid, level, self.snapshots)
 
     def compile_measure_at_level(self, mid, target):
@@ -240,7 +264,7 @@ class MeasureEditCompiler(MeasureCompiler):
             elif d.get("calculationType") == "AggregateFirst":
                 result = self.compile_calculated_measure(measure, target)
             else:
-                native = d["nativePlanningLevelId"]
+                native = d["nativeGrainId"]
                 if (
                     self.relationships.analyze(self.write_id, native)["relationship"]
                     not in allowed
@@ -265,9 +289,7 @@ class MeasureEditCompiler(MeasureCompiler):
 
     def compile_seed_measure(self, mid):
         if self.measures[mid]["definition"]["measureType"] == "referenced":
-            return self.stored(
-                mid, self.measures[mid]["definition"]["nativePlanningLevelId"]
-            )
+            return self.stored(mid, self.measures[mid]["definition"]["nativeGrainId"])
         return super().compile_seed_measure(mid)
 
     def patch(self):
@@ -284,15 +306,22 @@ class MeasureEditCompiler(MeasureCompiler):
         )
         predicates = []
         for field, value in zip(self.fields, self.edit.memberValues):
-            if field.get("planningLevelId"):
-                population = self.populations[field["planningLevelId"]]
+            if field.get("dimensionId") or field.get("transactionId"):
+                grain_id, column_id = (field.get("dimensionId"), field["columnId"])
+                if field.get("transactionId"):
+                    grain_id, column_id = transaction_column_reference(
+                        field["transactionId"],
+                        field["columnId"],
+                        list(self.objects.values()),
+                    )
+                population = self.populations[grain_id]
                 typ = next(
                     c["physicalType"]
                     for c in population["columns"]
-                    if c["columnId"] == field["columnId"]
+                    if c["columnId"] == column_id
                 )
             else:
-                dim = self.objects[field["dimensionId"]]["definition"]
+                dim = self.objects[field["memberCatalogId"]]["definition"]
                 dc = next(
                     c for c in dim["columns"] if c["columnId"] == field["columnId"]
                 )
@@ -300,7 +329,7 @@ class MeasureEditCompiler(MeasureCompiler):
                 typ = next(
                     c["physicalType"]
                     for c in self.object_input(
-                        self.objects[field["dimensionId"]], source
+                        self.objects[field["memberCatalogId"]], source
                     )[1]
                     if c["columnId"] == dc["sourceColumnId"]
                 )

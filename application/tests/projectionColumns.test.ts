@@ -1,15 +1,15 @@
 import { expect, it } from 'vitest'
 import { projectionAttributes } from '../src/metadata/projectionColumns'
-import type { Dimension, PlanningLevel } from '../src/metadata/types'
+import type { DimensionMembers, Dimension } from '../src/metadata/types'
 
 it('hides parent grain aliases and uses dimension display names for business attributes', () => {
   const parent = {
     definition: { grain: { keyIds: ['product'] }, populationAttributes: [] },
-  } as unknown as PlanningLevel
+  } as unknown as Dimension
   const dimension = {
     objectId: 'Product',
     definition: { columns: [{ columnId: 'brand', displayName: 'Brand' }] },
-  } as unknown as Dimension
+  } as unknown as DimensionMembers
   const options = projectionAttributes(
     parent,
     [
@@ -24,7 +24,7 @@ it('hides parent grain aliases and uses dimension display names for business att
         name: 'Product__Brand',
         physicalType: 'String',
         role: 'attribute',
-        lineage: { kind: 'dimension', dimensionId: 'Product', columnId: 'brand' },
+        lineage: { kind: 'dimensionMembers', memberCatalogId: 'Product', columnId: 'brand' },
       },
       { columnId: 'FQTY', name: 'FQTY', physicalType: 'Int64', role: 'measure' },
     ],

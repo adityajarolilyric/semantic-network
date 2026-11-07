@@ -21,7 +21,7 @@ export function formulaResultType(
   if (node.type === 'attributeRef')
     return (attributes.find(
       (attribute) =>
-        attribute.key === (node.dimensionId ?? node.planningLevelId) + '.' + node.columnId,
+        attribute.key === (node.memberCatalogId ?? node.dimensionId) + '.' + node.columnId,
     )?.valueType ?? 'number') as MeasureCommon['resultType']['type']
   if (node.type === 'grainRef') return 'number'
   if (node.type === 'binary')

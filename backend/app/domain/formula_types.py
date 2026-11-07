@@ -1,9 +1,12 @@
 """Type inference and function signatures for the semantic expression AST."""
 
-from ..core.errors import MetadataError
-from .typed_values import NUMERIC, result_type
+import re
+from datetime import date
 
+from ..core.errors import MetadataError
 from ..formula_language.catalog import FUNCTIONS
+from .grains import transaction_column_reference
+from .typed_values import NUMERIC, result_type
 
 
 def infer(node, measure_type, attribute_type, depth=0):
@@ -82,13 +85,10 @@ def infer(node, measure_type, attribute_type, depth=0):
     if fn == "date":
         if args != ["string"]:
             error("DATE requires an ISO date string.")
-        from datetime import date
 
         literal = node["arguments"][0]
         if literal["type"] == "literal":
             try:
-                import re
-
                 if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", literal["value"]):
                     raise ValueError()
                 date.fromisoformat(literal["value"])
@@ -112,20 +112,26 @@ def infer(node, measure_type, attribute_type, depth=0):
 
 def attribute_physical_type(context, owner, node):
     if node["type"] == "grainRef":
-        level = context.objects.get(owner["definition"]["nativePlanningLevelId"])
+        level = context.objects.get(owner["definition"]["nativeGrainId"])
         physical = context.grain_type(level, node["grainColumnId"]) if level else None
-    elif node.get("dimensionId"):
-        obj = context.objects.get(node["dimensionId"])
+    elif node.get("memberCatalogId"):
+        obj = context.objects.get(node["memberCatalogId"])
         physical = (
             context.dimension_type(obj, node["columnId"])
-            if obj and obj["kind"] == "dimension"
+            if obj and obj["kind"] == "dimensionMembers"
             else None
         )
+    elif node.get("transactionId"):
+        grain_id, column_id = transaction_column_reference(
+            node["transactionId"], node["columnId"], list(context.objects.values())
+        )
+        obj = context.objects.get(grain_id)
+        physical = context.grain_type(obj, column_id) if obj and column_id else None
     else:
-        obj = context.objects.get(node.get("planningLevelId"))
+        obj = context.objects.get(node.get("dimensionId"))
         physical = (
             context.grain_type(obj, node["columnId"])
-            if obj and obj["kind"] == "planningLevel"
+            if obj and obj["kind"] in {"dimension", "grain"}
             else None
         )
     value = result_type(physical or "", True)

@@ -10,6 +10,7 @@ export type FormulaFunction = {
   minimum?: number
   maximum?: number
 }
+export type FormulaMeasureAvailability = Record<string, { available: boolean; reason: string }>
 type Tab = 'Measures' | 'Columns' | 'Functions'
 const tabs: Tab[] = ['Measures', 'Columns', 'Functions']
 const guides: Record<string, [string, string]> = {
@@ -45,6 +46,8 @@ export function FormulaBuilder({
   value,
   onChange,
   measures,
+  measureAvailability,
+  measureError = '',
   attributes,
   functions,
   data,
@@ -58,9 +61,11 @@ export function FormulaBuilder({
   value: string
   onChange: (text: string) => void
   measures: Measure[]
+  measureAvailability?: FormulaMeasureAvailability
+  measureError?: string
   attributes: FormulaAttribute[]
   functions: FormulaFunction[]
-  data: Pick<Snapshot, 'dimensions' | 'planningLevels'>
+  data: Pick<Snapshot, 'dimensionMembers' | 'dimensions'>
   validation: FormulaValidation | null
   attributeError: string
   functionError: string
@@ -83,11 +88,11 @@ export function FormulaBuilder({
   )
   const filteredFunctions = functions.filter((fn) => matches(fn.name + ' ' + fn.description))
   const owners = new Map(
-    [...data.dimensions, ...data.planningLevels].map((owner) => [owner.objectId, owner]),
+    [...data.dimensionMembers, ...data.dimensions].map((owner) => [owner.objectId, owner]),
   )
   const groups = new Map<string, FormulaAttribute[]>()
   for (const column of filteredColumns) {
-    const ownerId = column.reference.dimensionId ?? column.reference.planningLevelId!
+    const ownerId = column.reference.memberCatalogId ?? column.reference.dimensionId!
     groups.set(ownerId, [...(groups.get(ownerId) ?? []), column])
   }
   useLayoutEffect(() => {
@@ -120,7 +125,9 @@ export function FormulaBuilder({
     if (event.button === 0) event.preventDefault()
   }
   function insertFirst() {
-    const first = library.current?.querySelector<HTMLButtonElement>('[data-formula-input]')
+    const first = library.current?.querySelector<HTMLButtonElement>(
+      '[data-formula-input]:not(:disabled)',
+    )
     first?.click()
   }
   const selectedGuide = activeFunction
@@ -214,7 +221,7 @@ export function FormulaBuilder({
             {!value.trim()
               ? 'Start typing, or add an input from the library.'
               : !levelSelected
-                ? 'Choose an Output Planning Level to validate this formula.'
+                ? 'Choose an Output Dimension to validate this formula.'
                 : !validation
                   ? 'Checking formula…'
                   : validation.valid
@@ -284,7 +291,9 @@ export function FormulaBuilder({
               }
               if (event.key === 'ArrowDown') {
                 event.preventDefault()
-                library.current?.querySelector<HTMLButtonElement>('[data-formula-input]')?.focus()
+                library.current
+                  ?.querySelector<HTMLButtonElement>('[data-formula-input]:not(:disabled)')
+                  ?.focus()
               }
               if (event.key === 'Escape') {
                 event.preventDefault()
@@ -299,6 +308,7 @@ export function FormulaBuilder({
             aria-labelledby={`${id}-tab-${tab}`}
             className="formula-library-results"
           >
+            {tab === 'Measures' && measureError && <p role="alert">{measureError}</p>}
             {tab === 'Measures' &&
               (filteredMeasures.length ? (
                 filteredMeasures.map((measure) => (
@@ -307,19 +317,26 @@ export function FormulaBuilder({
                     key={measure.objectId}
                     data-formula-input
                     aria-label={measure.name}
-                    disabled={disabled}
+                    disabled={
+                      disabled || measureAvailability?.[measure.objectId]?.available === false
+                    }
+                    title={measureAvailability?.[measure.objectId]?.reason}
                     onMouseDown={preserveSelection}
                     onClick={() => insert(`[${measure.name}]`)}
                   >
                     <span>{measure.name}</span>
-                    <small>{typeName(measure.definition.resultType.type)}</small>
+                    <small>
+                      {measureAvailability?.[measure.objectId]?.available === false
+                        ? measureAvailability[measure.objectId].reason
+                        : `${measure.definition.measureType === 'calculated' ? 'Calculated · ' : ''}${typeName(measure.definition.resultType.type)}`}
+                    </small>
                   </button>
                 ))
               ) : (
                 <p>
                   {query
                     ? 'No matching measures.'
-                    : 'Create a referenced measure from a Transaction to use its values here.'}
+                    : 'Create a referenced or calculated measure to use it here.'}
                 </p>
               ))}
             {tab === 'Columns' &&
@@ -333,7 +350,7 @@ export function FormulaBuilder({
                       <div className="formula-column-heading">
                         <strong>{ownerName}</strong>
                         <small>
-                          {columns[0].reference.dimensionId ? 'Dimension' : 'Planning level'}
+                          {columns[0].reference.memberCatalogId ? 'Dimension' : 'Dimension'}
                         </small>
                       </div>
                       {columns.map((column) => (
@@ -364,8 +381,8 @@ export function FormulaBuilder({
                     (query
                       ? 'No matching columns.'
                       : levelSelected
-                        ? 'No columns are available at this Output Planning Level.'
-                        : 'Choose an Output Planning Level to see available columns.')}
+                        ? 'No columns are available at this Output Dimension.'
+                        : 'Choose an Output Dimension to see available columns.')}
                 </p>
               ))}
             {tab === 'Functions' &&

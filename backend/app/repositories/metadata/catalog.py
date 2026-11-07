@@ -2,11 +2,11 @@
 
 from .collection import CollectionRepository
 from .criteria import (
-    ModelLookup,
-    RevisionLookup,
-    ObjectLookup,
-    ManagedTableLookup,
     ContractLookup,
+    ManagedTableLookup,
+    ModelLookup,
+    ObjectLookup,
+    RevisionLookup,
 )
 
 

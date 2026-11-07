@@ -15,14 +15,14 @@ function setup() {
       return {
         revisionVersion: 1,
         generationId: 'generation',
-        levels: [{ planningLevelId: 'p', name: 'Product' }],
+        levels: [{ dimensionId: 'p', name: 'Product' }],
         selection: payload.measures.map((id) => ({
           measureId: id,
           name: id === 'f' ? 'Forecast' : 'Sales',
         })),
         contexts: [
           {
-            planningLevelId: 'p',
+            dimensionId: 'p',
             name: 'Product',
             selection: payload.measures.length
               ? { status: 'ready', reason: 'The complete selection can be plotted together.' }
@@ -33,18 +33,18 @@ function setup() {
           {
             measureId: 'f',
             name: 'Forecast',
-            nativePlanningLevelId: 'p',
-            nativePlanningLevelName: 'Product',
-            connections: [{ planningLevelId: 'p', status: 'ready', reason: 'Native values.' }],
+            nativeGrainId: 'p',
+            nativeDimensionName: 'Product',
+            connections: [{ dimensionId: 'p', status: 'ready', reason: 'Native values.' }],
           },
           {
             measureId: 's',
             name: 'Sales',
-            nativePlanningLevelId: 'p',
-            nativePlanningLevelName: 'Product',
+            nativeGrainId: 'p',
+            nativeDimensionName: 'Product',
             connections: [
               {
-                planningLevelId: 'p',
+                dimensionId: 'p',
                 status: 'needs_materialisation',
                 reason: 'Build the Semantic Network.',
               },

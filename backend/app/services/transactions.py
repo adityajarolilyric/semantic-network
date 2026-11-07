@@ -20,6 +20,14 @@ class TransactionService(ObjectService):
             return []
         return self.measure_factory.create_documents(document, selections, objects)
 
+    def related_update_documents(self, previous, updated, objects):
+        if (
+            previous["definition"]["dimensionId"]
+            == updated["definition"]["dimensionId"]
+        ):
+            return []
+        return self.measure_factory.refresh_documents(previous, updated, objects)
+
     def prepare_document(self, document, objects):
         """New authoring uses wide columns; unchanged saved selector rules remain readable."""
 
@@ -37,6 +45,21 @@ class TransactionService(ObjectService):
             }
 
         definition = document["definition"]
+        if (
+            definition.get("dimensionId")
+            and definition.get("mappingMode", "direct") == "direct"
+        ):
+            mapped = [
+                mapping["sourceColumnId"] for mapping in definition["keyMappings"]
+            ]
+            if definition.get("grainColumnIds") and set(
+                definition["grainColumnIds"]
+            ) != set(mapped):
+                raise MetadataError(
+                    "transaction_grain_binding",
+                    "Direct Dimension binding must map every declared grain key. Change the grain explicitly if needed.",
+                )
+            definition["grainColumnIds"] = mapped
         requested = legacy(definition)
         if not requested:
             return document
@@ -53,7 +76,7 @@ class TransactionService(ObjectService):
             if old
             and all(
                 old["definition"][key] == definition[key]
-                for key in ("sourceId", "planningLevelId")
+                for key in ("sourceId", "dimensionId")
             )
             else set()
         )

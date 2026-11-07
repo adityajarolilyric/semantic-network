@@ -1,34 +1,44 @@
 """Focused semantic rules; diagnostics and graph state are owned by the shared context."""
 
+from ..core.errors import MetadataError
+from ..domain.formula_types import attribute_physical_type, infer
+from ..domain.typed_values import NUMERIC, methods, result_type
+from ..engine.calendar_resolution import (
+    CalendarResolutionPlanner,
+)
+from ..engine.compatibility import MeasureCompatibilityAnalyzer
+from ..engine.relationships import LevelRelationshipAnalyzer
+
 
 class MeasureRules:
     def __init__(self, context):
         self.context = context
 
     def rolls_up(self, source_level: str, target_level: str) -> bool:
-        from ..engine.relationships import LevelRelationshipAnalyzer
-
         return LevelRelationshipAnalyzer(list(self.context.objects.values())).analyze(
             source_level, target_level
         )["relationship"] in ("same", "equivalent", "roll_up")
 
-    def available(self, measure: dict, target_level: str, seen=frozenset()) -> bool:
-        from ..engine.compatibility import MeasureCompatibilityAnalyzer
-
-        if not hasattr(self, "availability"):
-            self.availability = MeasureCompatibilityAnalyzer(
+    def availability(self, measure, target_level):
+        if not hasattr(self, "_availability"):
+            self._availability = MeasureCompatibilityAnalyzer(
                 list(self.context.objects.values()), getattr(self.context, "base", None)
             )
-        return self.availability.outcome(measure["objectId"], target_level).available
+        return self._availability.outcome(measure["objectId"], target_level)
+
+    def available(self, measure: dict, target_level: str, seen=frozenset()) -> bool:
+        return self.availability(measure, target_level).available
 
     def validate_measure(self, obj: dict):
         definition = obj["definition"]
-        level = self.context.reference(
-            obj,
-            definition["nativePlanningLevelId"],
-            "planningLevel",
-            "definition.nativePlanningLevelId",
+        level = self.context.grain_reference(
+            obj, definition["nativeGrainId"], "definition.outputGrain"
         )
+        if definition["measureType"] == "calculated" and definition.get("outputGrain"):
+            reference = definition["outputGrain"]
+            self.context.reference(
+                obj, reference["objectId"], reference["kind"], "definition.outputGrain"
+            )
         if definition["measureType"] == "referenced":
             transaction = self.context.reference(
                 obj,
@@ -38,11 +48,11 @@ class MeasureRules:
             )
             if transaction:
                 tx = transaction["definition"]
-                if tx["planningLevelId"] != definition["nativePlanningLevelId"]:
+                if tx["nativeGrainId"] != definition["nativeGrainId"]:
                     self.context.error(
                         obj,
                         "measure_grain_mismatch",
-                        "Referenced measure and transaction must have the same native planning level.",
+                        "Referenced measure and transaction must have the same native dimension.",
                     )
                 if tx.get("mappingMode") == "resolve_multi_grain" and definition[
                     "valueColumnId"
@@ -60,11 +70,6 @@ class MeasureRules:
                 if source and source["kind"] == "source":
                     columns = self.context.columns(source)
                     if tx.get("calendarResolution") or tx.get("pivot"):
-                        from ..core.errors import MetadataError
-                        from ..engine.calendar_resolution import (
-                            CalendarResolutionPlanner,
-                        )
-
                         try:
                             columns = {
                                 c["columnId"]: c
@@ -84,8 +89,6 @@ class MeasureRules:
                     )
                     col = columns.get(definition["valueColumnId"])
                     if col:
-                        from ..domain.typed_values import result_type
-
                         if not result_type(col["physicalType"]):
                             self.context.error(
                                 obj,
@@ -117,10 +120,6 @@ class MeasureRules:
                     "unit_mismatch",
                     f"Formula unit {unit} does not match result unit {obj['business']['unit']}.",
                 )
-
-        from ..domain.typed_values import NUMERIC, methods
-        from ..domain.formula_types import infer, attribute_physical_type
-        from ..core.errors import MetadataError
 
         kind = definition["resultType"]["type"]
         policy = definition.get("aggregation")
@@ -186,7 +185,7 @@ class MeasureRules:
                 "definition.allocation.basisMeasureId",
             )
             if basis and (
-                basis["definition"]["nativePlanningLevelId"] != self.context.base
+                basis["definition"]["nativeGrainId"] != self.context.base
                 or basis["definition"].get("calculationType") == "AggregateFirst"
                 or basis["definition"]["resultType"]["type"]
                 not in {"number", "integer", "decimal"}

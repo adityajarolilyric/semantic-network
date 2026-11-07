@@ -1,22 +1,23 @@
-from ..repositories.metadata import metadata_repositories
-from ..repositories.metadata.criteria import (
-    ArtifactLookup,
-    RunInputLookup,
-    RunLookup,
-    StepLookup,
-    UNSET,
-)
 import asyncio
 import logging
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 from datetime import timedelta
 from uuid import uuid4
 
 from ..core.errors import Conflict, MetadataError
+from ..core.execution_budget import execution_budget
 from ..core.metadata import utc_now as now
-from .artifacts import ArtifactCollector
+from ..repositories.metadata import metadata_repositories
+from ..repositories.metadata.criteria import (
+    UNSET,
+    ArtifactLookup,
+    RunInputLookup,
+    RunLookup,
+    StepLookup,
+)
 from .jobs import EngineRunHandler
-from .managed_builds import ManagedTableBuildHandler
+from .sql_history import SqlHistory
+from ..warehouse.sql_trace import capture_sql
 
 logger = logging.getLogger("metadata.engine")
 
@@ -24,17 +25,22 @@ logger = logging.getLogger("metadata.engine")
 class EngineWorker:
     """Durable Mongo queue, renewable leases and fenced activation across API workers."""
 
-    def __init__(self, service, handlers: dict[str, EngineRunHandler] | None = None):
-        self.handlers = {
-            "managedTable": ManagedTableBuildHandler(service),
-            **(handlers or {}),
-        }
-        self.service = service
-        self.store = service.store
+    def __init__(
+        self,
+        store,
+        *,
+        handlers: dict[str, EngineRunHandler],
+        collector,
+        workspace_gate=None,
+    ):
+        self.handlers = dict(handlers)
+        self.store = store
+        self.workspace_gate = workspace_gate
         self.owner = uuid4().hex
         self.task = None
         self.last_collection = now()
-        self.collector = ArtifactCollector(service)
+        self.collector = collector
+        self.sql_history = SqlHistory(store)
 
     def register(self, resource_kind: str, handler: EngineRunHandler):
         self.handlers[resource_kind] = handler
@@ -49,9 +55,17 @@ class EngineWorker:
                 await self.task
 
     async def loop(self):
+        recovered = False
         while True:
             try:
-                async with self.service.workspace_gate.shared():
+                async with (
+                    self.workspace_gate.shared()
+                    if self.workspace_gate
+                    else nullcontext()
+                ):
+                    if not recovered and hasattr(self.collector, "recover_pending"):
+                        await self.collector.recover_pending()
+                        recovered = True
                     run = await self.claim()
                     if run:
                         await self.execute(run)
@@ -73,17 +87,19 @@ class EngineWorker:
     async def claim(self):
         # Indexed state partitions; never load historical terminal runs.
         repo = self.store.repository
-        for state in ("queued", "running"):
+        for state in ("queued", "running", "waiting"):
             rows = await metadata_repositories(repo).runs.list(
                 RunLookup(
                     state=state,
-                    lease_until_before=now() if state == "running" else UNSET,
+                    lease_until_before=now()
+                    if state in {"running", "waiting"}
+                    else UNSET,
                 ),
                 order_by="runId",
                 limit=100,
             )
             for candidate in rows:
-                if state == "running" and candidate["leaseUntil"] > now():
+                if state in {"running", "waiting"} and candidate["leaseUntil"] > now():
                     continue
 
                 async def operation(repo):
@@ -91,7 +107,8 @@ class EngineWorker:
                         RunLookup(run_id=candidate["runId"])
                     )
                     if current["state"] != state or (
-                        state == "running" and current["leaseUntil"] > now()
+                        state in {"running", "waiting"}
+                        and current["leaseUntil"] > now()
                     ):
                         return None
                     updated = {
@@ -103,8 +120,7 @@ class EngineWorker:
                         "updatedAt": now(),
                     }
                     if (
-                        current.get("resourceKind")
-                        in ("planningLevel", "planningLevelPreview")
+                        current.get("resourceKind") in ("dimension", "dimensionPreview")
                         and current["fence"] > 0
                     ):
                         # Each recovered attempt writes a separate row generation in the same table.
@@ -217,7 +233,17 @@ class EngineWorker:
                     "unsupported_engine_target",
                     "This worker cannot execute the requested resource kind.",
                 )
-            await handler.execute_run(run, self)
+            with (
+                execution_budget(run.get("queryMemoryBytes")),
+                capture_sql(4 * 1024 * 1024) as trace,
+            ):
+                try:
+                    await handler.execute_run(run, self)
+                finally:
+                    try:
+                        await self.sql_history.save(run, trace)
+                    except Exception:
+                        logger.exception("sql_history_capture_failed")
         except asyncio.CancelledError:
             # Leave durable state recoverable after its lease expires.
             raise
@@ -233,7 +259,7 @@ class EngineWorker:
                 else "The build failed. Retry after checking the warehouse connection."
             )
             failed_state = "superseded" if isinstance(exc, Conflict) else "failed"
-            error_details = getattr(exc, "details", None)
+            error_details = exc.details if isinstance(exc, MetadataError) else None
 
             async def fail(repo):
                 current = await metadata_repositories(repo).runs.find(
@@ -259,6 +285,12 @@ class EngineWorker:
                         )
 
             await self.store.transaction(fail)
+            builds = getattr(handler, "builds", None)
+            if builds and hasattr(builds.storage, "recover"):
+                try:
+                    await builds.storage.recover(run["modelId"], run["revisionId"])
+                except Exception:
+                    logger.exception("failed_build_cleanup_deferred")
             if not isinstance(exc, MetadataError):
                 logger.exception("engine_run_failed")
         finally:

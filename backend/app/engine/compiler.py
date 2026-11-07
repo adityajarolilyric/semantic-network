@@ -1,6 +1,9 @@
 from sqlglot import exp, parse_one
-from ..warehouse.repository import quote_identifier as q
+
+from ..warehouse.sql import quote_identifier as q
 from .contracts import Check, ExecutionPlan, Pivot
+from .filters import FilterCompiler
+from .object_inputs import input_plan
 from .planner import pivot_operation
 
 
@@ -11,6 +14,9 @@ class ClickHouseCompiler:
         self.database = database
         self.input_checks = []
 
+    def filter_sql(self, definition, available):
+        return FilterCompiler.compile(definition, available)
+
     def table(self, name):
         return exp.Table(
             this=exp.to_identifier(name, quoted=True),
@@ -18,8 +24,6 @@ class ClickHouseCompiler:
         ).sql(dialect="clickhouse")
 
     def object_input(self, owner, relation):
-        from .object_inputs import input_plan
-
         plan = input_plan(owner, relation["columns"], relation["physicalName"])
         if plan is None:
             return self.table(relation["physicalName"]), relation["columns"]

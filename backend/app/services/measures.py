@@ -1,7 +1,18 @@
 from ..core.errors import MetadataError
+from ..domain.formula_attributes import formula_attributes
+from ..domain.formula_types import attribute_physical_type, infer
+from ..domain.grains import canonical_measure, resolve_grain
 from ..domain.measure_policies import normalize_measure
-from ..domain.typed_values import result_type as referenced_result_type, NUMERIC
-from ..domain.formula_types import infer, attribute_physical_type
+from ..domain.typed_values import NUMERIC
+from ..domain.typed_values import result_type as referenced_result_type
+from ..engine.calendar_resolution import CalendarResolutionPlanner
+from ..engine.compatibility import MeasureCompatibilityAnalyzer
+from ..engine.measure_dependencies import MeasureDependencies
+from ..engine.grain_contexts import resolve_grain_contexts
+from ..formula_language.service import FormulaLanguage
+from ..repositories.metadata import metadata_repositories
+from ..repositories.metadata.criteria import RevisionLookup
+from ..validation.graph import SemanticGraphValidator
 from .objects import ObjectService
 
 
@@ -9,60 +20,115 @@ class MeasureService(ObjectService):
     kind = "measure"
 
     async def get(self, model_id, revision_id, object_id):
-        return normalize_measure(await super().get(model_id, revision_id, object_id))
+        return canonical_measure(
+            normalize_measure(await super().get(model_id, revision_id, object_id))
+        )
 
     async def list(self, model_id, revision_id, cursor, limit):
         result = await super().list(model_id, revision_id, cursor, limit)
         return {
             **result,
-            "items": [normalize_measure(document) for document in result["items"]],
+            "items": [
+                canonical_measure(normalize_measure(document))
+                for document in result["items"]
+            ],
         }
 
     async def formula_attributes(self, model_id, revision_id, level_id):
-        from ..domain.formula_attributes import formula_attributes
-
         async def read(repo):
-            objects = await self.objects(repo, model_id, revision_id)
+            objects = await self.graph_objects(repo, model_id, revision_id)
             return formula_attributes(
                 await self.effective(repo, model_id, revision_id, objects), level_id
             )
 
         return await self.store.transaction(read)
 
-    async def validate_formula(self, model_id, revision_id, payload):
-        from ..formula_language.service import FormulaLanguage
-
+    async def formula_measures(self, model_id, revision_id, grain_id, owner_id=None):
         async def read(repo):
-            objects = await self.objects(repo, model_id, revision_id)
+            objects = await self.graph_objects(repo, model_id, revision_id)
+            by_id = {obj["objectId"]: obj for obj in objects}
+            if grain_id not in by_id or by_id[grain_id]["kind"] not in {
+                "dimension",
+                "grain",
+            }:
+                raise MetadataError(
+                    "invalid_formula_level", "Choose an existing Output Dimension."
+                )
+            revision = await metadata_repositories(repo).revisions.require(
+                RevisionLookup(model_id=model_id, revision_id=revision_id), "Revision"
+            )
+            analyzer = MeasureCompatibilityAnalyzer(
+                objects, revision["baseDimensionId"]
+            )
+            dependencies = MeasureDependencies(objects)
+            inputs = []
+            for mid, measure in dependencies.measures.items():
+                outcome = analyzer.outcome(mid, grain_id)
+                cycle = dependencies.path(mid, owner_id) if owner_id else ()
+                reason = outcome.reason
+                if cycle:
+                    names = [
+                        by_id.get(owner_id, {}).get("name", "This measure"),
+                        *(dependencies.name(node) for node in cycle),
+                    ]
+                    reason = "Would create a dependency cycle: " + " → ".join(names)
+                inputs.append(
+                    {
+                        "measureId": mid,
+                        "available": bool(outcome.available and not cycle),
+                        "reason": reason,
+                    }
+                )
+            return inputs
+
+        return await self.store.transaction(read)
+
+    async def validate_formula(self, model_id, revision_id, payload):
+        async def read(repo):
+            objects = await self.graph_objects(repo, model_id, revision_id)
             effective = await self.effective(repo, model_id, revision_id, objects)
-            from ..repositories.metadata import metadata_repositories
-            from ..repositories.metadata.criteria import RevisionLookup
 
             revision = await metadata_repositories(repo).revisions.require(
                 RevisionLookup(model_id=model_id, revision_id=revision_id), "Revision"
             )
+            validation_input = payload
+            if payload.outputGrain:
+                validation_input = payload.model_copy(
+                    update={
+                        "nativeGrainId": resolve_grain(
+                            payload.outputGrain.model_dump(), effective
+                        )
+                    }
+                )
             return FormulaLanguage.validate(
-                payload, effective, revision["basePlanningLevelId"]
+                validation_input, effective, revision["baseDimensionId"]
             )
 
         return await self.store.transaction(read)
 
     def prepare_document(self, document, objects):
-        definition = document["definition"]
+        document = canonical_measure(document)
+        context_documents = resolve_grain_contexts(
+            [
+                *[obj for obj in objects if obj["objectId"] != document["objectId"]],
+                document,
+            ]
+        )
+        runtime = next(
+            obj for obj in context_documents if obj["objectId"] == document["objectId"]
+        )
+        definition = runtime["definition"]
         if definition["measureType"] != "referenced":
-            from ..validation.graph import SemanticGraphValidator
-
+            document = runtime
             formula = definition["formula"]
             if formula.get("languageVersion"):
-                from ..formula_language.service import FormulaLanguage
-
                 formula["expression"] = FormulaLanguage.resolve(
                     formula["displayText"],
                     [
                         *[o for o in objects if o["objectId"] != document["objectId"]],
                         document,
                     ],
-                    definition["nativePlanningLevelId"],
+                    definition["nativeGrainId"],
                 )
                 formula["astVersion"] = 2
             context = SemanticGraphValidator(objects)
@@ -115,7 +181,7 @@ class MeasureService(ObjectService):
                         ),
                     },
                 }
-            return normalize_measure(document)
+            return canonical_measure(normalize_measure(document))
         transaction = next(
             (
                 o
@@ -140,8 +206,6 @@ class MeasureService(ObjectService):
             transaction["definition"].get("calendarResolution")
             or transaction["definition"].get("pivot")
         ):
-            from ..engine.calendar_resolution import CalendarResolutionPlanner
-
             columns = CalendarResolutionPlanner(objects, transaction, columns).schema()
         column = (
             next(
@@ -159,23 +223,25 @@ class MeasureService(ObjectService):
             )
             result_type = referenced_result_type(column["physicalType"], nullable)
             if result_type:
-                return {
-                    **document,
-                    "definition": {
-                        **definition,
-                        "resultType": result_type,
-                        **(
-                            {"allocation": None, "editable": False}
-                            if result_type["type"] not in NUMERIC
-                            else {}
-                        ),
-                    },
-                    "business": {
-                        **document["business"],
-                        "unit": (document["business"]["unit"] or column.get("unit"))
-                        if result_type["type"] in NUMERIC
-                        else None,
-                    },
-                }
+                return canonical_measure(
+                    {
+                        **document,
+                        "definition": {
+                            **definition,
+                            "resultType": result_type,
+                            **(
+                                {"allocation": None, "editable": False}
+                                if result_type["type"] not in NUMERIC
+                                else {}
+                            ),
+                        },
+                        "business": {
+                            **document["business"],
+                            "unit": (document["business"]["unit"] or column.get("unit"))
+                            if result_type["type"] in NUMERIC
+                            else None,
+                        },
+                    }
+                )
         # Let graph validation report missing/non-numeric references.
         return document

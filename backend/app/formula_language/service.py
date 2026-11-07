@@ -1,9 +1,10 @@
 """Stateless language facade. Parsing/resolution never accesses persistence."""
 
+from collections import defaultdict
 from dataclasses import asdict
 
 from ..core.errors import MetadataError
-from ..domain.formula_types import infer, attribute_physical_type
+from ..domain.formula_types import attribute_physical_type, infer
 from ..validation.graph import SemanticGraphValidator
 from . import AST_VERSION, LANGUAGE_VERSION
 from .catalog import FUNCTION_CATALOG
@@ -43,7 +44,7 @@ class FormulaLanguage:
             expression = cls.resolve(
                 payload.displayText,
                 objects,
-                payload.nativePlanningLevelId,
+                payload.nativeGrainId,
             )
             result.update(
                 expression=expression, containsCounts=contains_counts(expression)
@@ -55,7 +56,7 @@ class FormulaLanguage:
                 "business": {"unit": None},
                 "definition": {
                     "measureType": "calculated",
-                    "nativePlanningLevelId": payload.nativePlanningLevelId,
+                    "nativeGrainId": payload.nativeGrainId,
                     "calculationType": payload.calculationType,
                     "formula": {"expression": expression},
                     "resultType": {"type": "number", "nullable": True},
@@ -63,12 +64,11 @@ class FormulaLanguage:
             }
             context = SemanticGraphValidator([*objects, owner])
             context.base = base_level
-            from collections import defaultdict
 
             context.edges = defaultdict(set)
-            level = context.objects.get(payload.nativePlanningLevelId)
-            if not level or level["kind"] != "planningLevel":
-                raise MetadataError("formula_level", "Choose an output planning level.")
+            level = context.objects.get(payload.nativeGrainId)
+            if not level or level["kind"] not in {"dimension", "grain"}:
+                raise MetadataError("formula_level", "Choose an output dimension.")
             kind = infer(
                 expression,
                 lambda mid: context.objects[mid]["definition"]["resultType"]["type"],

@@ -1,371 +1,993 @@
+import { ViewSqlButton } from '../../components/ViewSqlButton'
+import { useDimensionCatalog } from '../useDimensionCatalog'
+import { usePopulationInputColumns } from './usePopulationInputColumns'
 import { FilterEditor } from './FilterEditor'
-import { TransformationSection } from './TransformationSection'
-import { ObjectPivotEditor } from './ObjectPivotEditor'
-import { PlanningResult, type PlanningTableStatus } from '../PlanningTablePanel'
-import { metadataApi } from '../api'
-import { RawDataPreview } from './RawDataPreview'
+import { TransformationsPanel } from './TransformationsPanel'
+import { useFilterColumns } from './useFilterColumns'
+import { projectionAttributes } from '../projectionColumns'
 import { FieldHelp } from '../../components/FieldHelp'
-import { useCallback, useEffect, useRef, useState } from 'react'
-import type { Dimension, SourceColumn } from '../types'
-import { Actions, Check, options, Select, Text, type EditorProps } from './Fields'
-
+import { useEffect, useRef, useState } from 'react'
+import { metadataApi } from '../api'
+import { PlanningResult, type DimensionTableStatus } from '../DimensionTablePanel'
+import { projectionBindings } from '../projectionBindings'
+import { dimensionKeyOptions } from '../dimensionKeyOptions'
+import { PopulationRemapping, type PopulationMappingOption } from './PopulationRemapping'
+import { inputOf, type Binding, type GrainColumn, type Dimension, type Population } from '../types'
+import { Check, Checks, IdentityFields, options, Select, type EditorProps } from './Fields'
 export function DimensionEditor({
   initial,
   data,
+  editing,
   onSave,
   onCancel,
   busy,
   base,
-}: EditorProps<Dimension> & { base?: string }) {
+  savedVersion,
+  readOnly = false,
+}: EditorProps<Dimension> & {
+  base?: string
+  savedVersion?: number
+  onBuilt?: () => void
+  onPersisted?: (input: Dimension, version: number, close: boolean) => void
+  readOnly?: boolean
+}) {
+  const dimensionMembers = useDimensionCatalog(data, base)
   const [value, set] = useState(initial)
   const form = useRef<HTMLFormElement>(null)
+  const [tableStatus, setTableStatus] = useState<DimensionTableStatus | null>(null)
+  const actionInFlight = useRef(false)
+
   const d = value.definition
-  const update = (patch: Partial<typeof d>) =>
-    set((current) => ({ ...current, definition: { ...current.definition, ...patch } }))
-  const source = data.sources.find((s) => s.objectId === d.sourceId)
-  const [inputColumns, setInputColumns] = useState<SourceColumn[] | null>(null)
-  const [preview, setPreview] = useState<PlanningTableStatus | null>(null)
-  const [previewBusy, setPreviewBusy] = useState(false)
+  const update = (patch: Partial<typeof d>) => set({ ...value, definition: { ...d, ...patch } })
+  const p = d.population
+  const savedDimension =
+    data.dimensions.find((dimension) => dimension.objectId === initial.objectId) ?? initial
+  function savedSourceKey(sourceId: string, columnId: string) {
+    const population = savedDimension.definition.population
+    return savedDimension.definition.grain.columns.find((column) => {
+      const source =
+        population.operation === 'source'
+          ? population.sourceId
+          : population.operation === 'cartesian_product'
+            ? population.factors.find((factor) => factor.factorId === column.populationRef.factorId)
+                ?.sourceId
+            : undefined
+      return source === sourceId && column.populationRef.columnId === columnId
+    })?.grainColumnId
+  }
+  const cols = d.grain.columns
+  const attrs = d.populationAttributes ?? []
+  const [remapPopulation, setRemapPopulation] = useState(
+    () =>
+      editing &&
+      initial.definition.grain.columns.some(
+        (column) =>
+          !column.populationRef.columnId &&
+          !column.populationRef.sourceGrainColumnId &&
+          !column.populationRef.sourceOutputColumnId,
+      ),
+  )
+  const [freshPopulation, setFreshPopulation] = useState(
+    initial.definition.grain.columns.length === 0,
+  )
+  const [activeDimension, setActiveDimension] = useState(
+    initial.definition.memberBindings[0]?.memberCatalogId ?? '',
+  )
+  const activeDimensionId = d.memberBindings.some((b) => b.memberCatalogId === activeDimension)
+    ? activeDimension
+    : d.memberBindings[0]?.memberCatalogId
+  const [preview, setPreview] = useState<DimensionTableStatus | null>(null)
   const [previewError, setPreviewError] = useState('')
-  const previewRequest = useRef<AbortController | null>(null)
-  useEffect(() => {
-    previewRequest.current?.abort()
-    setPreview(null)
-    setPreviewError('')
-    setPreviewBusy(false)
-    return () => previewRequest.current?.abort()
-  }, [value])
-  const reconcileColumns = useCallback((columns: SourceColumn[] | null) => {
-    setInputColumns(columns)
-    setPreview(null)
-    if (!columns) return
-    set((current) => {
-      const d = current.definition
-      const previous = new Map(d.columns.map((c) => [c.sourceColumnId, c]))
-      const next = columns.map((c) =>
-        previous.has(c.columnId)
-          ? { ...previous.get(c.columnId)!, name: c.name }
-          : { columnId: c.columnId, name: c.name, displayName: c.name, sourceColumnId: c.columnId },
-      )
-      const ids = new Set(next.map((c) => c.columnId))
-      const oldIds = new Set(d.columns.map((c) => c.columnId))
-      const keys = d.keyColumnIds.filter((cid) => ids.has(cid))
-      const time =
-        d.time && ids.has(d.time.dateColumnId) && ids.has(d.time.orderingColumnId) ? d.time : null
-      const definition = {
-        ...d,
-        columns: next,
-        keyColumnIds: keys,
-        labelColumnId: ids.has(d.labelColumnId)
-          ? d.labelColumnId
-          : (keys[0] ?? next[0]?.columnId ?? ''),
-        attributeColumnIds: [
-          ...new Set([
-            ...d.attributeColumnIds.filter((cid) => ids.has(cid)),
-            ...next.filter((c) => !oldIds.has(c.columnId)).map((c) => c.columnId),
-          ]),
-        ],
-        time,
-      }
-      return JSON.stringify(definition) === JSON.stringify(d)
-        ? current
-        : { ...current, definition, isTimeDim: !!time }
+  const [previewBusy, setPreviewBusy] = useState(false)
+  const [parentSchema, setParentSchema] = useState<DimensionTableStatus['columns']>([])
+  const [parentSchemaError, setParentSchemaError] = useState('')
+  const [parentSchemaLoading, setParentSchemaLoading] = useState(false)
+  const setColumns = (columns: GrainColumn[]) =>
+    update({
+      grain: { columns, keyIds: columns.map((c) => c.grainColumnId) },
+      memberBindings:
+        d.population.operation === 'distinct_projection'
+          ? projectionBindings(parent, columns, d.memberBindings, data.dimensionMembers)
+          : [],
     })
-  }, [])
-  const cols = d.columns.map((c) => ({ value: c.columnId, label: c.displayName }))
-  const exposed = new Set([...d.keyColumnIds, ...d.attributeColumnIds])
+  const populationInput = usePopulationInputColumns(
+    p,
+    base,
+    p.operation === 'source'
+      ? (data.sources.find((s) => s.objectId === p.sourceId)?.definition.columns ?? [])
+      : [],
+  )
+  const sourceCols = (sourceId: string) =>
+    p.operation === 'source' && p.sourceId === sourceId && populationInput.configured
+      ? populationInput.columns
+      : (data.sources.find((s) => s.objectId === sourceId)?.definition.columns ?? [])
+  const parent =
+    p.operation === 'distinct_projection'
+      ? dimensionMembers.levels.find((l) => l.objectId === p.sourceDimensionId)
+      : undefined
+  const parentSignature = parent ? JSON.stringify(inputOf(parent)) : ''
+  useEffect(() => {
+    setParentSchema([])
+    setParentSchemaError('')
+    setParentSchemaLoading(false)
+    if (!base || !parentSignature) return
+    const controller = new AbortController()
+    setParentSchemaLoading(true)
+    void metadataApi
+      .request<Pick<DimensionTableStatus, 'columns'>>(
+        base + '/dimensions/schema',
+        'POST',
+        JSON.parse(parentSignature),
+        undefined,
+        controller.signal,
+      )
+      .then((data) => {
+        if (!controller.signal.aborted) setParentSchema(data.columns)
+      })
+      .catch((error) => {
+        if (!controller.signal.aborted)
+          setParentSchemaError(
+            error instanceof Error ? error.message : 'Could not load parent attributes.',
+          )
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setParentSchemaLoading(false)
+      })
+    return () => {
+      controller.abort()
+    }
+  }, [base, parentSignature])
+  const filterColumns = useFilterColumns(
+    base ? base + '/dimensions/schema' : undefined,
+    { ...value, definition: { ...d, filters: null } },
+    !!d.filters,
+  )
+  const parentAttributes = projectionAttributes(parent, parentSchema, data.dimensionMembers)
+  function populationAttributes(sourceId: string, factorId?: string) {
+    const selected = attrs.filter((a) => (a.populationRef.factorId ?? undefined) === factorId)
+    return (
+      <Checks
+        label={
+          'Population attributes from ' +
+          (data.sources.find((s) => s.objectId === sourceId)?.name ?? 'table')
+        }
+        bulk
+        items={sourceCols(sourceId).map((c) => ({
+          value: c.columnId,
+          label: c.name,
+          disabled: cols.some(
+            (k) =>
+              (k.populationRef.factorId ?? undefined) === factorId &&
+              k.populationRef.columnId === c.columnId,
+          ),
+        }))}
+        selected={selected.map((a) => a.populationRef.columnId!)}
+        onChange={(ids) => {
+          const next = [
+            ...attrs.filter((a) => (a.populationRef.factorId ?? undefined) !== factorId),
+            ...ids.map(
+              (id) =>
+                selected.find((a) => a.populationRef.columnId === id) ?? {
+                  columnId: 'pa_' + crypto.randomUUID().replaceAll('-', ''),
+                  name: sourceCols(sourceId).find((c) => c.columnId === id)!.name,
+                  populationRef: { columnId: id, ...(factorId ? { factorId } : {}) },
+                },
+            ),
+          ]
+          update({
+            populationAttributes: next,
+            ...(p.operation === 'cartesian_product'
+              ? {
+                  population: {
+                    ...p,
+                    factors: p.factors.map((f) => ({
+                      ...f,
+                      selectedColumnIds: [
+                        ...cols
+                          .filter((c) => c.populationRef.factorId === f.factorId)
+                          .map((c) => c.populationRef.columnId!),
+                        ...next
+                          .filter((a) => a.populationRef.factorId === f.factorId)
+                          .map((a) => a.populationRef.columnId!),
+                      ],
+                    })),
+                  },
+                }
+              : {}),
+          })
+        }}
+      />
+    )
+  }
+  function setBinding(binding: Binding) {
+    update({
+      memberBindings: d.memberBindings.some((b) => b.memberCatalogId === binding.memberCatalogId)
+        ? d.memberBindings.map((b) => (b.memberCatalogId === binding.memberCatalogId ? binding : b))
+        : [...d.memberBindings, binding],
+    })
+  }
+  useEffect(() => {
+    if (!base || !savedVersion) return
+    const controller = new AbortController()
+    void metadataApi
+      .request<DimensionTableStatus>(
+        base + '/dimensions/' + initial.objectId + '/table',
+        'GET',
+        undefined,
+        undefined,
+        controller.signal,
+      )
+      .then((data) => {
+        if (!controller.signal.aborted) setTableStatus(data)
+      })
+      .catch((error) => {
+        if (!controller.signal.aborted) setPreviewError(error.message)
+      })
+    return () => controller.abort()
+  }, [base, savedVersion, initial.objectId])
+  useEffect(() => {
+    setPreview(null)
+  }, [value])
+  async function persist(previewRequested: boolean) {
+    if (actionInFlight.current || !form.current?.reportValidity()) return
+    if (!previewRequested) {
+      await onSave(value)
+      return
+    }
+    if (!base) return
+    actionInFlight.current = true
+    setPreviewBusy(true)
+    setPreviewError('')
+    try {
+      setPreview(
+        await metadataApi.request<DimensionTableStatus>(
+          base + '/dimensions/preview/population',
+          'POST',
+          inputOf(value),
+        ),
+      )
+    } catch (error) {
+      setPreviewError(error instanceof Error ? error.message : 'Dimension preview failed.')
+    } finally {
+      actionInFlight.current = false
+      setPreviewBusy(false)
+    }
+  }
+  function changePopulation(population: Population) {
+    setRemapPopulation(false)
+    setFreshPopulation(true)
+    update({
+      population,
+      grain: { keyIds: [], columns: [] },
+      populationAttributes: [],
+      memberBindings: [],
+      filters: null,
+    })
+  }
+  const mappingOptions: PopulationMappingOption[] =
+    p.operation === 'source'
+      ? sourceCols(p.sourceId).map((column) => ({
+          label: column.name,
+          nullable: column.nullable,
+          reference: { columnId: column.columnId },
+        }))
+      : p.operation === 'cartesian_product'
+        ? p.factors.flatMap((factor) =>
+            sourceCols(factor.sourceId).map((column) => ({
+              label:
+                (data.sources.find((source) => source.objectId === factor.sourceId)?.name ?? '') +
+                ' · ' +
+                column.name,
+              nullable: column.nullable,
+              reference: { factorId: factor.factorId, columnId: column.columnId },
+            })),
+          )
+        : [
+            ...(parent?.definition.grain.columns ?? []).map((column) => ({
+              label: column.name,
+              reference: { sourceGrainColumnId: column.grainColumnId },
+            })),
+            ...parentAttributes.map((column) => ({
+              label: column.label,
+              reference: { sourceOutputColumnId: column.value },
+            })),
+          ]
   return (
     <form
       ref={form}
       onSubmit={(e) => {
         e.preventDefault()
-        void onSave({
-          ...value,
-          displayName: value.name,
-          definition: { ...d, attributeColumnIds: [...exposed] },
-        })
+        void persist(false)
       }}
     >
-      <div className="meta-grid">
-        <Text
-          label="Dimension name"
-          value={value.name}
-          onChange={(name) => set({ ...value, name, displayName: name })}
-        />
-        <Select
-          label="Managed table"
-          value={d.sourceId}
-          items={options(data.sources.filter((s) => s.definition.inScope))}
-          onChange={(sourceId) => {
-            const s = data.sources.find((s) => s.objectId === sourceId)
-            if (!s) return
-            set({
-              ...value,
-              isTimeDim: false,
-              definition: {
-                sourceId,
-                columns: s.definition.columns.map((c) => ({
-                  columnId: c.columnId,
-                  name: c.name,
-                  displayName: c.name,
-                  sourceColumnId: c.columnId,
-                })),
-                keyColumnIds: s.definition.keyColumns,
-                labelColumnId:
-                  s.definition.keyColumns[0] ?? s.definition.columns[0]?.columnId ?? '',
-                attributeColumnIds: s.definition.columns.map((c) => c.columnId),
-                time: null,
-                filters: null,
-              },
-            })
-          }}
-        />
-      </div>
-      <TransformationSection title="Pivot transformation" configured={!!d.pivot?.enabled}>
-        <ObjectPivotEditor
-          key={d.sourceId}
-          objectId={value.objectId}
-          source={source}
-          base={base}
-          kind="dimensions"
-          value={d.pivot}
-          onChange={(pivot) => {
-            update({ pivot })
-            setPreview(null)
-          }}
-          onColumns={reconcileColumns}
-          disabled={busy || previewBusy}
-        />
-      </TransformationSection>
-      <FilterEditor
-        value={d.filters}
-        onChange={(filters) => update({ filters })}
-        columns={d.columns.map((c) => ({
-          columnId: c.columnId,
-          name: c.displayName,
-          physicalType: (inputColumns ?? source?.definition.columns ?? []).find(
-            (s) => s.columnId === c.sourceColumnId,
-          )?.physicalType,
-        }))}
-      />
-      {d.columns.length > 0 && (
-        <div className="dimension-columns-wrap">
-          <table className="dimension-columns">
-            <thead>
-              <tr>
-                <th>Source column</th>
-                <th aria-label="Display name">
-                  Display name
-                  <FieldHelp label="Display name" />
-                </th>
-                <th className="column-toggle" aria-label="Key">
-                  Key
-                  <FieldHelp label="Key" />
-                </th>
-                <th className="column-toggle" aria-label="Exposed">
-                  Exposed
-                  <FieldHelp label="Exposed" />
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {d.columns.map((column, index) => {
-                const isKey = d.keyColumnIds.includes(column.columnId)
-                const nullable =
-                  (inputColumns ?? source?.definition.columns ?? []).find(
-                    (c) => c.columnId === column.sourceColumnId,
-                  )?.nullable ?? false
-                return (
-                  <tr key={column.columnId}>
-                    <td>
-                      <span title={column.name}>{column.name}</span>
-                      {nullable && <small>Nullable</small>}
-                    </td>
-                    <td>
-                      <input
-                        aria-label={'Display name for ' + column.name}
-                        value={column.displayName}
-                        required
-                        maxLength={200}
-                        onChange={(e) =>
+      <fieldset disabled={readOnly || busy || previewBusy}>
+        <IdentityFields value={value} editing={editing} onChange={(v) => set({ ...value, ...v })} />
+        <fieldset className="measure-type-control">
+          <legend>
+            Population method <FieldHelp label="Population method" />
+          </legend>
+          <div className="measure-type-switch">
+            {(
+              [
+                ['source', 'From a Table'],
+                ['cartesian_product', 'From Multiple Tables'],
+                ['distinct_projection', 'From Existing Dimension'],
+              ] as const
+            ).map(([operation, label]) => (
+              <label className="measure-type-option" key={operation}>
+                <input
+                  type="radio"
+                  name="population-method"
+                  checked={p.operation === operation}
+                  onChange={() =>
+                    changePopulation(
+                      operation === 'source'
+                        ? { operation, sourceId: '' }
+                        : operation === 'cartesian_product'
+                          ? { operation, factors: [] }
+                          : { operation, sourceDimensionId: '' },
+                    )
+                  }
+                />
+                <span>{label}</span>
+              </label>
+            ))}
+          </div>
+        </fieldset>
+        <p className="meta-hint">
+          {p.operation === 'source'
+            ? 'Save stores the Dimension definition. Build Semantic Network in Decision View materialises its table.'
+            : 'Save stores the Dimension definition and builds its table, including required parent tables.'}{' '}
+          Preview reads its population without creating a table.
+        </p>
+        <p className="meta-hint">
+          At least one grain key is required. Together, these keys identify a planning row and must
+          be mapped by every transaction at this level.
+        </p>
+        {p.operation === 'source' && (
+          <>
+            {p.inputTransform && (
+              <p className="meta-hint">
+                This population applies the Pivot and Date resolution configuration captured at
+                creation, then selects distinct grain keys. Choosing a different population table
+                replaces that input pipeline.
+              </p>
+            )}
+            {populationInput.error && (
+              <p className="meta-error" role="alert">
+                {populationInput.error}
+              </p>
+            )}
+            <Select
+              label="Population table"
+              value={p.sourceId}
+              items={options(data.sources.filter((s) => s.definition.inScope))}
+              onChange={(sourceId) => {
+                if (editing && !freshPopulation && cols.length) {
+                  setRemapPopulation(true)
+                  update({
+                    population: { operation: 'source', sourceId },
+                    grain: {
+                      ...d.grain,
+                      columns: cols.map((c) => ({ ...c, populationRef: { columnId: '' } })),
+                    },
+                    populationAttributes: attrs.map((a) => ({
+                      ...a,
+                      populationRef: { columnId: '' },
+                    })),
+                  })
+                } else changePopulation({ operation: 'source', sourceId })
+              }}
+            />
+            {!remapPopulation && (
+              <div className="meta-grid">
+                <Checks
+                  label="Grain columns"
+                  items={sourceCols(p.sourceId).map((c) => ({
+                    value: c.columnId,
+                    label: c.name,
+                    disabled:
+                      (!populationInput.configured && c.nullable) ||
+                      attrs.some(
+                        (a) => !a.populationRef.factorId && a.populationRef.columnId === c.columnId,
+                      ),
+                  }))}
+                  selected={cols.map((c) => c.populationRef.columnId!)}
+                  onChange={(ids) =>
+                    setColumns(
+                      ids.map((id) => ({
+                        grainColumnId:
+                          cols.find((c) => c.populationRef.columnId === id)?.grainColumnId ??
+                          savedSourceKey(p.sourceId, id) ??
+                          id,
+                        name: sourceCols(p.sourceId).find((c) => c.columnId === id)!.name,
+                        populationRef: { columnId: id },
+                      })),
+                    )
+                  }
+                />
+                {populationAttributes(p.sourceId)}
+              </div>
+            )}
+          </>
+        )}
+        {p.operation === 'cartesian_product' && (
+          <>
+            <div className="meta-factors">
+              {data.sources
+                .filter((s) => s.definition.inScope)
+                .map((source) => {
+                  const factor = p.factors.find((f) => f.sourceId === source.objectId)
+                  return (
+                    <div className="meta-subsection" key={source.objectId}>
+                      <Check
+                        label={'Include ' + source.name}
+                        value={!!factor}
+                        onChange={(include) => {
+                          const factors = include
+                            ? [
+                                ...p.factors,
+                                {
+                                  factorId:
+                                    'f_' + crypto.randomUUID().replaceAll('-', '').slice(0, 12),
+                                  sourceId: source.objectId,
+                                  selectedColumnIds: [],
+                                },
+                              ]
+                            : p.factors.filter((f) => f.sourceId !== source.objectId)
                           update({
-                            columns: d.columns.map((c, i) =>
-                              i === index ? { ...c, displayName: e.target.value } : c,
-                            ),
-                          })
-                        }
-                      />
-                    </td>
-                    <td className="column-toggle">
-                      <input
-                        type="checkbox"
-                        aria-label={'Key ' + column.name}
-                        checked={isKey}
-                        disabled={nullable}
-                        title={nullable ? 'Nullable columns cannot be keys' : undefined}
-                        onChange={(e) => {
-                          const keyColumnIds = e.target.checked
-                            ? [...d.keyColumnIds, column.columnId]
-                            : d.keyColumnIds.filter((k) => k !== column.columnId)
-                          update({
-                            keyColumnIds,
-                            attributeColumnIds: [
-                              ...new Set([...d.attributeColumnIds, ...keyColumnIds]),
-                            ],
-                            labelColumnId: d.labelColumnId || column.columnId,
+                            population: { ...p, factors },
+                            grain: remapPopulation
+                              ? {
+                                  ...d.grain,
+                                  columns: cols.map((column) =>
+                                    !include && column.populationRef.factorId === factor?.factorId
+                                      ? { ...column, populationRef: {} }
+                                      : column,
+                                  ),
+                                }
+                              : {
+                                  columns: cols.filter(
+                                    (column) => column.populationRef.factorId !== factor?.factorId,
+                                  ),
+                                  keyIds: d.grain.keyIds.filter(
+                                    (id) =>
+                                      cols.find((column) => column.grainColumnId === id)
+                                        ?.populationRef.factorId !== factor?.factorId,
+                                  ),
+                                },
+                            memberBindings: remapPopulation ? d.memberBindings : [],
+                            populationAttributes: remapPopulation
+                              ? attrs.map((column) =>
+                                  !include && column.populationRef.factorId === factor?.factorId
+                                    ? { ...column, populationRef: {} }
+                                    : column,
+                                )
+                              : attrs.filter(
+                                  (column) => column.populationRef.factorId !== factor?.factorId,
+                                ),
                           })
                         }}
                       />
-                    </td>
-                    <td className="column-toggle">
-                      <input
-                        type="checkbox"
-                        aria-label={'Expose ' + column.name}
-                        checked={exposed.has(column.columnId)}
-                        disabled={isKey}
-                        title={isKey ? 'Key columns are always exposed' : undefined}
-                        onChange={(e) =>
+                      {factor && !remapPopulation && (
+                        <div className="meta-grid">
+                          <Checks
+                            label={'Keys from ' + source.name}
+                            items={source.definition.columns.map((c) => ({
+                              value: c.columnId,
+                              label: c.name,
+                              disabled:
+                                c.nullable ||
+                                attrs.some(
+                                  (a) =>
+                                    a.populationRef.factorId === factor.factorId &&
+                                    a.populationRef.columnId === c.columnId,
+                                ),
+                            }))}
+                            selected={cols
+                              .filter((c) => c.populationRef.factorId === factor.factorId)
+                              .map((c) => c.populationRef.columnId!)}
+                            onChange={(ids) => {
+                              const columns = [
+                                ...cols.filter((c) => c.populationRef.factorId !== factor.factorId),
+                                ...ids.map((id) => ({
+                                  grainColumnId:
+                                    cols.find(
+                                      (c) =>
+                                        c.populationRef.factorId === factor.factorId &&
+                                        c.populationRef.columnId === id,
+                                    )?.grainColumnId ??
+                                    savedSourceKey(source.objectId, id) ??
+                                    'g_' + crypto.randomUUID().replaceAll('-', '').slice(0, 12),
+                                  name: source.definition.columns.find((c) => c.columnId === id)!
+                                    .name,
+                                  populationRef: { factorId: factor.factorId, columnId: id },
+                                })),
+                              ]
+                              update({
+                                population: {
+                                  ...p,
+                                  factors: p.factors.map((f) =>
+                                    f.factorId === factor.factorId
+                                      ? {
+                                          ...f,
+                                          selectedColumnIds: [
+                                            ...ids,
+                                            ...attrs
+                                              .filter(
+                                                (a) => a.populationRef.factorId === f.factorId,
+                                              )
+                                              .map((a) => a.populationRef.columnId!),
+                                          ],
+                                        }
+                                      : f,
+                                  ),
+                                },
+                                grain: { columns, keyIds: columns.map((c) => c.grainColumnId) },
+                                memberBindings: [],
+                              })
+                            }}
+                          />
+                          {populationAttributes(source.objectId, factor.factorId)}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+            </div>
+            <p className="meta-hint">
+              For PLT, select Product–Location columns from the sourcing matrix and Date from Time.
+            </p>
+          </>
+        )}
+        {p.operation === 'distinct_projection' && (
+          <>
+            <Select
+              label="Parent Dimension"
+              value={dimensionMembers.selection(p.sourceDimensionId)}
+              items={dimensionMembers.items.filter(
+                (l) => l.value !== value.objectId && l.value !== value.memberCatalogId,
+              )}
+              onChange={async (id) => {
+                try {
+                  const level = await dimensionMembers.resolve(id)
+                  changePopulation({
+                    operation: 'distinct_projection',
+                    sourceDimensionId: level.objectId,
+                  })
+                } catch (error) {
+                  setPreviewError(
+                    error instanceof Error ? error.message : 'Could not select Dimension.',
+                  )
+                }
+              }}
+            />
+            {parentSchemaLoading && (
+              <p className="meta-hint" role="status">
+                Loading parent attributes…
+              </p>
+            )}
+            {parentSchemaError && (
+              <p className="meta-error" role="alert">
+                {parentSchemaError}
+              </p>
+            )}
+            {!remapPopulation && (
+              <div className="planning-parent-fields">
+                <Checks
+                  label="Select keys from Parent keys"
+                  items={(parent?.definition.grain.columns ?? [])
+                    .filter((c) => parent?.definition.grain.keyIds.includes(c.grainColumnId))
+                    .map((c) => ({
+                      value: c.grainColumnId,
+                      label: c.name,
+                      disabled: attrs.some(
+                        (a) => a.populationRef.sourceOutputColumnId === c.grainColumnId,
+                      ),
+                    }))}
+                  selected={cols
+                    .filter((c) => c.populationRef.sourceGrainColumnId)
+                    .map((c) => c.populationRef.sourceGrainColumnId!)}
+                  onChange={(ids) =>
+                    setColumns([
+                      ...cols.filter((c) => c.populationRef.sourceOutputColumnId),
+                      ...ids.map((id) => ({
+                        grainColumnId:
+                          cols.find((c) => c.populationRef.sourceGrainColumnId === id)
+                            ?.grainColumnId ?? id,
+                        name: parent!.definition.grain.columns.find((c) => c.grainColumnId === id)!
+                          .name,
+                        populationRef: { sourceGrainColumnId: id },
+                      })),
+                    ])
+                  }
+                />
+                <Checks
+                  label="Make Parent attribute as a grain key"
+                  bulk
+                  items={parentAttributes.map((c) => ({
+                    ...c,
+                    disabled: attrs.some((a) => a.populationRef.sourceOutputColumnId === c.value),
+                  }))}
+                  selected={cols
+                    .filter((c) => c.populationRef.sourceOutputColumnId)
+                    .map((c) => c.populationRef.sourceOutputColumnId!)}
+                  onChange={(ids) =>
+                    setColumns([
+                      ...cols.filter((c) => c.populationRef.sourceGrainColumnId),
+                      ...ids.map((id) => ({
+                        grainColumnId:
+                          cols.find((c) => c.populationRef.sourceOutputColumnId === id)
+                            ?.grainColumnId ?? 'g_' + crypto.randomUUID().replaceAll('-', ''),
+                        name: parentAttributes.find((c) => c.value === id)!.label,
+                        populationRef: { sourceOutputColumnId: id },
+                      })),
+                    ])
+                  }
+                />
+                <Checks
+                  label="Select attributes from Parent"
+                  bulk
+                  items={parentAttributes.map((c) => ({
+                    value: c.value,
+                    label: c.label,
+                    disabled: cols.some(
+                      (k) =>
+                        (k.populationRef.sourceGrainColumnId ??
+                          k.populationRef.sourceOutputColumnId) === c.value,
+                    ),
+                  }))}
+                  selected={attrs.map((a) => a.populationRef.sourceOutputColumnId!)}
+                  onChange={(ids) =>
+                    update({
+                      populationAttributes: ids.map(
+                        (id) =>
+                          attrs.find((a) => a.populationRef.sourceOutputColumnId === id) ?? {
+                            columnId: 'pa_' + crypto.randomUUID().replaceAll('-', ''),
+                            name: parentAttributes.find((c) => c.value === id)!.label,
+                            populationRef: { sourceOutputColumnId: id },
+                          },
+                      ),
+                    })
+                  }
+                />
+              </div>
+            )}
+          </>
+        )}
+        {remapPopulation && (
+          <PopulationRemapping
+            value={value}
+            options={mappingOptions}
+            onChange={(definition) => set({ ...value, definition })}
+          />
+        )}
+        {cols.length > 0 && (
+          <>
+            <h3>
+              Dimension relationships (optional)
+              <FieldHelp label="Dimension bindings (optional)" />
+            </h3>
+            <p className="meta-hint">
+              Add a dimension only to validate member mappings or bring in dimension attributes. A
+              planning table can be built without any bindings.
+            </p>
+            {p.operation === 'distinct_projection' && (
+              <p className="meta-hint">
+                Bindings are inherited when all of their mapped Dimension columns are retained.
+              </p>
+            )}
+            <Select
+              label="Add dimension"
+              required={false}
+              value=""
+              items={options(
+                data.dimensionMembers.filter(
+                  (dim) => !d.memberBindings.some((b) => b.memberCatalogId === dim.objectId),
+                ),
+              )}
+              onChange={(memberCatalogId) => {
+                const dim = data.dimensionMembers.find((dim) => dim.objectId === memberCatalogId)
+                if (!dim) return
+                setBinding({
+                  memberCatalogId,
+                  lookupCardinality: 'many_to_one',
+                  keyMappings: dim.definition.keyColumnIds.map((memberColumnId) => {
+                    const candidates = dimensionKeyOptions(value, dim, memberColumnId, data)
+                    return {
+                      memberColumnId,
+                      grainColumnId: candidates.length === 1 ? candidates[0].value : '',
+                    }
+                  }),
+                  selectedAttributeColumnIds: [],
+                })
+                setActiveDimension(memberCatalogId)
+              }}
+            />
+            {d.memberBindings.length === 0 && (
+              <p className="meta-hint">
+                Add a dimension to configure its lookup and selected attributes.
+              </p>
+            )}
+            {d.memberBindings.length > 0 && (
+              <div role="tablist" aria-label="Dimension bindings" className="meta-toolbar">
+                {d.memberBindings.map((binding) => (
+                  <button
+                    type="button"
+                    role="tab"
+                    key={binding.memberCatalogId}
+                    aria-selected={activeDimensionId === binding.memberCatalogId}
+                    tabIndex={activeDimensionId === binding.memberCatalogId ? 0 : -1}
+                    className={
+                      activeDimensionId === binding.memberCatalogId
+                        ? 'primary-button'
+                        : 'secondary-button'
+                    }
+                    onClick={() => setActiveDimension(binding.memberCatalogId)}
+                    onKeyDown={(event) => {
+                      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+                      event.preventDefault()
+                      const tabs = Array.from(
+                        event.currentTarget.parentElement!.querySelectorAll<HTMLButtonElement>(
+                          '[role="tab"]',
+                        ),
+                      )
+                      const current = tabs.indexOf(event.currentTarget)
+                      tabs[
+                        event.key === 'Home'
+                          ? 0
+                          : event.key === 'End'
+                            ? tabs.length - 1
+                            : (current + (event.key === 'ArrowRight' ? 1 : tabs.length - 1)) %
+                              tabs.length
+                      ].click()
+                      tabs[
+                        event.key === 'Home'
+                          ? 0
+                          : event.key === 'End'
+                            ? tabs.length - 1
+                            : (current + (event.key === 'ArrowRight' ? 1 : tabs.length - 1)) %
+                              tabs.length
+                      ].focus()
+                    }}
+                  >
+                    {data.dimensionMembers.find((dim) => dim.objectId === binding.memberCatalogId)
+                      ?.name ?? 'Dimension'}
+                  </button>
+                ))}
+              </div>
+            )}
+            {data.dimensionMembers
+              .filter((dim) => dim.objectId === activeDimensionId)
+              .map((dim) => {
+                const b = d.memberBindings.find((b) => b.memberCatalogId === dim.objectId)
+                return (
+                  <div
+                    className="meta-subsection"
+                    role="tabpanel"
+                    aria-label={dim.name + ' binding'}
+                    key={dim.objectId}
+                  >
+                    {b && (
+                      <>
+                        <div className="planning-binding-fields">
+                          <div>
+                            <div className="dimension-join-mappings">
+                              {b.keyMappings.map((m, i) => (
+                                <div className="dimension-join-row" key={i}>
+                                  <Select
+                                    label={`${dim.name} Dimension column ${i + 1}`}
+                                    value={m.grainColumnId ?? m.populationColumnId ?? ''}
+                                    items={[
+                                      ...cols.map((c) => ({
+                                        value: c.grainColumnId,
+                                        label: c.name,
+                                      })),
+                                      ...attrs.map((a) => ({
+                                        value: a.columnId,
+                                        label: a.name + ' (attribute)',
+                                      })),
+                                    ]}
+                                    onChange={(grainColumnId) =>
+                                      setBinding({
+                                        ...b,
+                                        keyMappings: b.keyMappings.map((row, j) =>
+                                          j === i
+                                            ? {
+                                                memberColumnId: row.memberColumnId,
+                                                ...(cols.some(
+                                                  (c) => c.grainColumnId === grainColumnId,
+                                                )
+                                                  ? { grainColumnId }
+                                                  : { populationColumnId: grainColumnId }),
+                                              }
+                                            : row,
+                                        ),
+                                      })
+                                    }
+                                  />
+                                  <Select
+                                    label={`${dim.name} dimension column ${i + 1}`}
+                                    value={m.memberColumnId}
+                                    items={dim.definition.columns.map((c) => ({
+                                      value: c.columnId,
+                                      label: c.displayName,
+                                    }))}
+                                    onChange={(memberColumnId) =>
+                                      setBinding({
+                                        ...b,
+                                        keyMappings: b.keyMappings.map((row, j) =>
+                                          j === i ? { ...row, memberColumnId } : row,
+                                        ),
+                                      })
+                                    }
+                                  />
+                                  {b.keyMappings.length > 1 && (
+                                    <button
+                                      type="button"
+                                      className="meta-danger"
+                                      aria-label={`Remove ${dim.name} mapping ${i + 1}`}
+                                      onClick={() =>
+                                        setBinding({
+                                          ...b,
+                                          keyMappings: b.keyMappings.filter((_, j) => j !== i),
+                                        })
+                                      }
+                                    >
+                                      Remove
+                                    </button>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                            <div className="meta-toolbar">
+                              <button
+                                type="button"
+                                className="text-button"
+                                disabled={b.keyMappings.length >= 32}
+                                onClick={() =>
+                                  setBinding({
+                                    ...b,
+                                    keyMappings: [
+                                      ...b.keyMappings,
+                                      { grainColumnId: '', memberColumnId: '' },
+                                    ],
+                                  })
+                                }
+                              >
+                                Add {dim.name} mapping
+                              </button>
+                            </div>
+                            <p className="meta-hint">
+                              Without selected attributes, the mapping only checks that the values
+                              exist. Multiple dimension members may match. Selected attributes must
+                              have one distinct combination for each mapped value; they do not
+                              change the grain.
+                            </p>
+                          </div>
+                          <Checks
+                            label={'Attributes from ' + dim.name}
+                            bulk
+                            items={dim.definition.columns
+                              .filter((c) => dim.definition.attributeColumnIds.includes(c.columnId))
+                              .map((c) => ({ value: c.columnId, label: c.displayName }))}
+                            selected={b.selectedAttributeColumnIds}
+                            onChange={(selectedAttributeColumnIds) =>
+                              setBinding({ ...b, selectedAttributeColumnIds })
+                            }
+                          />{' '}
+                        </div>
+                      </>
+                    )}
+                    <div className="meta-actions" style={{ justifyContent: 'flex-end' }}>
+                      <button
+                        type="button"
+                        className="meta-danger"
+                        onClick={() =>
                           update({
-                            attributeColumnIds: e.target.checked
-                              ? [...new Set([...d.attributeColumnIds, column.columnId])]
-                              : d.attributeColumnIds.filter((k) => k !== column.columnId),
+                            memberBindings: d.memberBindings.filter(
+                              (binding) => binding.memberCatalogId !== dim.objectId,
+                            ),
                           })
                         }
-                      />
-                    </td>
-                  </tr>
+                      >
+                        Remove {dim.name} binding
+                      </button>
+                    </div>
+                  </div>
                 )
               })}
-            </tbody>
-          </table>
-        </div>
-      )}
-      {d.columns.length > 0 && (
-        <p className="meta-hint">Select at least one key column. Key columns are always exposed.</p>
-      )}
-      <Check
-        label="Time dimension"
-        value={value.isTimeDim}
-        onChange={(isTimeDim) =>
-          set({
-            ...value,
-            isTimeDim,
-            definition: {
-              ...d,
-              time: isTimeDim
-                ? {
-                    baseGrain: 'day',
-                    dateColumnId: d.keyColumnIds[0] ?? '',
-                    orderingColumnId: d.keyColumnIds[0] ?? '',
-                  }
-                : null,
+          </>
+        )}
+        <TransformationsPanel
+          label="Dimension transformations"
+          tabs={[
+            {
+              label: 'Filters',
+              configured: !!d.filters,
+              content: (
+                <FilterEditor
+                  embedded
+                  value={d.filters}
+                  onChange={(filters) => update({ filters })}
+                  {...filterColumns}
+                />
+              ),
             },
-          })
-        }
-      />
-      {value.isTimeDim && d.time && (
-        <div className="meta-grid">
-          <Select
-            label="Time grain"
-            value={d.time.baseGrain}
-            items={['day', 'week', 'month']}
-            onChange={(v) =>
-              update({ time: { ...d.time!, baseGrain: v as 'day' | 'week' | 'month' } })
-            }
-          />
-          <Select
-            label="Date column"
-            value={d.time.dateColumnId}
-            items={cols}
-            onChange={(dateColumnId) => update({ time: { ...d.time!, dateColumnId } })}
-          />
-          <Select
-            label="Ordering column"
-            value={d.time.orderingColumnId}
-            items={cols}
-            onChange={(orderingColumnId) => update({ time: { ...d.time!, orderingColumnId } })}
-          />
+          ]}
+        />
+      </fieldset>
+      {base && (
+        <div className="meta-subsection" aria-label={'Dimension population ' + value.name}>
+          <p role="status">
+            Table:{' '}
+            {previewBusy
+              ? 'loading preview…'
+              : (tableStatus?.state.replaceAll('_', ' ') ??
+                (savedVersion ? 'loading…' : 'not built'))}
+            {tableStatus?.rowCount != null
+              ? ' · ' + tableStatus.rowCount.toLocaleString() + ' rows'
+              : ''}
+          </p>
         </div>
       )}
-      <details className="meta-advanced">
-        <summary>More settings</summary>
-        <Select
-          label="Member label column"
-          value={d.labelColumnId}
-          items={cols}
-          onChange={(labelColumnId) => update({ labelColumnId })}
-        />
-        <Text
-          label="Description"
-          value={value.description}
-          required={false}
-          onChange={(description) => set({ ...value, description })}
-        />
-      </details>
-
       {previewError && (
         <p className="meta-error" role="alert">
           {previewError}
         </p>
       )}
       {preview && (
-        <PlanningResult data={preview} name={value.name + ' — transformed'} showRefresh={false} />
+        <>
+          <p className="meta-hint">
+            {preview.state === 'preview' ? 'Built preview (metadata not saved)' : 'Built table'}:{' '}
+            {preview.rowCount?.toLocaleString()} rows. Showing up to 50 records.
+          </p>
+          <PlanningResult
+            data={preview}
+            name={value.name || 'Dimension preview'}
+            showRefresh={false}
+          />
+        </>
       )}
-      <RawDataPreview
-        source={source}
-        disabled={busy || previewBusy}
-        renderActions={(rawButton) => (
-          <Actions
-            busy={busy || previewBusy}
-            canSave={d.keyColumnIds.length > 0 && (!d.pivot?.enabled || !!inputColumns)}
-            onCancel={onCancel}
-          >
-            {rawButton}
-            <button
-              type="button"
-              className="secondary-button"
-              disabled={
-                !base ||
-                !source ||
-                !d.keyColumnIds.length ||
-                (d.pivot?.enabled && !inputColumns) ||
-                previewBusy ||
-                busy
-              }
-              onClick={async () => {
-                if (!form.current?.reportValidity()) return
-                const controller = new AbortController()
-                previewRequest.current?.abort()
-                previewRequest.current = controller
-                setPreviewBusy(true)
-                setPreviewError('')
-                setPreview(null)
-                try {
-                  const result = await metadataApi.request<PlanningTableStatus>(
-                    base + '/dimensions/preview',
-                    'POST',
-                    {
-                      ...value,
-                      displayName: value.name,
-                      definition: { ...d, attributeColumnIds: [...exposed] },
-                    },
-                    undefined,
-                    controller.signal,
-                  )
-                  if (!controller.signal.aborted) setPreview(result)
-                } catch (e) {
-                  if (!controller.signal.aborted)
-                    setPreviewError(e instanceof Error ? e.message : 'Preview failed.')
-                } finally {
-                  if (!controller.signal.aborted) setPreviewBusy(false)
-                }
-              }}
-            >
-              {previewBusy ? 'Loading preview…' : 'Preview'}
-            </button>
-          </Actions>
-        )}
-      />
+      <div className="meta-actions" aria-label="Dimension actions">
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={busy || previewBusy}
+          onClick={onCancel}
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={busy || previewBusy || !base || !d.grain.keyIds.length}
+          onClick={() => void persist(true)}
+        >
+          Preview
+        </button>
+        <ViewSqlButton
+          disabled={busy || previewBusy || !base || !d.grain.keyIds.length}
+          loadSql={(signal) => {
+            if (!form.current?.reportValidity())
+              throw new Error('Complete the required fields first.')
+            return metadataApi.request(
+              base + '/dimensions/preview/population?sql_only=true',
+              'POST',
+              inputOf(value),
+              undefined,
+              signal,
+            )
+          }}
+        />
+        <button
+          type="submit"
+          className="primary-button"
+          disabled={busy || previewBusy || readOnly || !d.grain.keyIds.length}
+        >
+          Save
+        </button>
+      </div>
     </form>
   )
 }

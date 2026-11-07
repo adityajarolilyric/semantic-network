@@ -106,8 +106,8 @@ test('manage from the source grid and capture PLT/PT metadata without visible in
       await page.screenshot({ path: 'test-results/dimension-column-editor.png', fullPage: true })
     await save(page)
   }
-  await nav(page, 'Planning Levels')
-  await page.getByRole('button', { name: 'Create planning level', exact: true }).click()
+  await nav(page, 'Dimensions')
+  await page.getByRole('button', { name: 'Create dimension', exact: true }).click()
   await page.getByLabel('Name', { exact: true }).fill('PLT')
   await page.getByRole('radio', { name: 'From Multiple Tables', exact: true }).check()
   await page.getByLabel('Include UI_SourcingMatrix', { exact: true }).check()
@@ -140,15 +140,15 @@ test('manage from the source grid and capture PLT/PT metadata without visible in
     page.getByLabel('Time dimension column 1', { exact: true }).getByRole('option'),
   ).toHaveText(['Select…', 'Date'])
   await save(page)
-  await page.getByLabel('Base planning level', { exact: true }).selectOption({ label: 'PLT' })
-  await expect(page.getByText('Base planning level saved.', { exact: true })).toBeVisible()
+  await page.getByLabel('Base dimension', { exact: true }).selectOption({ label: 'PLT' })
+  await expect(page.getByText('Base dimension saved.', { exact: true })).toBeVisible()
   await expect(
-    page.getByRole('button', { name: 'Create planning level', exact: true }),
+    page.getByRole('button', { name: 'Create dimension', exact: true }),
   ).toBeEnabled()
-  await page.getByRole('button', { name: 'Create planning level', exact: true }).click()
+  await page.getByRole('button', { name: 'Create dimension', exact: true }).click()
   await page.getByLabel('Name', { exact: true }).fill('PT')
-  await page.getByRole('radio', { name: 'From Existing Planning Level', exact: true }).check()
-  await page.getByLabel('Parent planning level', { exact: true }).selectOption({ label: 'PLT' })
+  await page.getByRole('radio', { name: 'From Existing Dimension', exact: true }).check()
+  await page.getByLabel('Parent dimension', { exact: true }).selectOption({ label: 'PLT' })
   await page
     .getByRole('group', { name: 'Select keys from Parent keys', exact: true })
     .getByLabel('product_id', { exact: true })
@@ -191,9 +191,9 @@ test('manage from the source grid and capture PLT/PT metadata without visible in
     await page.getByLabel('Name', { exact: true }).fill(tx.name)
     await expect(page.getByLabel('Expected rows per grain', { exact: true })).toHaveCount(0)
     await page.getByLabel('Managed table', { exact: true }).selectOption({ label: tx.table })
-    await page.getByRole('radio', { name: 'Map to Planning Level', exact: true }).check()
+    await page.getByRole('radio', { name: 'Map to Dimension', exact: true }).check()
     await page
-      .getByLabel('Native planning level', { exact: true })
+      .getByLabel('Native dimension', { exact: true })
       .selectOption({ label: tx.level })
     for (const [key, column] of Object.entries(tx.mapping))
       await page.getByLabel(tx.level + '.' + key, { exact: true }).selectOption(column)
@@ -247,7 +247,7 @@ test('manage from the source grid and capture PLT/PT metadata without visible in
   await page.getByRole('button', { name: 'Create measure', exact: true }).click()
   await page.getByLabel('Name', { exact: true }).fill('Error')
   await page.getByRole('radio', { name: 'Calculated', exact: true }).check()
-  await page.getByLabel('Output Planning Level', { exact: true }).selectOption({ label: 'PT' })
+  await page.getByLabel('Output Dimension', { exact: true }).selectOption({ label: 'PT' })
   const formula = page.getByLabel('Formula', { exact: true })
   await formula.fill('ABS(')
   await expect(formula).toHaveAttribute('aria-invalid', 'true')
@@ -281,7 +281,7 @@ test('manage from the source grid and capture PLT/PT metadata without visible in
       controlTops: rectangles.map((rect) => rect.top),
       controlOrder: [...controls.children].map((element) =>
         element.classList.contains('measure-output-level')
-          ? 'Output Planning Level'
+          ? 'Output Dimension'
           : element.querySelector('legend')?.textContent?.trim(),
       ),
     }
@@ -292,7 +292,7 @@ test('manage from the source grid and capture PLT/PT metadata without visible in
   expect(alignment.controlOrder).toEqual([
     'Measure type',
     'Calculation type',
-    'Output Planning Level',
+    'Output Dimension',
   ])
   await page.screenshot({ path: 'test-results/formula-builder.png', fullPage: true })
   await save(page)
@@ -332,7 +332,7 @@ test('manage from the source grid and capture PLT/PT metadata without visible in
   await page.getByRole('button', { name: 'Cancel', exact: true }).click()
   await page.getByRole('button', { name: 'Reload metadata', exact: true }).click()
   await expect(page.getByText('Loading saved metadata…', { exact: true })).toHaveCount(0)
-  await nav(page, 'Planning Levels')
+  await nav(page, 'Dimensions')
   for (const name of ['PLT', 'PT']) {
     await page
       .locator('.meta-object-card')
@@ -353,22 +353,17 @@ test('manage from the source grid and capture PLT/PT metadata without visible in
   await page.getByLabel('Dis-aggregation policy', { exact: true }).selectOption('none')
   await page.getByLabel('Editable measure', { exact: true }).check()
   await save(page)
-  await nav(page, 'Build Semantic')
-  const valuesPanel = page.getByRole('region', { name: 'Materialise', exact: true })
+  await nav(page, 'Decision View')
+  const valuesPanel = page.getByRole('region', { name: 'Decision View', exact: true })
   const buildButton = valuesPanel.getByRole('button', {
     name: 'Build Semantic Network',
     exact: true,
   })
-  await expect(valuesPanel.getByLabel('Preview planning level', { exact: true })).not.toBeVisible()
-  await valuesPanel.getByRole('button', { name: 'Show preview', exact: true }).click()
-  const previewSelector = valuesPanel.getByLabel('Preview planning level', { exact: true })
+  const previewSelector = valuesPanel.getByLabel('Materialised table', { exact: true })
+  await expect(previewSelector).toBeVisible()
   const buildBox = await buildButton.boundingBox()
   const previewBox = await previewSelector.boundingBox()
   expect(buildBox!.y + buildBox!.height).toBeLessThan(previewBox!.y)
-  await expect(
-    valuesPanel.getByText('What gets materialised at PLT', { exact: true }),
-  ).toBeVisible()
-  await expect(valuesPanel.getByText('Disaggregate to Base', { exact: true })).toBeVisible()
   await valuesPanel
     .getByRole('button', { name: 'About Build Semantic Network', exact: true })
     .click()
@@ -378,12 +373,13 @@ test('manage from the source grid and capture PLT/PT metadata without visible in
   await page.screenshot({ path: 'test-results/materialise-help.png', fullPage: true })
   await page.keyboard.press('Escape')
   await buildButton.click()
-  await expect(valuesPanel.getByRole('status')).toContainText('Network: ready')
+  await previewSelector.selectOption({ label: 'PLT' })
+  await expect(valuesPanel.getByText(/ready · \d+ rows/)).toBeVisible()
   await expect(valuesPanel.getByRole('columnheader', { name: 'FQTY', exact: false })).toBeVisible()
   await expect(valuesPanel.getByRole('columnheader', { name: 'SQTY', exact: false })).toBeVisible()
   await page.screenshot({ path: 'test-results/materialise-preview.png', fullPage: true })
   await valuesPanel
-    .getByLabel('Preview planning level', { exact: true })
+    .getByLabel('Materialised table', { exact: true })
     .selectOption({ label: 'PT' })
   await expect(valuesPanel.getByRole('columnheader', { name: 'Error', exact: false })).toBeVisible()
   await nav(page, 'Decision View')
@@ -413,14 +409,14 @@ test('manage from the source grid and capture PLT/PT metadata without visible in
     pivot.getByRole('button', { name: 'Edit SQTY · P1 / 2026-10-31', exact: true }),
   ).toContainText('150')
   await expect(
-    page.getByText('Applying edit and recomputing compatible planning levels…'),
+    page.getByText('Applying edit and recomputing compatible dimensions…'),
   ).toHaveCount(0)
-  await page.screenshot({ path: 'test-results/planning-view.png', fullPage: true })
+  await page.screenshot({ path: 'test-results/decision-view.png', fullPage: true })
   await page.setViewportSize({ width: 375, height: 900 })
   expect(
     await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
   ).toBeTruthy()
-  await page.screenshot({ path: 'test-results/planning-view-mobile.png', fullPage: true })
+  await page.screenshot({ path: 'test-results/decision-view-mobile.png', fullPage: true })
   await page.setViewportSize({ width: 1440, height: 1000 })
   await nav(page, 'Measures')
   await nav(page, 'Decision View')
@@ -436,9 +432,9 @@ test('manage from the source grid and capture PLT/PT metadata without visible in
   await expect(
     page.getByRole('button', { name: 'Edit SQTY · P1 / 2026-10-31', exact: true }),
   ).toContainText('150')
-  await nav(page, 'Build Semantic')
+  await nav(page, 'Decision View')
   await page
-    .getByRole('region', { name: 'Materialise', exact: true })
+    .getByRole('region', { name: 'Decision View', exact: true })
     .getByRole('button', { name: 'Build Semantic Network', exact: true })
     .click()
   await expect(
@@ -448,13 +444,13 @@ test('manage from the source grid and capture PLT/PT metadata without visible in
   await expect(
     page.getByRole('button', { name: 'Edit SQTY · P1 / 2026-10-31', exact: true }),
   ).toContainText('150')
-  await nav(page, 'Build Semantic')
+  await nav(page, 'Decision View')
   page.once('dialog', async (dialog) => {
     expect(dialog.message()).toContain('replaces manual edits')
     await dialog.accept()
   })
-  await page.getByRole('button', { name: 'Full Refresh', exact: true }).click()
-  await expect(page.getByText('Full Refresh completed.', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Full Semantic Refresh', exact: true }).click()
+  await expect(page.getByText('Full Semantic Refresh completed.', { exact: true })).toBeVisible()
   await nav(page, 'Decision View')
   await expect(page.getByLabel('FQTY', { exact: true })).toBeChecked()
   await expect(
@@ -551,7 +547,7 @@ test('manage from the source grid and capture PLT/PT metadata without visible in
     await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
   ).toBeTruthy()
   await page.getByRole('button', { name: 'Cancel', exact: true }).click()
-  await nav(page, 'Planning Levels')
+  await nav(page, 'Dimensions')
   await page
     .locator('.meta-object-card')
     .filter({ has: page.getByRole('heading', { name: 'PT', exact: true }) })
@@ -595,7 +591,7 @@ async function save(page: Page) {
 async function bind(page: Page, dimension: string, key: string, grain: string) {
   await page.getByLabel('Add dimension', { exact: true }).selectOption({ label: dimension })
   await page
-    .getByLabel(dimension + ' planning-level column 1', { exact: true })
+    .getByLabel(dimension + ' dimension column 1', { exact: true })
     .selectOption({ label: grain })
   await page
     .getByLabel(dimension + ' dimension column 1', { exact: true })

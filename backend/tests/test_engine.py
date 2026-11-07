@@ -8,6 +8,8 @@ from backend.app.core.errors import Conflict, MetadataError
 from backend.app.engine.compiler import ClickHouseCompiler
 from backend.app.engine.planner import ManagedTablePlanner
 from backend.app.engine.worker import EngineWorker
+from backend.app.engine.artifacts import ArtifactCollector
+from backend.app.engine.managed_builds import ManagedTableBuildHandler
 from backend.app.schemas.managed_tables import ManagedDefinition
 from backend.app.schemas.sources import SourceInput
 from backend.app.services.base import now, scope
@@ -126,7 +128,15 @@ async def context():
     )
     service = ManagedTableService(store, Settings(_env_file=None), None, None)
     service.executor = FakeExecutor()
-    return store, service, EngineWorker(service)
+    return (
+        store,
+        service,
+        EngineWorker(
+            store,
+            handlers={"managedTable": ManagedTableBuildHandler(service)},
+            collector=ArtifactCollector(service),
+        ),
+    )
 
 
 async def submit(service, spec=None, expected=0, key="request_key"):
@@ -151,7 +161,9 @@ async def test_idempotency_stale_inputs_cancel_and_recovery():
     assert await worker.claim() is None
     expired = {**claimed, "leaseUntil": now() - timedelta(seconds=1)}
     await store.repository.replace("engine_runs", {"runId": run["runId"]}, expired)
-    second_worker = EngineWorker(service)
+    second_worker = EngineWorker(
+        store, handlers=worker.handlers, collector=worker.collector
+    )
     recovered = await second_worker.claim()
     assert recovered["fence"] == claimed["fence"] + 1
     with pytest.raises(Conflict):

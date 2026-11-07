@@ -1,8 +1,10 @@
 """Shared Pivot → Calendar input pipeline for distinct source populations."""
 
-from ..warehouse.repository import quote_identifier as q
+from ..warehouse.sql import quote_identifier as q
 from .calendar_resolution import CalendarResolutionCompiler, CalendarResolutionPlanner
+from .compilation_context import CompilationContext
 from .contracts import Check
+from .filters import FilterCompiler
 
 
 def population_owner(population):
@@ -23,7 +25,6 @@ def population_columns(population, objects, columns):
 
 def compile_population_input(database, pipeline):
     # Reuse the same input compilation, calendar checks and limits as Transactions.
-    from .compilation_context import CompilationContext
 
     host = CompilationContext(
         database,
@@ -46,6 +47,15 @@ def compile_population_input(database, pipeline):
     else:
         table, columns = host.object_input(owner, source)
         query = "SELECT " + ", ".join(q(c["name"]) for c in columns) + " FROM " + table
+    if owner["definition"].get("filters"):
+        # Filters address stable input IDs, independently of physical names.
+        aliases = ", ".join(q(c["name"]) + " AS " + q(c["columnId"]) for c in columns)
+        filtered = "SELECT " + aliases + " FROM (" + query + ")"
+        predicate = FilterCompiler.compile(owner["definition"]["filters"], columns)
+        projection = ", ".join(
+            q(c["columnId"]) + " AS " + q(c["name"]) for c in columns
+        )
+        query = "SELECT " + projection + " FROM (" + filtered + ") WHERE " + predicate
     return host.with_sql(query), tuple(
         Check(c.code, host.with_sql(c.sql)) for c in host.input_checks
     )

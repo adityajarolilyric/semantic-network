@@ -1,7 +1,7 @@
+from ..core.errors import Conflict, MetadataError
 from ..repositories.metadata import metadata_repositories
 from ..repositories.metadata.criteria import ObjectLookup, RecordLookup, RevisionLookup
 from ..repositories.metadata.records import RecordCategory
-from ..core.errors import Conflict, MetadataError
 from .base import Service, now, scope
 
 

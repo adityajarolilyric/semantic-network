@@ -7,7 +7,7 @@ def test_graph_before_materialisation_is_read_only_and_explains_paths(populated)
     before = populated.get(ROOT + "/measures").json()
     response = populated.post(
         ROOT + "/compatibility",
-        json={"measures": ["measure_fqty", "measure_sqty"], "planningLevelId": "pl_pt"},
+        json={"measures": ["measure_fqty", "measure_sqty"], "dimensionId": "pl_pt"},
     )
     assert response.status_code == 200, response.text
     graph = response.json()
@@ -19,7 +19,7 @@ def test_graph_before_materialisation_is_read_only_and_explains_paths(populated)
 
 def test_graph_rejects_unproven_mapping_and_bad_requests(populated):
     response = populated.post(
-        ROOT + "/planning-levels",
+        ROOT + "/dimensions",
         json={
             "objectId": "independent_qty",
             "name": "Independent Qty",
@@ -36,14 +36,14 @@ def test_graph_rejects_unproven_mapping_and_bad_requests(populated):
                         }
                     ],
                 },
-                "dimensionBindings": [],
+                "memberBindings": [],
             },
         },
     )
     assert response.status_code == 201, response.text
     graph = populated.post(
         ROOT + "/compatibility",
-        json={"measures": ["measure_fqty"], "planningLevelId": "independent_qty"},
+        json={"measures": ["measure_fqty"], "dimensionId": "independent_qty"},
     ).json()
     assert graph["contexts"][0]["selection"]["status"] == "unavailable"
     assert "FQTY" in graph["contexts"][0]["selection"]["reason"]
@@ -72,7 +72,7 @@ def test_graph_supports_empty_view_selection_and_pagination(populated):
         "measureLimit": 1,
     }
     graph = populated.post(ROOT + "/compatibility", json=request).json()
-    assert graph["contexts"][0]["name"] == "Selected pivot dimensions"
+    assert graph["contexts"][0]["name"] == "Selected pivot dimension_members"
     assert len(graph["measures"]) == 1
     assert graph["hasMoreMeasures"]
     graph = populated.post(
@@ -90,7 +90,7 @@ def test_shared_analyzer_respects_counts_typed_values_and_formula_dependencies()
     status["definition"]["resultType"] = {"type": "string", "nullable": True}
     count = deepcopy(by_id["measure_error"])
     count.update(objectId="count", name="Count")
-    count["definition"]["nativePlanningLevelId"] = "pl_pt"
+    count["definition"]["nativeDimensionId"] = "pl_pt"
     count["definition"]["formula"]["expression"] = {
         "type": "count",
         "function": "count_rows",
@@ -114,7 +114,7 @@ def test_complete_selection_is_checked_instead_of_pairwise_links(populated):
     revision = populated.get(ROOT).json()
     response = populated.put(
         ROOT,
-        json={"basePlanningLevelId": None, "changeReason": "Independent contexts"},
+        json={"baseDimensionId": None, "changeReason": "Independent contexts"},
         headers={"If-Match": str(revision["version"])},
     )
     assert response.status_code == 200, response.text
@@ -133,7 +133,7 @@ def test_complete_selection_is_checked_instead_of_pairwise_links(populated):
         ("c", ["date"]),
     ]:
         post(
-            "/planning-levels",
+            "/dimensions",
             {
                 "objectId": lid,
                 "name": lid,
@@ -151,7 +151,7 @@ def test_complete_selection_is_checked_instead_of_pairwise_links(populated):
                             for key in keys
                         ],
                     },
-                    "dimensionBindings": [],
+                    "memberBindings": [],
                 },
             },
         )
@@ -164,7 +164,7 @@ def test_complete_selection_is_checked_instead_of_pairwise_links(populated):
                     "displayName": "tx_" + lid,
                     "definition": {
                         "sourceId": "src_forecast",
-                        "planningLevelId": lid,
+                        "dimensionId": lid,
                         "keyMappings": [
                             {"sourceColumnId": key, "grainColumnId": key}
                             for key in keys
@@ -182,7 +182,7 @@ def test_complete_selection_is_checked_instead_of_pairwise_links(populated):
                     "definition": {
                         "measureType": "referenced",
                         "transactionId": "tx_" + lid,
-                        "nativePlanningLevelId": lid,
+                        "nativeDimensionId": lid,
                         "valueColumnId": "forecast_qty",
                         "aggregation": {"nonTime": "sum", "time": "sum"},
                     },
@@ -194,7 +194,7 @@ def test_complete_selection_is_checked_instead_of_pairwise_links(populated):
         (["m_ac", "m_bc"], "c"),
     ]:
         graph = populated.post(
-            ROOT + "/compatibility", json={"measures": pair, "planningLevelId": level}
+            ROOT + "/compatibility", json={"measures": pair, "dimensionId": level}
         ).json()
         assert graph["contexts"][0]["selection"]["status"] == "needs_materialisation", (
             graph

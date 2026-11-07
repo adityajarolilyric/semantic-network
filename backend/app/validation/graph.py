@@ -1,11 +1,16 @@
 import re
 from collections import defaultdict
 
+from ..core.errors import MetadataError
+from ..engine.filters import FilterCompiler
+from ..engine.grain_contexts import resolve_grain_contexts
+from ..engine.object_inputs import input_columns
+from ..engine.relationships import LevelRelationshipAnalyzer
 from ..schemas.common import Diagnostic, ValidationReport
+from .dimension_members import DimensionMembersRules
 from .dimensions import DimensionRules
 from .formulas import FormulaRules
 from .measures import MeasureRules
-from .planning_levels import PlanningLevelRules
 from .transactions import TransactionRules
 
 
@@ -13,10 +18,10 @@ class SemanticGraphValidator:
     """Validate a revision snapshot without querying or mutating the warehouse."""
 
     def __init__(self, objects=()):
-        self.objects = {obj["objectId"]: obj for obj in objects}
+        self.objects = {obj["objectId"]: obj for obj in resolve_grain_contexts(objects)}
         self.errors = []
+        self.dimension_members_rules = DimensionMembersRules(self)
         self.dimensions_rules = DimensionRules(self)
-        self.planning_levels_rules = PlanningLevelRules(self)
         self.transactions_rules = TransactionRules(self)
         self.measures_rules = MeasureRules(self)
         self.formulas_rules = FormulaRules(self)
@@ -28,9 +33,10 @@ class SemanticGraphValidator:
         *,
         publishing: bool = False,
     ) -> ValidationReport:
+        objects = resolve_grain_contexts(objects)
         self.objects = {obj["objectId"]: obj for obj in objects}
-        if hasattr(self.measures_rules, "availability"):
-            del self.measures_rules.availability
+        if hasattr(self.measures_rules, "_availability"):
+            del self.measures_rules._availability
         self.errors: list[Diagnostic] = []
         self.edges: dict[str, set[str]] = defaultdict(set)
         self.base = base_level_id
@@ -39,14 +45,12 @@ class SemanticGraphValidator:
                 self.error(
                     None,
                     "base_required",
-                    "A published revision must select a base planning level.",
+                    "A published revision must select a base dimension.",
                 )
             else:
-                self.reference(
-                    None, base_level_id, "planningLevel", "basePlanningLevelId"
-                )
+                self.reference(None, base_level_id, "dimension", "baseDimensionId")
         time_dimensions = [
-            o for o in objects if o["kind"] == "dimension" and o["isTimeDim"]
+            o for o in objects if o["kind"] == "dimensionMembers" and o["isTimeDim"]
         ]
         if len(time_dimensions) > 1:
             self.error(
@@ -57,12 +61,10 @@ class SemanticGraphValidator:
         for obj in objects:
             getattr(self, f"validate_{obj['kind']}")(obj)
         if base_level_id in self.objects:
-            from ..engine.relationships import LevelRelationshipAnalyzer
-
             analyzer = LevelRelationshipAnalyzer(objects)
             for obj in objects:
                 if (
-                    obj["kind"] == "planningLevel"
+                    obj["kind"] == "dimension"
                     and obj["objectId"] != base_level_id
                     and analyzer.analyze(obj["objectId"], base_level_id)["relationship"]
                     == "roll_up"
@@ -70,7 +72,7 @@ class SemanticGraphValidator:
                     self.error(
                         None,
                         "base_not_finest",
-                        "The base cannot be a coarser projection of another planning level.",
+                        "The base cannot be a coarser projection of another dimension.",
                     )
         self.validate_cycles()
         return ValidationReport(valid=not self.errors, diagnostics=self.errors)
@@ -101,6 +103,23 @@ class SemanticGraphValidator:
             self.edges[owner["objectId"]].add(object_id)
         return target
 
+    def grain_reference(self, owner, grain_id, path):
+        target = self.objects.get(grain_id)
+        if not target or target["kind"] not in {"dimension", "grain"}:
+            self.error(
+                owner,
+                "invalid_grain_reference",
+                "Choose an existing Transaction or Dimension grain.",
+                path,
+            )
+            return None
+        if owner:
+            self.edges[owner["objectId"]].add(grain_id)
+        return target
+
+    def validate_grain(self, obj):
+        self.reference(None, obj["owner"]["objectId"], "transaction", "owner")
+
     def source(self, owner: dict, source_id: str) -> dict | None:
         source = self.reference(owner, source_id, "source", "definition.sourceId")
         if source and not source["definition"]["inScope"]:
@@ -113,9 +132,6 @@ class SemanticGraphValidator:
         return {c["columnId"]: c for c in source["definition"]["columns"]}
 
     def object_columns(self, obj, source):
-        from ..core.errors import MetadataError
-        from ..engine.object_inputs import input_columns
-
         try:
             return {
                 c["columnId"]: c
@@ -138,9 +154,6 @@ class SemanticGraphValidator:
             )
 
     def validate_filters(self, owner: dict, filters: dict | None, columns: set | dict):
-        from ..core.errors import MetadataError
-        from ..engine.filters import FilterCompiler
-
         if filters:
             try:
                 FilterCompiler.compile(filters, columns)
@@ -170,13 +183,13 @@ class SemanticGraphValidator:
         )
 
     def population_columns(self, owner, source):
-        return self.planning_levels_rules.population_columns(owner, source)
+        return self.dimensions_rules.population_columns(owner, source)
 
     def grain_type(self, level: dict, column_id: str, seen=None) -> str | None:
-        return self.planning_levels_rules.grain_type(level, column_id, seen)
+        return self.dimensions_rules.grain_type(level, column_id, seen)
 
     def dimension_type(self, dimension: dict, column_id: str) -> str | None:
-        return self.planning_levels_rules.dimension_type(dimension, column_id)
+        return self.dimensions_rules.dimension_type(dimension, column_id)
 
     def compatible(self, owner, left, right, path):
         if left and right and self.normalized_type(left) != self.normalized_type(right):
@@ -187,11 +200,11 @@ class SemanticGraphValidator:
                 path,
             )
 
+    def validate_dimensionMembers(self, obj: dict):
+        return self.dimension_members_rules.validate_dimensionMembers(obj)
+
     def validate_dimension(self, obj: dict):
         return self.dimensions_rules.validate_dimension(obj)
-
-    def validate_planningLevel(self, obj: dict):
-        return self.planning_levels_rules.validate_planningLevel(obj)
 
     def validate_transaction(self, obj: dict):
         return self.transactions_rules.validate_transaction(obj)
@@ -231,7 +244,11 @@ class SemanticGraphValidator:
                 self.error(
                     self.objects.get(node),
                     "dependency_cycle",
-                    "Dependency cycle: " + " -> ".join(path + [node]),
+                    "Dependency cycle: "
+                    + " → ".join(
+                        self.objects.get(mid, {}).get("name", mid)
+                        for mid in path[path.index(node) :] + [node]
+                    ),
                 )
                 return
             if node in visited:

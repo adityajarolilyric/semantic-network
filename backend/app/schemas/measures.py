@@ -1,9 +1,10 @@
 from typing import Annotated, Literal, Union
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 
 from .common import DocumentMetadata, Identifier, Name, Schema, SemanticInput
 from .formulas import Formula
+from .grains import GrainReference
 
 
 class ResultType(Schema):
@@ -83,7 +84,11 @@ class ReferencedMeasureDefinition(Schema):
     measureType: Literal["referenced"]
     transactionId: Identifier
     valueColumnId: Identifier
-    nativePlanningLevelId: Identifier
+    legacyNativeGrainId: Identifier | None = Field(
+        default=None,
+        validation_alias=AliasChoices("nativeDimensionId", "nativeGrainId"),
+        exclude=True,
+    )
     resultType: ResultType = Field(default_factory=ResultType)
     aggregation: Aggregation
     missingTransactionValue: Literal["null", "zero"] = "null"
@@ -108,7 +113,12 @@ class ReferencedMeasureDefinition(Schema):
 
 class CalculatedMeasureDefinition(Schema):
     measureType: Literal["calculated"]
-    nativePlanningLevelId: Identifier
+    outputGrain: GrainReference | None = None
+    legacyNativeGrainId: Identifier | None = Field(
+        default=None,
+        validation_alias=AliasChoices("nativeDimensionId", "nativeGrainId"),
+        exclude=True,
+    )
     calculationType: Literal["AggregateFirst", "CalculateFirst"]
     formula: Formula
     resultType: ResultType = Field(default_factory=ResultType)
@@ -117,6 +127,18 @@ class CalculatedMeasureDefinition(Schema):
     nullInputPolicy: Literal["propagate"] = "propagate"
     overflowPolicy: Literal["error"] = "error"
     editable: Literal[False] = False
+
+    @model_validator(mode="after")
+    def resolve_output_grain(self):
+        if self.outputGrain is None:
+            if not self.legacyNativeGrainId:
+                raise ValueError(
+                    "Choose a Transaction or Dimension for the calculation grain"
+                )
+            self.outputGrain = GrainReference(
+                kind="dimension", objectId=self.legacyNativeGrainId
+            )
+        return self
 
     @model_validator(mode="after")
     def validate_aggregation(self):

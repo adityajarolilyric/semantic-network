@@ -1,14 +1,13 @@
 """Retain captured artifacts while bounded warehouse reads are in flight."""
 
-from ..repositories.metadata import metadata_repositories
-from ..repositories.metadata.criteria import ArtifactLookup, ReadLeaseLookup
-
 import asyncio
 from contextlib import asynccontextmanager, suppress
 from datetime import timedelta
 
 from ..core.errors import Conflict, NotFound
 from ..core.metadata import utc_now as now
+from ..repositories.metadata import metadata_repositories
+from ..repositories.metadata.criteria import ArtifactLookup, ReadLeaseLookup
 
 
 class ArtifactReadLeases:

@@ -1,17 +1,18 @@
 """Bounded, read-only graph requests; no graph state is persisted."""
 
 from pydantic import Field, model_validator
+
 from .common import Identifier, Schema
-from .planning_view import PlanningViewRequest
+from .decision_view import DecisionViewRequest
 
 
-class CompatibilityView(PlanningViewRequest):
+class CompatibilityView(DecisionViewRequest):
     measures: list[Identifier] = Field(default_factory=list, max_length=12)
 
 
 class CompatibilityRequest(Schema):
     measures: list[Identifier] = Field(default_factory=list, max_length=12)
-    planningLevelId: Identifier | None = None
+    dimensionId: Identifier | None = None
     view: CompatibilityView | None = None
     search: str = Field(default="", max_length=200)
     measureOffset: int = Field(default=0, ge=0, le=5000)
@@ -25,8 +26,6 @@ class CompatibilityRequest(Schema):
             raise ValueError("Select each measure once.")
         if self.view and set(self.measures) != set(self.view.measures):
             raise ValueError("The view must contain exactly the selected measures.")
-        if self.view and self.planningLevelId:
-            raise ValueError(
-                "Choose a planning-level context or a view context, not both."
-            )
+        if self.view and self.dimensionId:
+            raise ValueError("Choose a dimension context or a view context, not both.")
         return self

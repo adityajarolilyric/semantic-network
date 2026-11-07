@@ -14,7 +14,7 @@ def model():
     ]
     level = {
         "objectId": "base",
-        "kind": "planningLevel",
+        "kind": "dimension",
         "name": "Base",
         "definition": {
             "population": {"operation": "source", "sourceId": "population"},
@@ -25,7 +25,7 @@ def model():
                     for k in ["product", "location"]
                 ],
             },
-            "dimensionBindings": [],
+            "memberBindings": [],
         },
     }
     transactions = [
@@ -34,7 +34,7 @@ def model():
             "kind": "transaction",
             "definition": {
                 "sourceId": sid,
-                "planningLevelId": "base",
+                "dimensionId": "base",
                 "mappingMode": "direct",
                 "keyMappings": [
                     {"sourceColumnId": k, "grainColumnId": k}
@@ -51,7 +51,7 @@ def model():
             "kind": "measure",
             "definition": {
                 "measureType": "referenced",
-                "nativePlanningLevelId": "base",
+                "nativeDimensionId": "base",
                 "transactionId": "tx_" + sid,
                 "valueColumnId": "qty",
                 "resultType": {"type": "number", "nullable": True},
@@ -68,7 +68,7 @@ def model():
         "kind": "measure",
         "definition": {
             "measureType": "calculated",
-            "nativePlanningLevelId": "base",
+            "nativeDimensionId": "base",
             "resultType": {"type": "number", "nullable": True},
             "calculationType": "AggregateFirst",
             "formula": {
@@ -102,7 +102,7 @@ def test_new_measure_and_unrelated_new_level_preserve_existing_representation_fi
     parent.update(objectId="pt", name="PT")
     parent["definition"]["population"] = {
         "operation": "distinct_projection",
-        "sourcePlanningLevelId": "base",
+        "sourceDimensionId": "base",
     }
     parent["definition"]["grain"] = {
         "keyIds": ["product"],
@@ -118,7 +118,8 @@ def test_new_measure_and_unrelated_new_level_preserve_existing_representation_fi
     pops["pt"] = {"artifactId": "pt_1"}
     after = manifest(objects, pops, managed)
     assert all(after["base"]["evaluations"][mid] == fp for mid, fp in before.items())
-    assert "Extra" in after["base"]["evaluations"] and "pt" in after
+    assert "Extra" in after["base"]["evaluations"]
+    assert "pt" not in after  # Unused Dimensions do not receive values tables.
 
 
 def test_source_and_definition_changes_invalidate_only_dependent_measures():
@@ -170,4 +171,7 @@ def test_incremental_jobs_reject_runtime_policy_changes_without_falling_back_to_
         IncrementalBuildCoordinator.validate_runtime_policy(
             {**job, "incrementalPolicy": "old"}
         )
-    IncrementalBuildCoordinator.validate_runtime_policy({"buildMode": "full"})
+    for mode in ("full", "edit"):
+        IncrementalBuildCoordinator.validate_runtime_policy({**job, "buildMode": mode})
+        with pytest.raises(Conflict):
+            IncrementalBuildCoordinator.validate_runtime_policy({"buildMode": mode})

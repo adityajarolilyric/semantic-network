@@ -1,5 +1,9 @@
 """Focused semantic rules; diagnostics and graph state are owned by the shared context."""
 
+from ..core.errors import MetadataError
+from ..engine.calendar_resolution import CalendarResolutionPlanner
+from ..engine.transaction_resolution import TransactionResolutionPlanner
+
 
 class TransactionRules:
     def __init__(self, context):
@@ -8,16 +12,16 @@ class TransactionRules:
     def validate_transaction(self, obj: dict):
         definition = obj["definition"]
         source = self.context.source(obj, definition["sourceId"])
-        level = self.context.reference(
-            obj,
-            definition["planningLevelId"],
-            "planningLevel",
-            "definition.planningLevelId",
+        level = (
+            self.context.reference(
+                obj, definition["dimensionId"], "dimension", "definition.dimensionId"
+            )
+            if definition.get("dimensionId")
+            else self.context.grain_reference(
+                obj, definition["nativeGrainId"], "definition.grainColumnIds"
+            )
         )
         if (definition.get("calendarResolution") or definition.get("pivot")) and source:
-            from ..core.errors import MetadataError
-            from ..engine.calendar_resolution import CalendarResolutionPlanner
-
             try:
                 calendar = CalendarResolutionPlanner(
                     list(self.context.objects.values()),
@@ -38,9 +42,6 @@ class TransactionRules:
                 return
         if definition.get("mappingMode") == "resolve_multi_grain":
             if source and level:
-                from ..core.errors import MetadataError
-                from ..engine.transaction_resolution import TransactionResolutionPlanner
-
                 try:
                     planner = TransactionResolutionPlanner(
                         list(self.context.objects.values()),

@@ -2,6 +2,7 @@
 
 from ..core.errors import Conflict, MetadataError
 from ..engine.table_storage import owner, relation_sql
+from .sql import quote_identifier as q
 
 
 class WarehouseCheckRunner:
@@ -22,6 +23,28 @@ class WarehouseQueryExecutor:
     def __init__(self, warehouse):
         self.warehouse = warehouse
 
+    async def pivot_profile(self, artifact, settings, limit):
+        def read(connect):
+            columns = ", ".join(q(column["name"]) for column in artifact["columns"])
+            return (
+                connect()
+                .query(
+                    f"SELECT {columns} FROM {self.warehouse.qualify(artifact['physicalName'])} LIMIT {int(limit)}",
+                    settings=settings,
+                )
+                .result_rows
+            )
+
+        return await self.warehouse.run(read)
+
+    def preview_sql(self, artifact, columns=None):
+        selected = {**artifact, "columns": columns} if columns is not None else artifact
+        return relation_sql(self.warehouse, selected) + " ORDER BY ALL LIMIT 50"
+
+    @staticmethod
+    def decision_view_sql(compiled, max_groups):
+        return f"SELECT * FROM ({compiled.sql}) ORDER BY ALL LIMIT {max_groups + 1}"
+
     async def _preview_artifact(
         self, artifact, settings, *, columns=None, ownership_message=None
     ):
@@ -35,7 +58,7 @@ class WarehouseQueryExecutor:
                 {**artifact, "columns": columns} if columns is not None else artifact
             )
             rows = client.query(
-                relation_sql(self.warehouse, selected) + " ORDER BY ALL LIMIT 50",
+                self.preview_sql(selected),
                 settings=settings,
             ).result_rows
             return [[self.warehouse.cell(value) for value in row] for row in rows]
@@ -60,19 +83,19 @@ class WarehouseQueryExecutor:
     async def preview_draft_population(self, artifact, settings):
         return await self._preview_artifact(artifact, settings)
 
-    async def planning_view(self, compiled, settings, max_groups):
+    async def decision_view(self, compiled, settings, max_groups):
         def read(connect):
             rows = (
                 connect()
                 .query(
-                    f"SELECT * FROM ({compiled.sql}) ORDER BY ALL LIMIT {max_groups + 1}",
+                    self.decision_view_sql(compiled, max_groups),
                     settings=settings,
                 )
                 .result_rows
             )
             if len(rows) > max_groups:
                 raise MetadataError(
-                    "planning_view_limit",
+                    "decision_view_limit",
                     "This pivot has too many groups. Choose fewer attributes or a coarser grain.",
                 )
             return [[self.warehouse.cell(value) for value in row] for row in rows]

@@ -1,31 +1,31 @@
+import { materialisationCatalog } from './grainCatalog'
+import { dimensionCatalog, dimensionGrain } from './dimensionCatalog'
 import { CompatibilityGraphPanel } from './CompatibilityGraphPanel'
 import { QuickCalculatedMeasure } from './QuickCalculatedMeasure'
-import { PlanningViewPanel } from './PlanningViewPanel'
+import { DecisionViewNetwork } from './DecisionViewNetwork'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { TableManagement } from '../components/TableCatalog'
 import { ApiError } from '../lib/api'
 import { metadataApi } from './api'
-import { planningLevelBuilds } from './planningLevelBuilds'
 import { useMetadata } from './useMetadata'
-import { MaterialisePanel } from './MaterialisePanel'
 import {
   identity,
   effectiveSnapshot,
   inputOf,
-  type Dimension,
+  type DimensionMembers,
   type Kind,
   type Measure,
   type ObjectDocument,
   type ObjectInput,
-  type PlanningLevel,
+  type Dimension,
   type Report,
   type Revision,
   type Transaction,
 } from './types'
 import { Check, Select } from './editors/Fields'
 import { ManagedTableEditor } from './editors/ManagedTableEditor'
+import { DimensionMembersEditor } from './editors/DimensionMembersEditor'
 import { DimensionEditor } from './editors/DimensionEditor'
-import { PlanningLevelEditor } from './editors/PlanningLevelEditor'
 import { TransactionEditor } from './editors/TransactionEditor'
 import { MeasureEditor, defaultAggregation } from './editors/MeasureEditor'
 export type Tab =
@@ -35,30 +35,27 @@ export type Tab =
   | 'levels'
   | 'transactions'
   | 'measures'
-  | 'materialise'
-  | 'planning-view'
+  | 'decision-view'
   | 'context-graph'
 export const tabs: { id: Tab; label: string }[] = [
   { id: 'sources', label: 'Sources' },
   { id: 'managed', label: 'Managed Tables' },
   { id: 'dimensions', label: 'Dimensions' },
-  { id: 'levels', label: 'Planning Levels' },
   { id: 'transactions', label: 'Transactions' },
   { id: 'measures', label: 'Measures' },
-  { id: 'materialise', label: 'Build Semantic' },
-  { id: 'planning-view', label: 'Decision View' },
+  { id: 'decision-view', label: 'Decision View' },
   { id: 'context-graph', label: 'Context Graph' },
 ]
 const tabKind: Partial<Record<Tab, Kind>> = {
   managed: 'source',
-  dimensions: 'dimension',
-  levels: 'planningLevel',
+  dimensions: 'dimensionMembers',
+  levels: 'dimension',
   transactions: 'transaction',
   measures: 'measure',
 }
 function newObject(kind: Exclude<Kind, 'source'>): ObjectInput {
   const common = { ...identity(kind), displayName: '' }
-  if (kind === 'dimension')
+  if (kind === 'dimensionMembers')
     return {
       ...common,
       kind,
@@ -72,14 +69,14 @@ function newObject(kind: Exclude<Kind, 'source'>): ObjectInput {
         time: null,
       },
     }
-  if (kind === 'planningLevel')
+  if (kind === 'dimension')
     return {
       ...common,
       kind,
       definition: {
         population: { operation: 'source', sourceId: '' },
         grain: { keyIds: [], columns: [] },
-        dimensionBindings: [],
+        memberBindings: [],
       },
     }
   if (kind === 'transaction')
@@ -88,7 +85,8 @@ function newObject(kind: Exclude<Kind, 'source'>): ObjectInput {
       kind,
       definition: {
         sourceId: '',
-        planningLevelId: '',
+        dimensionId: null,
+        grainColumnIds: [],
         mappingMode: 'direct',
         keyMappings: [],
         expectedRowsPerGrain: 'many',
@@ -103,7 +101,7 @@ function newObject(kind: Exclude<Kind, 'source'>): ObjectInput {
       measureType: 'referenced',
       transactionId: '',
       valueColumnId: '',
-      nativePlanningLevelId: '',
+      nativeGrainId: '',
       resultType: { type: 'number', nullable: true },
       aggregation: defaultAggregation,
       missingTransactionValue: 'null',
@@ -152,6 +150,13 @@ export function MetadataWorkspace({
   const model = meta.model
   const revision = meta.revision
   const editable = revision?.approvalStatus === 'draft' && !meta.loading && !meta.error
+  const materialisationGrains = materialisationCatalog(meta.data, revision?.baseDimensionId ?? null)
+  const defaultGrainId =
+    revision?.baseDimensionId ??
+    meta.data.transactions[0]?.definition.dimensionId ??
+    meta.data.transactions[0]?.effectiveGrainId ??
+    materialisationGrains[0]?.objectId ??
+    null
   const locked = busy || meta.loading
   useEffect(() => {
     setEditor(null)
@@ -191,7 +196,13 @@ export function MetadataWorkspace({
   async function save(input: ObjectInput) {
     if (!model || !revision || !editor) return
     const ok = await run(
-      () => metadataApi.save(model.modelId, revision.revisionId, inputOf(input), editor.version),
+      () =>
+        input.kind === 'dimension' && input.definition.population.operation !== 'source'
+          ? metadataApi.managedOperation(
+              metadataApi.scope(model.modelId, revision.revisionId) + '/dimensions/save-and-build',
+              { definition: inputOf(input), expectedVersion: editor.version ?? null },
+            )
+          : metadataApi.save(model.modelId, revision.revisionId, inputOf(input), editor.version),
       'Changes saved.',
     )
     if (ok) setEditor(null)
@@ -218,7 +229,7 @@ export function MetadataWorkspace({
       if (!saved) throw error
       fail(
         new Error(
-          'Measure saved, but materialisation failed. Retry Build Semantic Network from Materialise.\n' +
+          'Measure saved, but materialisation failed. Retry Build Semantic Network in Decision View.\n' +
             (error instanceof Error ? error.message : 'Build failed.'),
         ),
       )
@@ -229,10 +240,14 @@ export function MetadataWorkspace({
   }
   const all = Object.values(meta.data).flat() as ObjectDocument[]
   const kind = tabKind[tab]
-  const objects = all.filter(
-    (o) => o.kind === kind && (o.kind !== 'source' || showExcluded || o.definition.inScope),
-  )
+  const objects =
+    tab === 'dimensions' || tab === 'levels'
+      ? dimensionCatalog(meta.data)
+      : all.filter(
+          (o) => o.kind === kind && (o.kind !== 'source' || showExcluded || o.definition.inScope),
+        )
   const management: TableManagement = {
+    onImported: meta.refresh,
     pending: pendingManaged,
     managed: new Set(
       meta.data.sources.filter((s) => s.definition.inScope).map((s) => s.definition.tableName),
@@ -323,7 +338,7 @@ export function MetadataWorkspace({
           </button>
         </div>
       )}
-      {revision && (tab === 'sources' || tab === 'levels') && (
+      {revision && (tab === 'sources' || tab === 'dimensions' || tab === 'levels') && (
         <section className="meta-revision">
           <div>
             <span className={'meta-badge ' + revision.approvalStatus}>
@@ -400,11 +415,11 @@ export function MetadataWorkspace({
           )}
         </section>
       )}
-      {quickMeasure && model && revision?.basePlanningLevelId && (
+      {quickMeasure && model && revision && defaultGrainId && (
         <QuickCalculatedMeasure
           data={meta.data}
           base={metadataApi.scope(model.modelId, revision.revisionId)}
-          baseLevelId={revision.basePlanningLevelId}
+          baseLevelId={defaultGrainId}
           busy={busy}
           onClose={() => setQuickMeasure(false)}
           onSave={createQuickMeasure}
@@ -412,15 +427,18 @@ export function MetadataWorkspace({
       )}
       {tab === 'sources' ? (
         children(management)
-      ) : tab === 'planning-view' ? (
+      ) : tab === 'decision-view' ? (
         model && revision ? (
-          <PlanningViewPanel
+          <DecisionViewNetwork
             key={model.modelId + revision.revisionId}
             base={metadataApi.scope(model.modelId, revision.revisionId)}
             revisionVersion={revision.version}
-            onCreateMeasure={
-              editable && revision.basePlanningLevelId ? () => setQuickMeasure(true) : undefined
-            }
+            baseLevelId={revision.baseDimensionId}
+            levels={materialisationGrains}
+            measures={meta.data.measures}
+            editable={!!editable && !locked}
+            onBuilt={meta.refresh}
+            onCreateMeasure={editable && defaultGrainId ? () => setQuickMeasure(true) : undefined}
             creatingMeasure={busy}
             onCommitted={(version) =>
               meta.updateRevisionVersion(model.modelId, revision.revisionId, version)
@@ -436,60 +454,60 @@ export function MetadataWorkspace({
             />
           </div>
         ) : null
-      ) : tab === 'materialise' ? (
-        <>
-          {tab === 'materialise' && model && revision && (
-            <MaterialisePanel
-              key={model.modelId + revision.revisionId}
-              base={metadataApi.scope(model.modelId, revision.revisionId)}
-              revisionVersion={revision.version}
-              baseLevelId={revision.basePlanningLevelId}
-              levels={meta.data.planningLevels}
-              measures={meta.data.measures}
-              editable={!!editable && !locked}
-              onBuilt={meta.refresh}
-            />
-          )}
-        </>
       ) : (
         <>
           {!editor && (
             <>
               <div
                 className={
-                  tab === 'levels'
-                    ? 'meta-list-heading planning-level-list-heading'
+                  tab === 'dimensions' || tab === 'levels'
+                    ? 'meta-list-heading dimension-list-heading'
                     : 'meta-list-heading'
                 }
               >
-                {editable && tab === 'levels' && (
-                  <div className="planning-level-base">
+                {editable && (tab === 'dimensions' || tab === 'levels') && (
+                  <div className="dimension-base">
                     <Select
                       disabled={locked || !!editor}
-                      label="Base planning level"
-                      value={revision.basePlanningLevelId ?? ''}
+                      label="Base Dimension"
+                      value={revision.baseDimensionId ?? ''}
                       items={[
                         { value: '__none', label: 'No base selected' },
-                        ...meta.data.planningLevels.map((l) => ({
-                          value: l.objectId,
-                          label: l.displayName,
+                        ...dimensionCatalog(meta.data).map((l) => ({
+                          value: dimensionGrain(meta.data, l.objectId)?.objectId ?? l.objectId,
+                          label: l.name,
                         })),
                       ]}
                       required={false}
                       onChange={async (value) => {
-                        await run(
-                          () =>
-                            metadataApi.request(
-                              metadataApi.scope(model!.modelId, revision.revisionId),
-                              'PUT',
-                              {
-                                basePlanningLevelId: value && value !== '__none' ? value : null,
-                                changeReason: revision.changeReason,
-                              },
-                              revision.version,
-                            ),
-                          'Base planning level saved.',
-                        )
+                        await run(async () => {
+                          let selected = value && value !== '__none' ? value : null
+                          if (
+                            selected &&
+                            meta.data.dimensionMembers.some((d) => d.objectId === selected)
+                          ) {
+                            const grain = await metadataApi.request<Dimension>(
+                              metadataApi.scope(model!.modelId, revision.revisionId) +
+                                '/dimension-members/' +
+                                selected +
+                                '/grain',
+                              'POST',
+                            )
+                            selected = grain.objectId
+                          }
+                          const current = await metadataApi.request<Revision>(
+                            metadataApi.scope(model!.modelId, revision.revisionId),
+                          )
+                          return metadataApi.request(
+                            metadataApi.scope(model!.modelId, revision.revisionId),
+                            'PUT',
+                            {
+                              baseDimensionId: selected,
+                              changeReason: revision.changeReason,
+                            },
+                            current.version,
+                          )
+                        }, 'Base Dimension saved.')
                       }}
                     />
                   </div>
@@ -507,33 +525,6 @@ export function MetadataWorkspace({
                   >
                     Reload metadata
                   </button>
-                  {tab === 'levels' && (
-                    <button
-                      className="secondary-button"
-                      disabled={!editable || locked || meta.data.planningLevels.length === 0}
-                      title="Rebuild saved planning populations, parents first. Rebuild measure values separately in Materialise."
-                      onClick={() =>
-                        void run(
-                          () =>
-                            planningLevelBuilds.buildAll(
-                              model!.modelId,
-                              revision!.revisionId,
-                              ({ levelName, completed, total }) =>
-                                setNotice(`Building ${completed + 1} of ${total}: ${levelName}…`),
-                            ),
-                          'All planning levels built. Rebuild measure values in Materialise.',
-                        ).then((ok) => {
-                          // Earlier levels may have committed before a later build failed.
-                          if (!ok) {
-                            setNotice('')
-                            meta.refresh()
-                          }
-                        })
-                      }
-                    >
-                      Build all planning levels
-                    </button>
-                  )}
                   {tab === 'managed' ? (
                     <button className="secondary-button" onClick={() => onTab('sources')}>
                       Choose managed tables
@@ -549,7 +540,7 @@ export function MetadataWorkspace({
                           setEditor({ input: newObject(kind as Exclude<Kind, 'source'>) })
                         }}
                       >
-                        Create {tab === 'levels' ? 'planning level' : kind}
+                        Create {tab === 'dimensions' || tab === 'levels' ? 'dimension' : kind}
                       </button>
                     )
                   )}
@@ -577,7 +568,7 @@ export function MetadataWorkspace({
                   <article className="meta-object-card" key={o.objectId}>
                     <div>
                       <h3>
-                        {o.kind === 'dimension'
+                        {o.kind === 'dimensionMembers'
                           ? o.name
                           : 'displayName' in o
                             ? o.displayName
@@ -585,9 +576,10 @@ export function MetadataWorkspace({
                       </h3>
 
                       <p>{o.description || objectSummary(o)}</p>
-                      {o.kind === 'planningLevel' &&
-                        revision?.basePlanningLevelId === o.objectId && (
-                          <span className="meta-badge">Base planning level</span>
+                      {(o.kind === 'dimension' || o.kind === 'dimensionMembers') &&
+                        revision?.baseDimensionId ===
+                          dimensionGrain(meta.data, o.objectId)?.objectId && (
+                          <span className="meta-badge">Base Dimension</span>
                         )}
                       {o.kind === 'source' && !o.definition.inScope && (
                         <span className="meta-badge">Outside scope</span>
@@ -601,8 +593,21 @@ export function MetadataWorkspace({
                           setError('')
                           // Source editors need the saved managed definition as well as raw metadata.
                           // inputOf is for API serialization and deliberately removes that data.
+                          const owner =
+                            o.kind === 'dimensionMembers'
+                              ? dimensionGrain(meta.data, o.objectId)
+                              : undefined
+                          const customPopulation =
+                            owner &&
+                            (owner.definition.population.operation !== 'source' ||
+                              owner.definition.population.sourceId !==
+                                owner.memberCatalog?.sourceId)
                           setEditor({
-                            input: o.kind === 'source' ? o : inputOf(o),
+                            input: customPopulation
+                              ? structuredClone(inputOf(owner))
+                              : o.kind === 'source'
+                                ? o
+                                : inputOf(o),
                             version: o.version,
                           })
                         }}
@@ -671,17 +676,17 @@ export function MetadataWorkspace({
                 {editable ? (editor.version ? 'Edit' : 'Create') : 'View'}{' '}
                 {editor.input.kind === 'source'
                   ? 'managed table'
-                  : editor.input.kind === 'planningLevel'
-                    ? 'planning level'
-                    : editor.input.kind}
+                  : editor.input.kind === 'dimension'
+                    ? 'dimension'
+                    : editor.input.kind === 'dimensionMembers'
+                      ? 'dimension'
+                      : editor.input.kind}
               </h2>
               <fieldset
                 disabled={
                   busy ||
                   meta.loading ||
-                  (!editable &&
-                    editor.input.kind !== 'source' &&
-                    editor.input.kind !== 'planningLevel')
+                  (!editable && editor.input.kind !== 'source' && editor.input.kind !== 'dimension')
                 }
               >
                 {editor.input.kind === 'source' && (
@@ -695,20 +700,69 @@ export function MetadataWorkspace({
                     onClose={() => setEditor(null)}
                   />
                 )}
-                {editor.input.kind === 'dimension' && (
-                  <DimensionEditor
+                {editor.input.kind === 'dimensionMembers' && (
+                  <DimensionMembersEditor
                     key={editor.input.objectId}
                     base={metadataApi.scope(model!.modelId, revision!.revisionId)}
                     {...common}
-                    initial={editor.input as Dimension}
+                    initial={editor.input as DimensionMembers}
+                    populationControl={(current) => (
+                      <fieldset className="measure-type-control">
+                        <legend>Population method</legend>
+                        <div className="measure-type-switch">
+                          {(['source', 'cartesian_product', 'distinct_projection'] as const).map(
+                            (operation) => (
+                              <label className="measure-type-option" key={operation}>
+                                <input
+                                  type="radio"
+                                  name="dimension-population"
+                                  checked={operation === 'source'}
+                                  onChange={() => {
+                                    if (operation === 'source') return
+                                    const owner = dimensionGrain(meta.data, current.objectId)
+                                    const input = owner
+                                      ? structuredClone(inputOf(owner))
+                                      : (newObject('dimension') as Dimension)
+                                    input.objectId = owner?.objectId ?? current.objectId
+                                    input.name = current.name
+                                    input.displayName = current.name
+                                    input.description = current.description
+                                    input.definition.population =
+                                      operation === 'cartesian_product'
+                                        ? { operation, factors: [] }
+                                        : { operation, sourceDimensionId: '' }
+                                    if (owner) {
+                                      input.memberCatalog = current.definition
+                                      input.isTimeDim = current.isTimeDim
+                                    }
+                                    input.definition.grain = { keyIds: [], columns: [] }
+                                    input.definition.populationAttributes = []
+                                    input.definition.memberBindings = []
+                                    input.definition.filters = null
+                                    setEditor({ input, version: editor.version })
+                                  }}
+                                />
+                                <span>
+                                  {operation === 'source'
+                                    ? 'From a Table'
+                                    : operation === 'cartesian_product'
+                                      ? 'From Multiple Tables'
+                                      : 'From Existing Dimension'}
+                                </span>
+                              </label>
+                            ),
+                          )}
+                        </div>
+                      </fieldset>
+                    )}
                     onSave={save}
                   />
                 )}
-                {editor.input.kind === 'planningLevel' && (
-                  <PlanningLevelEditor
+                {editor.input.kind === 'dimension' && (
+                  <DimensionEditor
                     key={editor.input.objectId}
                     {...common}
-                    initial={editor.input as PlanningLevel}
+                    initial={editor.input as Dimension}
                     savedVersion={editor.version}
                     readOnly={!editable}
                     onPersisted={(input, version, close) => {
@@ -743,7 +797,7 @@ export function MetadataWorkspace({
                   <MeasureEditor
                     key={editor.input.objectId}
                     base={metadataApi.scope(model!.modelId, revision!.revisionId)}
-                    baseLevelId={revision!.basePlanningLevelId}
+                    baseLevelId={revision!.baseDimensionId}
                     {...common}
                     initial={editor.input as Measure}
                     onSave={save}
@@ -765,9 +819,9 @@ export function MetadataWorkspace({
 function objectSummary(o: ObjectInput) {
   if (o.kind === 'source')
     return `${o.definition.tableName} · ${o.definition.columns.length} columns · ${o.definition.keyColumns.length} key columns`
-  if (o.kind === 'dimension')
+  if (o.kind === 'dimensionMembers')
     return `${o.isTimeDim ? 'Time dimension' : 'Dimension'} · ${o.definition.columns.length} columns`
-  if (o.kind === 'planningLevel')
+  if (o.kind === 'dimension')
     return `${o.definition.population.operation} · ${o.definition.grain.keyIds.length} grain keys`
   if (o.kind === 'transaction') {
     if (o.definition.mappingMode === 'resolve_multi_grain' && o.definition.resolution) {
@@ -775,7 +829,9 @@ function objectSummary(o: ObjectInput) {
       const values = o.definition.resolution.values.length
       return `Multi-grain resolution · ${keys} native key${keys === 1 ? '' : 's'} · ${values} value column${values === 1 ? '' : 's'}`
     }
-    return `${o.definition.keyMappings.length} mapped keys`
+    return o.definition.dimensionId
+      ? `${o.definition.keyMappings.length} mapped keys`
+      : `${o.definition.grainColumnIds?.length ?? 0} grain keys · standalone`
   }
   return o.definition.measureType === 'calculated' ? 'Calculated measure' : 'Referenced measure'
 }

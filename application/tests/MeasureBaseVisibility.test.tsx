@@ -7,7 +7,7 @@ const definition: RefDefinition = {
   measureType: 'referenced',
   transactionId: 'tx',
   valueColumnId: 'qty',
-  nativePlanningLevelId: 'coarse',
+  nativeGrainId: 'coarse',
   resultType: { type: 'number', nullable: true },
   aggregation: { nonTime: 'sum', time: 'avg', nullInputPolicy: 'ignore', allNullResult: 'null' },
   missingTransactionValue: 'null',
@@ -91,7 +91,7 @@ it('describes AggregateFirst as recalculation, never splitting its formula resul
       <MeasureBaseVisibility
         definition={{
           measureType: 'calculated',
-          nativePlanningLevelId: 'coarse',
+          nativeGrainId: 'coarse',
           calculationType: 'AggregateFirst',
           formula: { displayText: '1', expression: { type: 'literal', value: 1 } },
           resultType: { type: 'number', nullable: true },

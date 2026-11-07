@@ -1,8 +1,5 @@
-from .api.compatibility import CompatibilityAPI
-from .api.planning_view import PlanningViewAPI
-from .core.workspace_middleware import WorkspaceMiddleware
-from contextlib import asynccontextmanager
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
@@ -11,16 +8,18 @@ from starlette.exceptions import HTTPException
 from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 
-from .api.engine import EngineAPI
-from .api.managed_tables import ManagedTablesAPI
+from .api.compatibility import CompatibilityAPI
 from .api.contracts import ContractAPI
+from .api.decision_view import DecisionViewAPI
+from .api.dimension_members import DimensionMembersAPI
 from .api.dimensions import DimensionAPI
+from .api.engine import EngineAPI
 from .api.evidence import EvidenceAPI
 from .api.examples import ExampleAPI
 from .api.health import HealthAPI
+from .api.managed_tables import ManagedTablesAPI
 from .api.measures import MeasureAPI
 from .api.models import ModelAPI
-from .api.planning_levels import PlanningLevelAPI
 from .api.revisions import RevisionAPI
 from .api.source_registration import SourceRegistrationAPI
 from .api.sources import SourceAPI
@@ -32,6 +31,7 @@ from .core.config import Settings
 from .core.errors import MetadataError
 from .core.http import RequestMiddleware, error_payload
 from .core.logging import configure_logging
+from .core.workspace_middleware import WorkspaceMiddleware
 from .repositories.base import MetadataStore
 from .repositories.mongo import MongoMetadataStore
 from .warehouse.repository import ClickHouseWarehouseRepository, WarehouseRepository
@@ -151,18 +151,26 @@ class ApplicationFactory:
             WorkspaceAPI(container.workspace, container.workspace_reset),
             RevisionAPI(container.revisions),
             SourceAPI(container.sources),
-            ManagedTablesAPI(container.managed_tables),
+            ManagedTablesAPI(container.managed_tables, container.pivot_suggestions),
             EngineAPI(container.managed_tables),
             SourceRegistrationAPI(container.source_registration),
-            DimensionAPI(container.dimensions, container.transaction_resolution),
-            PlanningLevelAPI(container.planning_levels, container.planning_builds),
+            DimensionMembersAPI(
+                container.dimension_members, container.transaction_resolution
+            ),
+            DimensionAPI(
+                container.dimensions,
+                container.dimension_builds,
+                container.dimension_commands,
+            ),
             TransactionAPI(
                 container.transactions,
                 container.transaction_resolution,
                 container.transaction_grains,
             ),
-            MeasureAPI(container.measures, container.measure_builds),
-            PlanningViewAPI(container.planning_view),
+            MeasureAPI(
+                container.measures, container.measure_builds, container.semantic_network
+            ),
+            DecisionViewAPI(container.decision_view),
             CompatibilityAPI(container.compatibility),
             EvidenceAPI(container.evidence),
             ExampleAPI(container.examples),

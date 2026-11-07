@@ -29,11 +29,11 @@ it.each([
         },
       },
     ]
-    data.planningLevels = [
+    data.dimensions = [
       {
         ...envelope,
         objectId: 'pl',
-        kind: 'planningLevel',
+        kind: 'dimension',
         name: 'P',
         displayName: 'P',
         description: '',
@@ -49,7 +49,7 @@ it.each([
               },
             ],
           },
-          dimensionBindings: [],
+          memberBindings: [],
         },
       },
     ]
@@ -61,7 +61,7 @@ it.each([
       description: '',
       definition: {
         sourceId: 's',
-        planningLevelId: 'pl',
+        dimensionId: 'pl',
         expectedRowsPerGrain,
         mappingMode: 'direct',
         unmatchedGrainPolicy: 'reject',
@@ -86,21 +86,28 @@ it.each([
     expect(screen.queryByLabelText('Expected rows per grain')).not.toBeInTheDocument()
     expect(screen.queryByRole('combobox', { name: 'Transaction mapping' })).not.toBeInTheDocument()
     if (!editing) {
-      expect(screen.getByRole('radio', { name: 'No Planning Level' })).toBeChecked()
+      expect(screen.getByRole('radio', { name: 'Grain keys only' })).toBeChecked()
       expect(screen.getByRole('tab', { name: /^Pivot Data$/ })).toBeVisible()
       expect(screen.getByRole('tab', { name: /^Date Resolution$/ })).toBeVisible()
-      expect(screen.queryByLabelText('Native planning level')).not.toBeInTheDocument()
-      await userEvent.click(screen.getByRole('radio', { name: 'Map to Planning Level' }))
+      expect(screen.queryByLabelText('Dimension')).not.toBeInTheDocument()
+      await userEvent.click(screen.getByRole('radio', { name: 'Bind to a Dimension' }))
       await userEvent.selectOptions(screen.getByLabelText('P.product_id'), 'product_id')
     } else {
-      expect(screen.getByRole('radio', { name: 'No Planning Level' })).toBeDisabled()
+      expect(screen.getByRole('radio', { name: 'Grain keys only' })).toBeEnabled()
     }
-    expect(screen.getByRole('radio', { name: 'Map to Planning Level' })).toBeChecked()
-    expect(screen.getByText(/aggregated by these native planning-level keys/)).toBeVisible()
+    await userEvent.click(screen.getByRole('tab', { name: /^Date Resolution$/ }))
+    expect(screen.queryByLabelText('Resolve a date range using a calendar')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Start date column')).toBeVisible()
+    expect(screen.getByLabelText('End date column')).toBeVisible()
+    await userEvent.selectOptions(screen.getByLabelText('Start date column'), 'product_id')
+    expect(screen.getByRole('button', { name: 'Clear date resolution' })).toBeVisible()
+    await userEvent.click(screen.getByRole('button', { name: 'Clear date resolution' }))
+    expect(screen.getByRole('radio', { name: 'Bind to a Dimension' })).toBeChecked()
+    expect(screen.getByText(/aggregated by these native dimension keys/)).toBeVisible()
     expect(screen.getAllByRole('radio')).toHaveLength(2)
     expect(screen.queryByRole('radio', { name: 'Resolve Multi Grain' })).not.toBeInTheDocument()
     await userEvent.click(screen.getByLabelText('Resolve multi-grain data'))
-    expect(screen.getByRole('radio', { name: 'Map to Planning Level' })).toBeChecked()
+    expect(screen.getByRole('radio', { name: 'Bind to a Dimension' })).toBeChecked()
     expect(screen.queryByLabelText('P.product_id')).not.toBeInTheDocument()
     await userEvent.click(screen.getByLabelText('Resolve multi-grain data'))
     expect(screen.getByLabelText('P.product_id')).toBeVisible()
@@ -113,6 +120,7 @@ it.each([
           expectedRowsPerGrain,
           mappingMode: 'direct',
           resolution: null,
+          calendarResolution: null,
         }),
       }),
     )

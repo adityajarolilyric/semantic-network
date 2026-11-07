@@ -3,12 +3,14 @@ import userEvent from '@testing-library/user-event'
 import { expect, it, vi } from 'vitest'
 import { MeasureEditor, defaultAggregation } from '../src/metadata/editors/MeasureEditor'
 import { referencedResultType } from '../src/metadata/measureTypes'
-import { emptySnapshot, type Measure } from '../src/metadata/types'
+import { emptySnapshot, inputOf, type Measure } from '../src/metadata/types'
 function setup(
   resolved = false,
   baseLevelId?: string,
   withReferences = false,
   physicalType?: string,
+  standalone = false,
+  otherNative = false,
 ) {
   const data = emptySnapshot()
   const envelope = { modelId: 'm', revisionId: 'r', version: 1, createdAt: '', updatedAt: '' }
@@ -47,7 +49,7 @@ function setup(
       description: '',
       definition: {
         sourceId: 'source',
-        planningLevelId: 'pt',
+        dimensionId: 'pt',
         mappingMode: 'direct',
         keyMappings: [{ sourceColumnId: 'integer', grainColumnId: 'key' }],
         expectedRowsPerGrain: 'many',
@@ -67,11 +69,16 @@ function setup(
       overlapPolicy: 'last_applied_wins',
     }
   }
+  if (standalone) {
+    data.transactions[0].definition.dimensionId = null
+    data.transactions[0].definition.grainColumnIds = ['integer']
+    data.transactions[0].effectiveGrainId = 'tg_sales'
+  }
   if (baseLevelId) {
-    data.planningLevels = ['pt', 'other'].map((objectId) => ({
+    data.dimensions = ['pt', 'other'].map((objectId) => ({
       ...envelope,
       objectId,
-      kind: 'planningLevel',
+      kind: 'dimension',
       name: objectId,
       displayName: objectId,
       description: '',
@@ -81,7 +88,7 @@ function setup(
           keyIds: ['key'],
           columns: [{ grainColumnId: 'key', name: 'key', populationRef: { columnId: 'integer' } }],
         },
-        dimensionBindings: [],
+        memberBindings: [],
       },
     }))
   }
@@ -96,7 +103,7 @@ function setup(
       measureType: 'referenced',
       transactionId: 'tx',
       valueColumnId: 'decimal',
-      nativePlanningLevelId: 'pt',
+      nativeGrainId: 'pt',
       resultType: { type: 'decimal', precision: 38, scale: 2, nullable: true },
       aggregation: defaultAggregation,
       allocation: { mode: 'none' },
@@ -109,10 +116,17 @@ function setup(
     data.measures = [
       { ...initial, ...envelope, objectId: 'forecast', name: 'FQTY', displayName: 'FQTY' },
     ]
+  if (otherNative)
+    data.transactions.push({
+      ...data.transactions[0],
+      objectId: 'other-tx',
+      name: 'Other transaction',
+      definition: { ...data.transactions[0].definition, dimensionId: 'other' },
+    })
   const save = vi.fn(async () => {})
   render(
     <MeasureEditor
-      initial={initial}
+      initial={inputOf(initial)}
       baseLevelId={baseLevelId}
       data={data}
       editing={true}
@@ -123,6 +137,15 @@ function setup(
   )
   return { save, user: userEvent.setup() }
 }
+it.each([false, true])(
+  'shows the referenced output grain after editor serialization (standalone=%s)',
+  (standalone) => {
+    setup(false, 'pt', false, undefined, standalone)
+    const output = screen.getByRole('group', { name: 'Output grain' })
+    expect(output).toHaveTextContent(standalone ? 'Sales · Transaction grain' : 'pt')
+    expect(output).not.toHaveTextContent('Choose a transaction')
+  },
+)
 it('places transaction/value below measure type, hides numeric types and moves disaggregation last', async () => {
   const { save, user } = setup()
   const type = screen.getByRole('group', { name: 'Measure type' }),
@@ -133,9 +156,9 @@ it('places transaction/value below measure type, hides numeric types and moves d
   expect(screen.queryByLabelText('Source null policy')).not.toBeInTheDocument()
   expect(screen.getByRole('radio', { name: 'Reference' })).toBeChecked()
   expect(screen.getByRole('radio', { name: 'Calculated' })).not.toBeChecked()
-  expect(screen.getByRole('group', { name: 'Output Planning Level' })).toBeVisible()
+  expect(screen.getByRole('group', { name: 'Output grain' })).toBeVisible()
   expect(
-    column.compareDocumentPosition(screen.getByRole('group', { name: 'Output Planning Level' })) &
+    column.compareDocumentPosition(screen.getByRole('group', { name: 'Output grain' })) &
       Node.DOCUMENT_POSITION_FOLLOWING,
   ).toBeTruthy()
   expect(
@@ -147,7 +170,7 @@ it('places transaction/value below measure type, hides numeric types and moves d
   expect(screen.queryByLabelText('Unit')).not.toBeInTheDocument()
   expect(screen.queryByLabelText('Aliases (comma separated)')).not.toBeInTheDocument()
   expect(screen.queryByLabelText('Data type')).not.toBeInTheDocument()
-  expect(screen.getByLabelText('Output Planning Level')).toBeVisible()
+  expect(screen.getByLabelText('Output grain')).toBeVisible()
   expect(screen.queryByLabelText('Numeric type')).not.toBeInTheDocument()
   expect(screen.queryByLabelText('Precision')).not.toBeInTheDocument()
   expect(screen.queryByLabelText('Scale')).not.toBeInTheDocument()
@@ -249,17 +272,17 @@ it('defaults new reference and CalculateFirst definitions to Weighted by self', 
 })
 
 it('hides disaggregation for Base-native calculated measures and restores it at another output level', async () => {
-  const { user } = setup(false, 'pt')
+  const { user } = setup(false, 'pt', false, undefined, false, true)
   expect(screen.getByLabelText('Dis-aggregation policy')).toBeVisible()
   await user.click(screen.getByRole('radio', { name: 'Calculated' }))
   await user.click(screen.getByRole('radio', { name: 'Calculate first' }))
-  await user.selectOptions(screen.getByLabelText('Output Planning Level'), 'pt')
+  await user.selectOptions(screen.getByLabelText('Output grain'), 'dimension:pt')
   expect(
     screen.queryByRole('heading', { name: 'Dis-Aggregation policies' }),
   ).not.toBeInTheDocument()
   expect(screen.queryByLabelText('Dis-aggregation policy')).not.toBeInTheDocument()
   expect(screen.getByRole('heading', { name: 'Aggregation policies' })).toBeVisible()
-  await user.selectOptions(screen.getByLabelText('Output Planning Level'), 'other')
+  await user.selectOptions(screen.getByLabelText('Output grain'), 'dimension:other')
   expect(screen.getByLabelText('Dis-aggregation policy')).toHaveValue('weighted_by_self')
 })
 
@@ -347,4 +370,17 @@ it.each([
       }),
     }),
   )
+})
+
+it('offers only transaction-native dimensions for calculated output grains', async () => {
+  const { user } = setup(false, 'pt')
+  await user.click(screen.getByRole('radio', { name: 'Calculated' }))
+  const selector = screen.getByLabelText('Output grain') as HTMLSelectElement
+  expect([...selector.options].map((option) => option.value)).toContain('dimension:pt')
+  expect([...selector.options].map((option) => option.value)).not.toContain('dimension:other')
+})
+it('keeps standalone transaction grains available for calculated measures', async () => {
+  const { user } = setup(false, 'pt', false, undefined, true)
+  await user.click(screen.getByRole('radio', { name: 'Calculated' }))
+  expect(screen.getByLabelText('Output grain')).toHaveTextContent('Sales · Transaction grain')
 })

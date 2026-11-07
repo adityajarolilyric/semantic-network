@@ -119,7 +119,14 @@ export function UploadPanel({ maxRows, maxBytes, onImported }: Props) {
           })
           continue
         }
-        update(item.id, { state: 'succeeded', result })
+        update(item.id, {
+          state: result.semanticSetupComplete === false ? 'failed' : 'succeeded',
+          result,
+          error:
+            result.semanticSetupComplete === false
+              ? 'CSV stored. Retry to complete semantic setup without importing it again.'
+              : undefined,
+        })
         try {
           await onImported(result)
         } catch {
@@ -304,9 +311,9 @@ export function UploadPanel({ maxRows, maxBytes, onImported }: Props) {
                   ? items.length === 1
                     ? 'Creating table…'
                     : 'Uploading files…'
-                  : items.length === 1
+                  : items.length === 1 && items[0].result?.semanticSetupComplete !== false
                     ? 'Upload & create table'
-                    : succeeded > 0 || items.some((item) => item.state === 'failed')
+                    : items.some((item) => item.state === 'failed') || succeeded > 0
                       ? `Retry ${pending.length} ${pending.length === 1 ? 'file' : 'files'}`
                       : `Upload & create ${pending.length} tables`}
               </button>

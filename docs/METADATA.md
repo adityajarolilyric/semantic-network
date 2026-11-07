@@ -1,12 +1,15 @@
-# Metadata contracts and authoring
+# Metadata model
+
+The current authoring and storage model uses **Dimension** for every grain, including Product and ProductLocationTime. MongoDB persists one Dimension aggregate with optional embedded member metadata; it does not persist separate member lookup objects. The revision selects `baseDimensionId`; Transactions reference `dimensionId`; Measures reference `nativeDimensionId`. See [Dimensions](DIMENSIONS.md) for the authoritative structure, lifecycle and migration. Source-backed Dimension Save is metadata-only; derived Dimension Save also queues a population build. Preview is a query, and Build Semantic prepares populations and measure values.
+
 
 MongoDB is authoritative for semantic meaning, grain, relationships, formulas, policies and evidence. Keep bounded column lists inside their owning object; keep growing object sets, revisions and execution history in separate documents. Metadata CRUD does not alter source tables. Execution and CSV ingestion have explicit, separate APIs.
 
 ## Collections and identity
 
 - `semantic_models`: identity, names/description, one active draft pointer, published pointer, revision counter, optimistic version and timestamps. Published history may contain multiple revisions.
-- `semantic_revisions`: model/revision IDs, number, parent, contract version, rationale, draft/published state, optimistic version and `basePlanningLevelId`.
-- `semantic_objects`: one typed `source`, `dimension`, `planningLevel`, `transaction` or `measure` per `(modelId, revisionId, objectId)`, regardless of kind. IDs remain stable across revisions.
+- `semantic_revisions`: model/revision IDs, number, parent, contract version, rationale, draft/published state, optimistic version and `baseDimensionId`.
+- `semantic_objects`: one typed `source`, `dimension`, `transaction` or `measure` per `(modelId, revisionId, objectId)`, regardless of kind. IDs remain stable across revisions.
 - `semantic_evidence`: referenced definitions, rule, observed result/time, source fingerprint, scope and bounded diagnostics. Evidence can change after publication without changing a definition. Supplied evidence is not independently verified by CRUD; a declared key is not proof of live uniqueness.
 - `semantic_examples`: questions, referenced objects, small fixtures, expected grain/rows and rationale. Examples freeze on publication and copy into child drafts; evidence does not copy as newly verified evidence.
 - `semantic_contracts`: versioned documentation/schema vocabulary for agents. Records cannot enable operators, replace validators or change execution.
@@ -37,20 +40,22 @@ A dimension references a managed source and declares semantic columns, nonnullab
 
 The editor uses one column grid: read-only source column, editable display name, Key checkbox and Exposed checkbox. New dimensions expose all columns; reopening preserves deselections. Keys are always exposed and cannot be deselected. At least one key is required. Dimension name is sufficient: the compatibility root `displayName` follows `name`, with no separate UI control. Member label and description are under More settings.
 
-Time identity is the root flag `isTimeDim`. At most one Time dimension exists per revision, and `definition.time` exists exactly when that flag is true. It records base grain (day/week/month), date column and ordering column. Explicit calendar attributes support period mappings; range resolution requires a daily calendar. Advanced effective-dated hierarchies and timezone interpretation need separate contracts.
+Time identity is the root flag `isTimeDim`. At most one Time dimension exists per revision, and `memberCatalog.time` exists exactly when that flag is true for a calendar-backed Dimension. It records base grain (day/week/month), date column and ordering column. Explicit calendar attributes support period mappings; range resolution requires a daily calendar. Advanced effective-dated hierarchies and timezone interpretation need separate contracts.
 
 ## Base role and canonical example
 
-The revision alone stores `basePlanningLevelId`; do not persist `isBase` flags on levels. This avoids conflicting selections and allows another revision to choose a different Base. Derive `isBase` for presentation. Drafts can temporarily omit Base; publication requires an existing level in the same revision. A proven strictly finer related level cannot sit above the selected Base; equivalent and independent levels are permitted.
+The revision alone stores `baseDimensionId`; do not persist `isBase` flags on levels. This avoids conflicting selections and allows another revision to choose a different Base. Derive `isBase` for presentation. Drafts can temporarily omit Base; publication requires an existing level in the same revision. A proven strictly finer related level cannot sit above the selected Base; equivalent and independent levels are permitted.
 
-[The canonical fixture](../backend/examples/plt_pt.json) has six sources (Product, Location, Time, SourcingMatrix, Forecast, Sales), three dimensions, PLT/PT levels, two transactions and FQTY/SQTY/Error measures:
+[The authoring fixture](../backend/examples/plt_pt.json) has six sources (Product, Location, Time, SourcingMatrix, Forecast, Sales), five Dimensions (Product, Location, Time, PLT and PT), two transactions and FQTY/SQTY/Error measures:
 
 - Base PLT = valid Product/Location pairs from SourcingMatrix × Time dates. Preserve the matrix's valid pairs; do not cross entire Product and Location dimensions independently.
 - PT = distinct Product/Date projection from PLT, with explicit lineage. Population projection alone does not aggregate facts.
 - Forecast/FQTY is native to PLT; Sales/SQTY is native to PT. Error is native to PT, formula `ABS(FQTY-SQTY)`, AggregateFirst.
 - Fixture policies are explicit assumptions, not defaults for all models: daily Time, non-NULL source values, compatible units, missing transactions as NULL, read-only measures and configured SUM aggregation. Repeat disaggregation can change a subsequent SUM, including the native representation.
 
-Sales and forecast must also describe compatible business populations; matching key shapes alone cannot establish that scope. Detailed population and measure rules are in [Planning levels](PLANNING_LEVELS.md) and [Measures](MEASURES.md).
+The fixture contains API authoring commands, not a MongoDB dump: member commands are absorbed into Dimension aggregates.
+
+Sales and forecast must also describe compatible business populations; matching key shapes alone cannot establish that scope. Detailed population and measure rules are in [Dimensions](DIMENSIONS.md) and [Measures](MEASURES.md).
 
 ## Revision lifecycle and CRUD
 
@@ -70,7 +75,7 @@ Adding executable kinds/AST operations requires schemas, service/API wiring, gra
 
 `POST /api/v1/workspace/bootstrap` transactionally creates `default_model` (Planning Model) and draft `revision_1` on an empty installation. It is explicit/authenticated, idempotent and retries competing first inserts; existing user models remain. New installations/UI drafts use contract 2.
 
-There are no model/revision selectors or creation/publication controls. The application automatically uses the default workspace; Base selection remains on Planning Levels. Validate metadata stays on Sources. GET/list and scoped update endpoints remain for inspection, Base selection and future compatibility; additional model/revision POSTs, lifecycle DELETEs and revision publish are absent from production OpenAPI. URL `model`, `revision`, `tab` parameters preserve navigation. The browser holds fetched snapshots, unsaved inputs, layout/loading/error state only—no semantic definitions/source rows in localStorage, sessionStorage or IndexedDB. Obsolete requests are aborted/ignored; success appears only after server confirmation.
+There are no model/revision selectors or creation/publication controls. The application automatically uses the default workspace; Base selection remains on Dimensions. Validate metadata stays on Sources. GET/list and scoped update endpoints remain for inspection, Base selection and future compatibility; additional model/revision POSTs, lifecycle DELETEs and revision publish are absent from production OpenAPI. URL `model`, `revision`, `tab` parameters preserve navigation. The browser holds fetched snapshots, unsaved inputs, layout/loading/error state only—no semantic definitions/source rows in localStorage, sessionStorage or IndexedDB. Obsolete requests are aborted/ignored; success appears only after server confirmation.
 
 Published editors are read-only. Failed/stale writes preserve the form and diagnostics. Reload/reopen/reapply after conflicts; do not silently retry a replacement against a newer version. Deletes/publication require their explicit UI confirmation. Save/build workflows vary by resource and are documented with that resource.
 
@@ -82,8 +87,8 @@ Dimension and Transaction definitions may contain an optional typed `pivot` stag
 
 Final-output filters use the shared typed engine module and nested AND/OR editor. See [Filters](FILTERS.md) for stage placement, scalar operators, NULL semantics, schema APIs and compatibility.
 
-Transaction-first onboarding creates only existing planningLevel and transaction definitions. The request's grain-column list is a creation command, not another saved mapping mode or metadata collection. See [Transaction-first authoring](TRANSACTIONS.md#start-from-a-table-without-an-existing-planning-level).
+Transaction-first onboarding creates only existing dimension and transaction definitions. The request's grain-column list is a creation command, not another saved mapping mode or metadata collection. See [Transaction-first authoring](TRANSACTIONS.md#start-from-a-table-without-an-existing-dimension).
 
-Source-populated Planning Levels may carry an optional typed `population.inputTransform` (`objectId` namespace, Pivot, Calendar resolution). Transaction-first onboarding copies its input stages there so DISTINCT grain population rebuilds reproduce the transformed schema without depending on the Transaction. The namespace is an identity seed, not a semantic reference. The normal Transaction persists the same Pivot/Calendar stages; future edits are independent. Absent inputTransform is omitted on serialization so existing metadata hashes remain compatible. Calendar Dimension/source versions join the population capture and readiness checks.
+Source-populated Dimensions may carry an optional typed `population.inputTransform` (`objectId` namespace, Pivot, Calendar resolution). Transaction-first onboarding copies its input stages there so DISTINCT grain population rebuilds reproduce the transformed schema without depending on the Transaction. The namespace is an identity seed, not a semantic reference. The normal Transaction persists the same Pivot/Calendar stages; future edits are independent. Absent inputTransform is omitted on serialization so existing metadata hashes remain compatible. Calendar Dimension/source versions join the population capture and readiness checks.
 
 Incremental materialisation adds engine-owned manifests to `engine_artifacts` and captured jobs: policy/version, evaluation fingerprint per measure/target and layout hash. These derive from semantic definitions and supported source/population artifact versions; no new user-authored semantic metadata is required. Incremental jobs pin current value snapshots and retain their generation on no-op; compatible historical captures can establish a baseline, while missing proof requires explicit Full Refresh.

@@ -1,3 +1,4 @@
+import { withResolvedGrains } from './grainCatalog'
 import { ApiError } from '../lib/api'
 import {
   resources,
@@ -89,24 +90,43 @@ export class MetadataApi {
   }
   async snapshot(model: string, revision: string, signal?: AbortSignal): Promise<Snapshot> {
     const base = this.scope(model, revision)
-    const [sources, dimensions, planningLevels, transactions, measures] = await Promise.all([
+    const [sources, dimensions, transactions, measures] = await Promise.all([
       this.list<Snapshot['sources'][number]>(base + '/sources', signal),
       this.list<Snapshot['dimensions'][number]>(base + '/dimensions', signal),
-      this.list<Snapshot['planningLevels'][number]>(base + '/planning-levels', signal),
       this.list<Snapshot['transactions'][number]>(base + '/transactions', signal),
       this.list<Snapshot['measures'][number]>(base + '/measures', signal),
     ])
+    const dimensionMembers: Snapshot['dimensionMembers'] = dimensions.flatMap((dimension) =>
+      dimension.memberCatalog && dimension.memberCatalogId
+        ? [
+            {
+              objectId: dimension.memberCatalogId,
+              kind: 'dimensionMembers' as const,
+              name: dimension.name,
+              displayName: dimension.name,
+              description: dimension.description,
+              isTimeDim: dimension.isTimeDim ?? false,
+              definition: dimension.memberCatalog,
+              modelId: dimension.modelId,
+              revisionId: dimension.revisionId,
+              version: dimension.version,
+              createdAt: dimension.createdAt,
+              updatedAt: dimension.updatedAt,
+            },
+          ]
+        : [],
+    )
     const managed = await this.list<ManagedTable>(base + '/managed-tables', signal)
-    return {
+    return withResolvedGrains({
       sources: sources.map((s) => ({
         ...s,
         managed: managed.find((m) => m.sourceId === s.objectId),
       })),
+      dimensionMembers,
       dimensions,
-      planningLevels,
       transactions,
       measures,
-    }
+    })
   }
   revisions(model: string, signal?: AbortSignal) {
     return this.list<Revision>(`/models/${encodeURIComponent(model)}/revisions`, signal)
@@ -115,7 +135,7 @@ export class MetadataApi {
     return this.request<ObjectDocument>(
       this.scope(model, revision) +
         '/' +
-        resources[input.kind] +
+        (input.kind === 'dimensionMembers' && !version ? 'dimensions' : resources[input.kind]) +
         (version ? '/' + encodeURIComponent(input.objectId) : ''),
       version ? 'PUT' : 'POST',
       input,

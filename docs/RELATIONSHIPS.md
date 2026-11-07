@@ -23,7 +23,7 @@ Product may be one existing dimension playing two explicit roles. This navigatio
 Proposed modeller flow: **Dimensions → Product → Drill To → Add navigation**. Capture once:
 
 1. Navigation name: Component stock; enabled for the Product ID selection (optionally restricted to selected source measures/contexts).
-2. Target: a saved planning level/measure selection showing STOCKQTY, or a Managed Table row view for Inventory. Capture which type; they are separate query contracts.
+2. Target: a saved dimension/measure selection showing STOCKQTY, or a Managed Table row view for Inventory. Capture which type; they are separate query contracts.
 3. Through Managed Table: BOM. Show saved effective columns, including pivot outputs; physical names/IDs remain internal.
 4. Match source selections: Product ID → BOM.parent_product_id and Location ID → BOM.location_id. Support complete composite tuples and many matching rows.
 5. Map output: BOM.component_product_id → target Product ID, with role Finished Product → Component Product. Reuse configured relationship steps when present.
@@ -32,7 +32,7 @@ Proposed modeller flow: **Dimensions → Product → Drill To → Add navigation
 
 Avoid a separate authoritative hasDrillTo flag: enabled navigation definitions determine availability. A modeller configures meaning once; planners choose a named action, rather than selecting SQL keys on every click. Optional linked-view filtering can reuse the same definition, but must be explicitly enabled; do not broadcast all Product filters across every graph edge automatically.
 
-Keep two metadata responsibilities: reusable relationship definitions describe column/key links and roles; a revision-owned navigation definition describes the origin dimension/attribute, target, ordered relationship IDs, carry/replace/source-only filter rules, permitted contexts and enabled state. Both use stable owner-qualified IDs and revision guards/clone/publication semantics. The Dimension UI lists navigations by origin ID rather than embedding a second copy. Relationship/navigation object kinds or equivalent typed records require schema/API/validator work; neither exists today. Selected member values remain request/UI context, not shared persisted definitions. The target reuses current planning levels/measure definitions; no Base path, physical table or measure policy is added merely to enable Drill To.
+Keep two metadata responsibilities: reusable relationship definitions describe column/key links and roles; a revision-owned navigation definition describes the origin dimension/attribute, target, ordered relationship IDs, carry/replace/source-only filter rules, permitted contexts and enabled state. Both use stable owner-qualified IDs and revision guards/clone/publication semantics. The Dimension UI lists navigations by origin ID rather than embedding a second copy. Relationship/navigation object kinds or equivalent typed records require schema/API/validator work; neither exists today. Selected member values remain request/UI context, not shared persisted definitions. The target reuses current dimensions/measure definitions; no Base path, physical table or measure policy is added merely to enable Drill To.
 
 ## Vendor references and limits of the comparison
 
@@ -46,7 +46,7 @@ Our proposed modeller-configured relationships plus named navigation/filter mapp
 
 ## Current capability and missing layer
 
-`LevelRelationshipAnalyzer` proves planning-level coordinate compatibility through explicit projection lineage and dimension mappings. It supports roll-up/down, formula availability and edit checks. It is not a general Managed Table relationship/path catalog. Planning View currently accepts rows, columns and measures, without a query-time filter or Drill To contract.
+`LevelRelationshipAnalyzer` proves dimension coordinate compatibility through explicit projection lineage and dimension mappings. It supports roll-up/down, formula availability and edit checks. It is not a general Managed Table relationship/path catalog. Decision View currently accepts rows, columns and measures, without a query-time filter or Drill To contract.
 
 Add a reusable relational relationship analyzer/planner beside the existing grain analyzer. A row-filter path does not prove a valid grain rollup, exact measure contribution or editable path; return those capabilities separately. Drill To need not pass through Base.
 
@@ -110,6 +110,6 @@ For an aggregated or edited planning cell, source navigation is related-data exp
 1. Agree relationship ownership, endpoint mappings/directions and related-row versus contribution semantics using the example.
 2. Add versioned relationship metadata and shared path analysis with clear ambiguity/unsupported reasons.
 3. Implement read-only Drill To across equality paths with server-side membership filtering, paging, leases and resource limits. Start with related records and preserve all existing measure/edit behavior.
-4. Add Planning View semantic filters and exact-filter capability checks/source selection; support contributions only where policies/provenance establish them. Bridges, alternative paths, temporal edges and allocations expand only through explicit contracts.
+4. Add Decision View semantic filters and exact-filter capability checks/source selection; support contributions only where policies/provenance establish them. Bridges, alternative paths, temporal edges and allocations expand only through explicit contracts.
 
-Acceptance cases: direct/two-/three-hop paths, multiple children/charges without target fan-out, composite keys, NULL/orphans, duplicate target values with distinct identities, many-to-many overlapping subsets, ambiguous/cyclic/disallowed reverse paths, shared-charge contribution rejection, same-row filter correlation, Order-date versus Ship-date roles, incomplete coarse caches, stale definitions/leases, paging without upstream truncation and existing two-table/edit-permission invariants.
+Acceptance cases: direct/two-/three-hop paths, multiple children/charges without target fan-out, composite keys, NULL/orphans, duplicate target values with distinct identities, many-to-many overlapping subsets, ambiguous/cyclic/disallowed reverse paths, shared-charge contribution rejection, same-row filter correlation, Order-date versus Ship-date roles, incomplete coarse caches, stale definitions/leases, paging without upstream truncation and existing current-table/edit-permission invariants.

@@ -1,5 +1,7 @@
 """Structural helpers used by validation, dependency planning and compilation."""
 
+from ..engine.contracts import digest
+
 
 def walk(node):
     if not node:
@@ -18,6 +20,13 @@ def contains_counts(node):
 
 
 def count_key(node):
-    from ..engine.contracts import digest
-
     return "@count:" + digest(node)[:24]
+
+
+def measure_references(node):
+    """Stable first-use order, including references inside count arguments."""
+    return tuple(
+        dict.fromkeys(
+            item["measureId"] for item in walk(node) if item["type"] == "measureRef"
+        )
+    )

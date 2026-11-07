@@ -1,8 +1,12 @@
 """Pure SQL planning for resolved-transaction previews and diagnostics."""
 
 from dataclasses import dataclass
-from .contracts import ExecutionPlan
-from ..warehouse.repository import quote_identifier
+
+from sqlglot import parse_one
+
+from ..core.errors import MetadataError
+from ..warehouse.sql import quote_identifier
+from .contracts import Check, ExecutionPlan, RelationSchema
 
 
 @dataclass(frozen=True)
@@ -42,10 +46,6 @@ class CompiledResolutionPreview:
 def compile_resolution_preview(
     compiler, resolved, source_table_name, profile_count, max_sql_bytes
 ):
-    from sqlglot import parse_one
-    from ..core.errors import MetadataError
-    from .contracts import Check, ExecutionPlan, RelationSchema
-
     sql = compiler.with_sql(
         "SELECT "
         + ", ".join(quote_identifier(column["columnId"]) for column in resolved.columns)

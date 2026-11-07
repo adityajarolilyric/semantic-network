@@ -19,12 +19,9 @@ def test_creation_keeps_base_and_retries_without_extra_versions(populated):
     result = populated.post(ROOT + "/transactions/from-grain", json=payload)
     assert result.status_code == 201, result.text
     created = result.json()
-    assert (
-        populated.get(ROOT).json()["basePlanningLevelId"]
-        == original["basePlanningLevelId"]
-    )
+    assert populated.get(ROOT).json()["baseDimensionId"] == original["baseDimensionId"]
     assert created["transaction"]["definition"]["mappingMode"] == "direct"
-    assert "createPlanningLevel" not in created["transaction"]["definition"]
+    assert "createDimension" not in created["transaction"]["definition"]
     revision = populated.get(ROOT).json()
     replay = populated.post(ROOT + "/transactions/from-grain", json=payload)
     assert replay.json() == created
@@ -32,17 +29,16 @@ def test_creation_keeps_base_and_retries_without_extra_versions(populated):
 
 
 def test_object_limit_prevents_partial_creation(populated):
-    service = populated.app.state.container.transaction_grains
+    service = populated.app.state.container.transactions
     objects = []
     for kind in [
         "sources",
         "dimensions",
-        "planning-levels",
         "transactions",
         "measures",
     ]:
         objects.extend(populated.get(ROOT + "/" + kind).json()["items"])
-    service.max_objects = len(objects) + 1
+    service.max_objects = len(objects)
     before = populated.get(ROOT).json()
     result = populated.post(ROOT + "/transactions/from-grain", json=command(populated))
     assert result.status_code == 409, result.text
@@ -59,7 +55,7 @@ def test_published_revision_cannot_generate_a_level(populated):
     assert populated.get(ROOT).json() == before
 
 
-def test_grain_creation_preserves_transaction_filters_without_filtering_population(
+def test_grain_creation_preserves_filters_without_creating_a_dimension(
     populated,
 ):
     payload = command(populated, "FilteredForecast")
@@ -81,8 +77,12 @@ def test_grain_creation_preserves_transaction_filters_without_filtering_populati
     assert response.status_code == 201, response.text
     created = response.json()
     assert created["transaction"]["definition"]["filters"] == payload["filters"]
-    assert created["planningLevel"]["definition"].get("filters") is None
-    assert "filters" not in created["planningLevel"]["definition"]["population"]
+    assert "dimension" not in created
+    assert created["transaction"]["definition"]["dimensionId"] is None
+    assert (
+        created["transaction"]["definition"]["grainColumnIds"]
+        == payload["grainColumnIds"]
+    )
     assert (
         populated.post(ROOT + "/transactions/from-grain", json=payload).json()
         == created

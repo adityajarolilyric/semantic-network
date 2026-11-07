@@ -1,12 +1,12 @@
+from ..core.errors import Conflict, ImmutableRevision
 from ..repositories.metadata import metadata_repositories
-from ..repositories.metadata.records import RecordCategory
 from ..repositories.metadata.criteria import (
     ManagedTableLookup,
     ModelLookup,
     RecordLookup,
     RevisionLookup,
 )
-from ..core.errors import Conflict, ImmutableRevision
+from ..repositories.metadata.records import RecordCategory
 from ..validation.graph import SemanticGraphValidator
 from .base import Service, now
 
@@ -30,10 +30,10 @@ class RevisionService(Service):
                 )
                 if parent["approvalStatus"] != "published":
                     raise Conflict("A parent revision must be published.")
-                parent_objects = await self.objects(
+                parent_objects = await self.definitions(
                     repo, model_id, payload.parentRevisionId
                 )
-                parent_base = parent["basePlanningLevelId"]
+                parent_base = parent["baseDimensionId"]
             else:
                 parent_base = None
             timestamp = now()
@@ -42,7 +42,8 @@ class RevisionService(Service):
                 "revisionId": payload.revisionId,
                 "revisionNumber": model["revisionCounter"] + 1,
                 "parentRevisionId": payload.parentRevisionId,
-                "basePlanningLevelId": payload.basePlanningLevelId or parent_base,
+                "metadataVocabulary": "dimensions-v1",
+                "baseDimensionId": payload.baseDimensionId or parent_base,
                 "metadataContractVersion": max(
                     payload.metadataContractVersion,
                     parent["metadataContractVersion"]
@@ -150,24 +151,24 @@ class RevisionService(Service):
             self.check_version(revision, expected)
             if revision["approvalStatus"] != "draft":
                 raise ImmutableRevision()
-            objects = await self.objects(repo, model_id, revision_id)
-            if payload.basePlanningLevelId:
+            objects = await self.definitions(repo, model_id, revision_id)
+            if payload.baseDimensionId:
                 candidate = next(
                     (
                         o
                         for o in objects
-                        if o["objectId"] == payload.basePlanningLevelId
-                        and o["kind"] == "planningLevel"
+                        if o["objectId"] == payload.baseDimensionId
+                        and o["kind"] == "dimension"
                     ),
                     None,
                 )
                 if candidate is None:
                     raise Conflict(
-                        "The selected base planning level must exist in this revision."
+                        "The selected base dimension must exist in this revision."
                     )
             self.validate(
                 await self.effective(repo, model_id, revision_id, objects),
-                payload.basePlanningLevelId,
+                payload.baseDimensionId,
             )
             updated = {
                 **revision,
@@ -191,10 +192,10 @@ class RevisionService(Service):
             revision = await metadata_repositories(repo).revisions.require(
                 RevisionLookup(model_id=model_id, revision_id=revision_id), "Revision"
             )
-            objects = await self.objects(repo, model_id, revision_id)
+            objects = await self.definitions(repo, model_id, revision_id)
             return SemanticGraphValidator().validate(
                 await self.effective(repo, model_id, revision_id, objects),
-                revision["basePlanningLevelId"],
+                revision["baseDimensionId"],
                 publishing=True,
             )
 
@@ -207,7 +208,7 @@ class RevisionService(Service):
                 raise Conflict()
             revision = await self.get(model_id, revision_id)
             if revision["metadataContractVersion"] >= 2:
-                await self.planning_builds.preflight(model_id, revision_id)
+                await self.dimension_builds.preflight(model_id, revision_id)
 
         async def operation(repo):
             revision = await metadata_repositories(repo).revisions.require(
@@ -227,9 +228,9 @@ class RevisionService(Service):
                     repo,
                     model_id,
                     revision_id,
-                    await self.objects(repo, model_id, revision_id),
+                    await self.definitions(repo, model_id, revision_id),
                 ),
-                revision["basePlanningLevelId"],
+                revision["baseDimensionId"],
                 publishing=True,
             )
             timestamp = now()

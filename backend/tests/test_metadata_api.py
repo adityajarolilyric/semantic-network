@@ -34,13 +34,13 @@ def test_full_example_and_publication(populated):
     model = client.get(f"/api/v1/models/{MODEL}").json()
     assert model["publishedRevisionId"] == "rev_1"
     assert model["draftRevisionId"] is None
-    assert client.get(ROOT).json()["basePlanningLevelId"] == "pl_plt"
-    level = client.get(ROOT + "/planning-levels/pl_plt").json()
+    assert client.get(ROOT).json()["baseDimensionId"] == "pl_plt"
+    level = client.get(ROOT + "/dimensions/pl_plt").json()
     assert "isBase" not in level
 
 
 def test_optimistic_update_and_request_id(populated):
-    path = ROOT + "/dimensions/dim_product"
+    path = ROOT + "/dimension-members/dim_product"
     original = populated.get(path)
     payload = object_payload(original.json())
     payload["definition"]["columns"][0]["displayName"] = "SKU"
@@ -66,7 +66,7 @@ def test_optimistic_update_and_request_id(populated):
 def test_if_match_preconditions(populated, value, status):
     headers = {} if value is None else {"If-Match": value}
     response = populated.put(
-        ROOT + "/dimensions/dim_product",
+        ROOT + "/dimension-members/dim_product",
         json=definition("dim_product"),
         headers=headers,
     )
@@ -79,7 +79,7 @@ def test_if_match_preconditions(populated, value, status):
         ("src_product", "sources", "displayName", "Products"),
         ("src_product", "sources", "tenantId", "tenant_1"),
         ("src_product", "sources", "physicalBinding", {}),
-        ("pl_plt", "planning-levels", "isBase", True),
+        ("pl_plt", "dimensions", "isBase", True),
     ],
 )
 def test_rejected_legacy_metadata_fields(populated, object_id, resource, field, value):
@@ -124,11 +124,11 @@ def test_invalid_update_rolls_back_revision_and_object(populated):
     payload = definition("dim_product")
     payload["definition"]["sourceId"] = "missing"
     response = populated.put(
-        ROOT + "/dimensions/dim_product", json=payload, headers={"If-Match": '"1"'}
+        ROOT + "/dimension-members/dim_product", json=payload, headers={"If-Match": '"1"'}
     )
     assert response.status_code == 422
     assert populated.get(ROOT).json()["version"] == before["version"]
-    assert populated.get(ROOT + "/dimensions/dim_product").json()["version"] == 1
+    assert populated.get(ROOT + "/dimension-members/dim_product").json()["version"] == 1
 
 
 def test_referenced_object_delete_is_blocked(populated):
@@ -142,7 +142,7 @@ def test_referenced_object_delete_is_blocked(populated):
 def test_selected_base_delete_is_blocked(populated):
     assert (
         populated.delete(
-            ROOT + "/planning-levels/pl_plt", headers={"If-Match": '"1"'}
+            ROOT + "/dimensions/pl_plt", headers={"If-Match": '"1"'}
         ).status_code
         == 409
     )
@@ -151,7 +151,7 @@ def test_selected_base_delete_is_blocked(populated):
 def test_published_definitions_immutable_and_clone_is_independent(populated):
     assert publish(populated).status_code == 200
     response = populated.put(
-        ROOT + "/dimensions/dim_product",
+        ROOT + "/dimension-members/dim_product",
         json=definition("dim_product"),
         headers={"If-Match": '"1"'},
     )
@@ -167,17 +167,17 @@ def test_published_definitions_immutable_and_clone_is_independent(populated):
     )
     assert response.status_code == 201, response.text
     root2 = ROOT.replace("rev_1", "rev_2")
-    assert response.json()["basePlanningLevelId"] == "pl_plt"
+    assert response.json()["baseDimensionId"] == "pl_plt"
     payload = definition("dim_product")
     payload["displayName"] = "Products v2"
     assert (
         populated.put(
-            root2 + "/dimensions/dim_product", json=payload, headers={"If-Match": '"1"'}
+            root2 + "/dimension-members/dim_product", json=payload, headers={"If-Match": '"1"'}
         ).status_code
         == 200
     )
     assert (
-        populated.get(ROOT + "/dimensions/dim_product").json()["displayName"]
+        populated.get(ROOT + "/dimension-members/dim_product").json()["displayName"]
         == "Product"
     )
 
@@ -191,7 +191,7 @@ def test_pagination_and_context_isolation(populated):
     assert not {o["objectId"] for o in first["items"]} & {
         o["objectId"] for o in second["items"]
     }
-    assert populated.get(ROOT + "/dimensions/src_product").status_code == 404
+    assert populated.get(ROOT + "/dimension-members/src_product").status_code == 404
     assert (
         populated.get(
             ROOT.replace(MODEL, "another_model") + "/sources/src_product"
@@ -226,7 +226,7 @@ def test_formula_validation(populated, mutation, expected_code):
             "measureId": "measure_error",
         }
     elif mutation == "unavailable":
-        payload["definition"]["nativePlanningLevelId"] = "pl_plt"
+        payload["definition"]["nativeDimensionId"] = "pl_plt"
     elif mutation == "unknown":
         payload["definition"]["formula"]["expression"] = {
             "type": "measureRef",
@@ -256,13 +256,13 @@ def test_time_dimension_flag_contract(populated):
     payload["isTimeDim"] = False
     assert (
         populated.put(
-            ROOT + "/dimensions/dim_time", json=payload, headers={"If-Match": '"1"'}
+            ROOT + "/dimension-members/dim_time", json=payload, headers={"If-Match": '"1"'}
         ).status_code
         == 422
     )
     payload = definition("dim_time")
     payload["objectId"] = "dim_other_time"
-    assert populated.post(ROOT + "/dimensions", json=payload).status_code == 422
+    assert populated.post(ROOT + "/dimension-members", json=payload).status_code == 422
 
 
 def test_empty_model_and_revision_crud(client):
@@ -320,7 +320,7 @@ def test_unreferenced_object_crud(populated):
 def test_base_cannot_be_a_coarser_projection(populated):
     response = populated.put(
         ROOT,
-        json={"basePlanningLevelId": "pl_pt", "changeReason": "Invalid coarser base"},
+        json={"baseDimensionId": "pl_pt", "changeReason": "Invalid coarser base"},
         headers={"If-Match": etag(populated, ROOT)},
     )
     assert response.status_code == 422
@@ -329,7 +329,7 @@ def test_base_cannot_be_a_coarser_projection(populated):
 
 def test_if_match_rejects_oversized_integer(populated):
     response = populated.put(
-        ROOT + "/dimensions/dim_product",
+        ROOT + "/dimension-members/dim_product",
         json=definition("dim_product"),
         headers={"If-Match": "1" * 5000},
     )
@@ -360,20 +360,20 @@ def test_dimension_lookup_can_use_non_primary_attribute(populated):
     )
     binding = next(
         b
-        for b in payload["definition"]["dimensionBindings"]
-        if b["dimensionId"] == "dim_product"
+        for b in payload["definition"]["memberBindings"]
+        if b["memberCatalogId"] == "dim_product"
     )
-    binding["keyMappings"][0]["dimensionColumnId"] = alternate
+    binding["keyMappings"][0]["memberColumnId"] = alternate
     response = populated.put(
-        ROOT + "/planning-levels/pl_plt", json=payload, headers={"If-Match": '"1"'}
+        ROOT + "/dimensions/pl_plt", json=payload, headers={"If-Match": '"1"'}
     )
     assert response.status_code == 200, response.text
     saved = next(
         b
-        for b in response.json()["definition"]["dimensionBindings"]
-        if b["dimensionId"] == "dim_product"
+        for b in response.json()["definition"]["memberBindings"]
+        if b["memberCatalogId"] == "dim_product"
     )
-    assert saved["keyMappings"][0]["dimensionColumnId"] == alternate
+    assert saved["keyMappings"][0]["memberColumnId"] == alternate
     assert saved["lookupCardinality"] == "many_to_one"
     assert populated.post(ROOT + "/validate").json()["valid"] is True
 
@@ -383,12 +383,12 @@ def test_dimension_lookup_rejects_column_outside_the_bound_dimension(populated, 
     payload = definition("pl_plt")
     binding = next(
         b
-        for b in payload["definition"]["dimensionBindings"]
-        if b["dimensionId"] == "dim_product"
+        for b in payload["definition"]["memberBindings"]
+        if b["memberCatalogId"] == "dim_product"
     )
-    binding["keyMappings"][0]["dimensionColumnId"] = target
+    binding["keyMappings"][0]["memberColumnId"] = target
     response = populated.put(
-        ROOT + "/planning-levels/pl_plt", json=payload, headers={"If-Match": '"1"'}
+        ROOT + "/dimensions/pl_plt", json=payload, headers={"If-Match": '"1"'}
     )
     assert response.status_code == 422, response.text
 
@@ -413,7 +413,7 @@ def test_new_transaction_defaults_to_many_and_preserves_explicit_legacy_declarat
 
 def test_none_disaggregation_repeats_and_allows_finer_formula(populated):
     payload = definition("measure_error")
-    payload["definition"]["nativePlanningLevelId"] = "pl_plt"
+    payload["definition"]["nativeDimensionId"] = "pl_plt"
     response = populated.put(
         ROOT + "/measures/measure_error", json=payload, headers={"If-Match": "1"}
     )
@@ -425,13 +425,13 @@ def test_base_allows_an_equivalent_projected_level(populated):
     keys = base["definition"]["grain"]["keyIds"]
     payload = {
         "objectId": "equivalent_base",
-        "kind": "planningLevel",
+        "kind": "dimension",
         "name": "Equivalent",
         "displayName": "Equivalent",
         "definition": {
             "population": {
                 "operation": "distinct_projection",
-                "sourcePlanningLevelId": "pl_plt",
+                "sourceDimensionId": "pl_plt",
             },
             "grain": {
                 "keyIds": keys,
@@ -447,5 +447,5 @@ def test_base_allows_an_equivalent_projected_level(populated):
             },
         },
     }
-    response = populated.post(ROOT + "/planning-levels", json=payload)
+    response = populated.post(ROOT + "/dimensions", json=payload)
     assert response.status_code == 201, response.text

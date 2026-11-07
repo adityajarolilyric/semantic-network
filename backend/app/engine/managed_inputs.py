@@ -1,15 +1,14 @@
 """Verify captured managed inputs without resolving newer active bindings."""
 
+from dataclasses import dataclass
+
+from ..core.errors import Conflict
 from ..repositories.metadata import metadata_repositories
 from ..repositories.metadata.criteria import (
     ArtifactLookup,
     BindingLookup,
     ManagedTableLookup,
 )
-
-from dataclasses import dataclass
-
-from ..core.errors import Conflict
 
 
 class ManagedInputVerifier:
@@ -39,7 +38,7 @@ class ManagedSourceSnapshot:
 
 
 class ManagedInputCapture:
-    """Resolve one ready source directly, without inventing a planning level."""
+    """Resolve one ready source directly, without inventing a dimension."""
 
     async def capture_source(self, repository, model_id, revision_id, source):
         if not source["definition"]["inScope"]:

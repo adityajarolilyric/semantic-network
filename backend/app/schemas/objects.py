@@ -2,23 +2,27 @@ from typing import Annotated, Union
 
 from pydantic import Field, TypeAdapter
 
+from .dimension_members import DimensionMembersDocument, DimensionMembersInput
 from .dimensions import DimensionDocument, DimensionInput
 from .measures import MeasureDocument, MeasureInput
-from .planning_levels import PlanningLevelDocument, PlanningLevelInput
 from .sources import SourceDocument, SourceInput
 from .transactions import TransactionDocument, TransactionInput
 
 ObjectInputUnion = Annotated[
     Union[
-        SourceInput, DimensionInput, PlanningLevelInput, TransactionInput, MeasureInput
+        SourceInput,
+        DimensionMembersInput,
+        DimensionInput,
+        TransactionInput,
+        MeasureInput,
     ],
     Field(discriminator="kind"),
 ]
 ObjectDocument = Annotated[
     Union[
         SourceDocument,
+        DimensionMembersDocument,
         DimensionDocument,
-        PlanningLevelDocument,
         TransactionDocument,
         MeasureDocument,
     ],

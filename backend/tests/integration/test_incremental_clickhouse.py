@@ -3,7 +3,7 @@ from uuid import uuid4
 
 import pytest
 
-from .test_csv_clickhouse import clickhouse_app  # noqa: F401
+from .test_csv_clickhouse import authored_clickhouse_app, clickhouse_app  # noqa: F401
 from .test_measures_clickhouse import (
     BASE,
     setup,
@@ -46,7 +46,7 @@ def calc(client, mid, dep="FQTY", factor=2):
             "business": {},
             "definition": {
                 "measureType": "calculated",
-                "nativePlanningLevelId": "base",
+                "nativeDimensionId": "base",
                 "calculationType": "AggregateFirst",
                 "resultType": {"type": "number", "nullable": True},
                 "formula": {
@@ -65,18 +65,18 @@ def calc(client, mid, dep="FQTY", factor=2):
 
 
 def patch_cell(client, mid="FQTY", value=99, level="base", members=None):
-    keys = client.get(BASE + "/planning-levels/" + level).json()["definition"]["grain"][
+    keys = client.get(BASE + "/dimensions/" + level).json()["definition"]["grain"][
         "keyIds"
     ]
     view = {
-        "rows": [{"planningLevelId": level, "columnId": k} for k in keys],
+        "rows": [{"dimensionId": level, "columnId": k} for k in keys],
         "columns": [],
         "measures": [mid],
     }
-    context = client.post(BASE + "/planning-view/query", json=view)
+    context = client.post(BASE + "/decision-view/query", json=view)
     assert context.status_code == 200, context.text
     response = client.post(
-        BASE + "/planning-view/edits",
+        BASE + "/decision-view/edits",
         json={
             "view": view,
             "measureId": mid,
@@ -97,9 +97,9 @@ def column(client, mid, level="base"):
 
 
 def test_incremental_noop_add_change_remove_preserves_edits_and_full_refresh_is_explicit(
-    clickhouse_app, monkeypatch
+    authored_clickhouse_app, monkeypatch
 ):
-    client, admin, database, _ = clickhouse_app
+    client, admin, database, _ = authored_clickhouse_app
     setup(client)
     update_measure(
         client, "FQTY", lambda d: d.update(editable=True, allocation={"mode": "equal"})
@@ -127,7 +127,8 @@ def test_incremental_noop_add_change_remove_preserves_edits_and_full_refresh_is_
     noop = run_incremental(client)
     assert noop["state"] == "succeeded" and noop["reused"] is True, noop
     assert noop["generationId"] == before["generationId"]
-    assert client.get(BASE).json()["version"] == revision
+    # The durable coordinator advances the revision guard even when values are reused.
+    assert client.get(BASE).json()["version"] == revision + 1
     assert not any("LIMIT 0" in q or q.lstrip().startswith("INSERT") for q in queries)
     assert column(client, "FQTY") == ["99.0", "60.0"]
     # A new calculated measure must read edited snapshot values, not source quantities.
@@ -142,11 +143,13 @@ def test_incremental_noop_add_change_remove_preserves_edits_and_full_refresh_is_
 
     async def steps():
         return await container.store.repository.list(
-            "engine_run_steps", {"runId": built["runId"]}, key="stepId"
+            "engine_run_steps", {"runId": built["measureRunId"]}, key="stepId"
         )
 
+    compiled_steps = client.portal.call(steps)
+    assert {step["stepId"] for step in compiled_steps} == {"values_base", "values_pt"}
     assert all(
-        {"FQTY", "SQTY"} <= set(s["reusedMeasures"]) for s in client.portal.call(steps)
+        {"FQTY", "SQTY"} <= set(step["reusedMeasures"]) for step in compiled_steps
     )
     # Changing a formula invalidates its dependants but preserves referenced edits.
     update_measure(
@@ -190,9 +193,9 @@ def test_incremental_noop_add_change_remove_preserves_edits_and_full_refresh_is_
 
 
 def test_incremental_reuses_historical_captures_and_refuses_unprovable_baselines(
-    clickhouse_app,
+    authored_clickhouse_app,
 ):
-    client, _, _, _ = clickhouse_app
+    client, _, _, _ = authored_clickhouse_app
     setup(client)
     assert build_values(client)["state"] == "succeeded"
     container = client.app.state.container
@@ -228,15 +231,17 @@ def test_incremental_reuses_historical_captures_and_refuses_unprovable_baselines
     assert column(client, "Double") == ["80.0", "120.0"]
     before, _ = values(client, "base")
     client.portal.call(legacy, True)
-    failed = incremental(client)
-    assert failed.status_code == 409 and "Full Refresh" in failed.text
+    failed = await_run(client, BASE, incremental(client))
+    assert (
+        failed["state"] == "superseded" and "Full Refresh" in failed["error"]["message"]
+    )
     assert values(client, "base")[0]["generationId"] == before["generationId"]
 
 
 def test_registered_source_refresh_invalidates_only_its_measures_and_preserves_other_edits(
-    clickhouse_app,
+    authored_clickhouse_app,
 ):
-    client, admin, database, _ = clickhouse_app
+    client, admin, database, _ = authored_clickhouse_app
     setup(client)
     update_measure(
         client, "FQTY", lambda d: d.update(editable=True, allocation={"mode": "equal"})
@@ -270,12 +275,12 @@ def test_registered_source_refresh_invalidates_only_its_measures_and_preserves_o
     assert column(client, "SQTY") == ["150.0", "150.0"]
 
 
-def test_failed_incremental_candidates_do_not_activate_or_lose_edited_values(
-    clickhouse_app, monkeypatch
+def test_failed_incremental_writes_block_reads_and_recover_without_reloading_unchanged_edits(
+    authored_clickhouse_app, monkeypatch
 ):
     from backend.app.core.errors import MetadataError
 
-    client, _, _, _ = clickhouse_app
+    client, _, _, _ = authored_clickhouse_app
     setup(client)
     update_measure(
         client, "FQTY", lambda d: d.update(editable=True, allocation={"mode": "equal"})
@@ -298,10 +303,11 @@ def test_failed_incremental_candidates_do_not_activate_or_lose_edited_values(
     monkeypatch.setattr(executor, "build", fail)
     failed = run_incremental(client)
     assert failed["state"] == "failed", failed
-    after, columns = values(client, "base")
+    blocked = client.get(BASE + "/measures/execution/levels/base?preview=true")
+    assert blocked.status_code == 503
+    after = client.get(BASE + "/measures/execution/levels/base").json()
     assert after["generationId"] == before["generationId"]
-    assert after["rows"] == before["rows"]
-    assert "Double" not in columns
+    assert "Double" not in {c["name"] for c in after["columns"]}
     monkeypatch.setattr(executor, "build", original)
     assert run_incremental(client)["state"] == "succeeded"
     assert column(client, "FQTY") == ["99.0", "60.0"]
@@ -309,9 +315,9 @@ def test_failed_incremental_candidates_do_not_activate_or_lose_edited_values(
 
 
 def test_new_aggregate_first_and_calculate_first_formulas_keep_their_grain_semantics(
-    clickhouse_app,
+    authored_clickhouse_app,
 ):
-    client, _, _, _ = clickhouse_app
+    client, _, _, _ = authored_clickhouse_app
     setup(client)
     update_measure(
         client, "FQTY", lambda d: d.update(editable=True, allocation={"mode": "equal"})
@@ -340,7 +346,7 @@ def test_new_aggregate_first_and_calculate_first_formulas_keep_their_grain_seman
         }
         d = {
             "measureType": "calculated",
-            "nativePlanningLevelId": native,
+            "nativeDimensionId": native,
             "calculationType": kind,
             "resultType": {"type": "number", "nullable": True},
             "formula": {"displayText": "ABS(FQTY-SQTY)", "expression": expression},
@@ -377,9 +383,9 @@ def test_new_aggregate_first_and_calculate_first_formulas_keep_their_grain_seman
 
 
 def test_metadata_change_during_incremental_build_prevents_activation(
-    clickhouse_app, monkeypatch
+    authored_clickhouse_app, monkeypatch
 ):
-    client, _, _, _ = clickhouse_app
+    client, _, _, _ = authored_clickhouse_app
     setup(client)
     assert build_values(client)["state"] == "succeeded"
     before, _ = values(client, "base")
@@ -401,6 +407,10 @@ def test_metadata_change_during_incremental_build_prevents_activation(
     monkeypatch.setattr(builds.executor, "build", change_revision)
     run = run_incremental(client)
     assert run["state"] in ("failed", "superseded"), run
-    after, cols = values(client, "base")
+    assert (
+        client.get(BASE + "/measures/execution/levels/base?preview=true").status_code
+        == 503
+    )
+    after = client.get(BASE + "/measures/execution/levels/base").json()
     assert after["generationId"] == before["generationId"]
-    assert after["rows"] == before["rows"] and "Double" not in cols
+    assert "Double" not in {c["name"] for c in after["columns"]}

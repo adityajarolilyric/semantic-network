@@ -61,17 +61,17 @@ def test_real_transaction_rolls_back_invalid_mutation(mongo_client):
     payload = definition("dim_product")
     payload["definition"]["sourceId"] = "missing"
     response = client.put(
-        ROOT + "/dimensions/dim_product", json=payload, headers={"If-Match": '"1"'}
+        ROOT + "/dimension-members/dim_product", json=payload, headers={"If-Match": '"1"'}
     )
     assert response.status_code == 422
     assert client.get(ROOT).json()["version"] == before
-    assert client.get(ROOT + "/dimensions/dim_product").json()["version"] == 1
+    assert client.get(ROOT + "/dimension-members/dim_product").json()["version"] == 1
 
 
 def test_concurrent_writers_cannot_silently_overwrite(mongo_client):
     client, _, _, _ = mongo_client
     seed(client)
-    path = ROOT + "/dimensions/dim_product"
+    path = ROOT + "/dimension-members/dim_product"
     payload = definition("dim_product")
 
     def write(name):
@@ -101,7 +101,7 @@ def test_publish_racing_with_object_mutation_is_consistent(mongo_client):
         value = definition("dim_product")
         value["displayName"] = "Renamed product"
         return client.put(
-            ROOT + "/dimensions/dim_product", json=value, headers={"If-Match": '"1"'}
+            ROOT + "/dimension-members/dim_product", json=value, headers={"If-Match": '"1"'}
         ).status_code
 
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -156,7 +156,7 @@ def test_stable_table_registry_enforces_scope_and_physical_ownership(mongo_clien
         resource = {
             "modelId": "model_test",
             "revisionId": "revision_1",
-            "resourceKind": "planningLevel",
+            "resourceKind": "dimension",
             "resourceId": "level_1",
             "physicalName": "__semantic_population_test",
             "storageOwner": "semanticTable:test",

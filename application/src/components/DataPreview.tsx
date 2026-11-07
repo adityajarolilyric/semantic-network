@@ -1,3 +1,4 @@
+import { ViewSqlButton } from './ViewSqlButton'
 import { useId } from 'react'
 import { formatNumericDisplay } from '../lib/numberFormat'
 import {
@@ -76,6 +77,12 @@ export function DataPreview({
           <h2 id={titleId}>{table}</h2>
         </div>
         <div className="preview-actions">
+          {preview?.sql && (
+            <ViewSqlButton
+              disabled={loading}
+              loadSql={async () => ({ sql: preview.sql!, dialect: 'clickhouse' })}
+            />
+          )}
           {preview && <span className="preview-total">{total.toLocaleString()} total rows</span>}
           {showRefresh && (
             <button

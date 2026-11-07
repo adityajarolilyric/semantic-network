@@ -43,14 +43,14 @@ FUNCTION_CATALOG = tuple(
             1,
             1,
             "aggregate",
-            "Count non-NULL values at the Output Planning Level; zero and False count.",
+            "Count non-NULL values at the Output Dimension; zero and False count.",
         ),
         (
             "count_distinct",
             1,
             1,
             "aggregate",
-            "Count exact distinct non-NULL values at the Output Planning Level.",
+            "Count exact distinct non-NULL values at the Output Dimension.",
         ),
         (
             "count_if",
@@ -64,21 +64,21 @@ FUNCTION_CATALOG = tuple(
             0,
             0,
             "aggregate",
-            "Count valid planning intersections at the Output Planning Level.",
+            "Count valid planning intersections at the Output Dimension.",
         ),
         (
             "attr",
             1,
             1,
             "reference",
-            "Reference an available Dimension or Planning Level attribute.",
+            "Reference an available Dimension attribute.",
         ),
         (
             "grain",
             1,
             1,
             "reference",
-            "Reference an output planning-level grain column.",
+            "Reference an output dimension grain column.",
         ),
     ]
 )

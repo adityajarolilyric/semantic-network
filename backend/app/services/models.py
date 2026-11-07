@@ -1,7 +1,7 @@
+from ..core.errors import Conflict
 from ..repositories.metadata import metadata_repositories
 from ..repositories.metadata.criteria import ModelLookup, RevisionLookup
 from .base import Service, now
-from ..core.errors import Conflict
 
 
 class ModelService(Service):

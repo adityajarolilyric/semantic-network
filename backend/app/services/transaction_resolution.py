@@ -1,88 +1,72 @@
-from ..repositories.metadata import metadata_repositories
-from ..repositories.metadata.criteria import (
-    ArtifactLookup,
-    BindingLookup,
-    ObjectLookup,
-    RevisionLookup,
-)
-from ..engine.preview_plans import compile_resolution_preview
 from uuid import uuid4
 
 from ..core.errors import Conflict, MetadataError
+from ..domain.dimensions import dimension_columns
+from ..domain.transaction_measures import rebind_transaction_measures
+from ..engine.calendar_resolution import CalendarResolutionPlanner
 from ..engine.compilation_context import CompilationContext
 from ..engine.date_range_resolution import calendar_source_ids
 from ..engine.input_pipeline import InputPipelineCompiler, PreviewTarget
 from ..engine.measure_compiler import MeasureCompiler
+from ..engine.object_inputs import input_columns
+from ..engine.preview_plans import compile_resolution_preview
 from ..engine.read_leases import ArtifactReadLeases
 from ..engine.relationships import Coordinate, LevelRelationshipAnalyzer
 from ..engine.transaction_resolution import (
     TransactionResolutionPlanner,
     prepare_resolution_profiles,
 )
+from ..repositories.metadata import metadata_repositories
+from ..repositories.metadata.criteria import (
+    ObjectLookup,
+    RevisionLookup,
+)
+from ..validation.graph import SemanticGraphValidator
+from ..engine.virtual_populations import logical_population_query
 from .base import Service, scope
 
 
 class TransactionResolutionService(Service):
-    def __init__(self, store, settings, planning, managed):
+    def __init__(self, store, settings, populations, managed):
         super().__init__(store, settings.max_objects_per_revision)
-        self.settings, self.planning, self.managed = settings, planning, managed
+        self.settings, self.populations, self.managed = settings, populations, managed
         self.read_leases = ArtifactReadLeases(store)
-        self.executor, self.warehouse = planning.executor, planning.executor.warehouse
+        self.executor, self.warehouse = (
+            populations.executor,
+            populations.executor.warehouse,
+        )
 
     async def options(self, model, revision, level_id=None):
         repo = self.store.repository
-        objects = await self.objects(repo, model, revision)
+        objects = await self.graph_objects(repo, model, revision)
         level = (
             await metadata_repositories(repo).objects.require(
                 ObjectLookup(
                     model_id=model,
                     revision_id=revision,
                     object_id=level_id,
-                    kind="planningLevel",
+                    kind="dimension",
                 ),
-                "Native planning level",
+                "Native dimension",
             )
             if level_id
             else {"definition": {"grain": {"keyIds": [], "columns": []}}}
         )
         rel = LevelRelationshipAnalyzer(objects)
-        binding = await metadata_repositories(repo).bindings.find(
-            BindingLookup(
-                model_id=model,
-                revision_id=revision,
-                resource_kind="planningLevel",
-                resource_id=level_id,
-            )
-        )
-        artifact = (
-            await metadata_repositories(repo).artifacts.find(
-                ArtifactLookup(artifact_id=binding["artifactId"])
-            )
-            if binding
-            else None
-        )
-        names = {c["columnId"]: c["name"] for c in (artifact or {}).get("columns", [])}
-        names.update(
-            {
-                c["grainColumnId"]: c["name"]
-                for c in level["definition"]["grain"]["columns"]
-            }
-        )
-        names.update(
-            {
-                c["columnId"]: c["name"]
-                for c in level["definition"].get("populationAttributes", [])
-            }
-        )
+        names = {
+            column["columnId"]: column["name"]
+            for column in (dimension_columns(level, objects) if level_id else [])
+        }
         targets = [
             {
-                "target": {"dimensionId": None, "columnId": cid},
+                "target": {"memberCatalogId": None, "columnId": cid},
                 "label": "Native · " + names.get(cid, cid),
             }
             for cid in (rel.outputs(level_id) if level_id else {})
             if cid in names
         ]
-        for dim in rel.dimensions.values():
+        targets_by_id = {item["target"]["columnId"]: item for item in targets}
+        for dim in rel.dimension_members.values():
             exposed = set(dim["definition"]["keyColumnIds"]) | set(
                 dim["definition"]["attributeColumnIds"]
             )
@@ -90,7 +74,7 @@ class TransactionResolutionService(Service):
                 coordinate = Coordinate(
                     frozenset(
                         {
-                            ("dimension", dim["objectId"], col["columnId"]),
+                            ("dimensionMembers", dim["objectId"], col["columnId"]),
                             (
                                 "source",
                                 dim["definition"]["sourceId"],
@@ -99,23 +83,23 @@ class TransactionResolutionService(Service):
                         }
                     )
                 )
+                resolved = rel.resolve(level_id, coordinate) if level_id else None
                 if (
-                    level_id
-                    and col["columnId"] in exposed
-                    and rel.resolve(level_id, coordinate)
+                    col["columnId"] in exposed
+                    and resolved
+                    and resolved.column_id in targets_by_id
                 ):
-                    targets.append(
+                    # Preserve saved lookup references only as aliases of an actual
+                    # native output; reachable but unselected attributes are not choices.
+                    targets_by_id[resolved.column_id].setdefault("aliases", []).append(
                         {
-                            "target": {
-                                "dimensionId": dim["objectId"],
-                                "columnId": col["columnId"],
-                            },
-                            "label": dim["name"] + " · " + col["displayName"],
+                            "memberCatalogId": dim["objectId"],
+                            "columnId": col["columnId"],
                         }
                     )
         calendars = []
         outputs = rel.outputs(level_id) if level_id else {}
-        for dim in rel.dimensions.values():
+        for dim in rel.dimension_members.values():
             d = dim["definition"]
             if not dim["isTimeDim"] or d["time"]["baseGrain"] != "day":
                 continue
@@ -129,13 +113,13 @@ class TransactionResolutionService(Service):
             for key in level["definition"]["grain"]["keyIds"]:
                 for col in columns:
                     if outputs[key].tokens & {
-                        ("dimension", dim["objectId"], col["columnId"]),
+                        ("dimensionMembers", dim["objectId"], col["columnId"]),
                         ("source", d["sourceId"], col["sourceColumnId"]),
                     }:
                         suggestions[key] = col["columnId"]
             calendars.append(
                 {
-                    "dimensionId": dim["objectId"],
+                    "memberCatalogId": dim["objectId"],
                     "name": dim["name"],
                     "dateColumnId": d["time"]["dateColumnId"],
                     "dateColumnName": next(
@@ -161,7 +145,7 @@ class TransactionResolutionService(Service):
     async def schema(self, model, revision, transaction_id=None, payload=None):
         repo = self.store.repository
         objects = await self.effective(
-            repo, model, revision, await self.objects(repo, model, revision)
+            repo, model, revision, await self.graph_objects(repo, model, revision)
         )
         tx = next(
             (
@@ -191,8 +175,6 @@ class TransactionResolutionService(Service):
                 "invalid_resolution_source", "Choose an available managed table."
             )
         if tx["definition"].get("mappingMode") != "resolve_multi_grain":
-            from ..engine.calendar_resolution import CalendarResolutionPlanner
-
             return {
                 "columns": CalendarResolutionPlanner(
                     objects, tx, source["definition"]["columns"]
@@ -201,10 +183,9 @@ class TransactionResolutionService(Service):
         planner = TransactionResolutionPlanner(
             objects, tx, source["definition"]["columns"]
         )
-        from ..validation.graph import SemanticGraphValidator
 
         types = SemanticGraphValidator(objects)
-        level = types.objects[tx["definition"]["planningLevelId"]]
+        level = types.objects[tx["definition"]["dimensionId"]]
         population = [
             {"columnId": cid, "physicalType": types.grain_type(level, cid)}
             for cid in level["definition"]["grain"]["keyIds"]
@@ -217,11 +198,9 @@ class TransactionResolutionService(Service):
         }
 
     async def calendar_schema(self, model, revision, payload):
-        from ..engine.calendar_resolution import CalendarResolutionPlanner
-
         repo = self.store.repository
         objects = await self.effective(
-            repo, model, revision, await self.objects(repo, model, revision)
+            repo, model, revision, await self.graph_objects(repo, model, revision)
         )
         source = next(
             (
@@ -250,11 +229,9 @@ class TransactionResolutionService(Service):
         }
 
     async def input_schema(self, model, revision, payload):
-        from ..engine.object_inputs import input_columns
-
         repo = self.store.repository
         objects = await self.effective(
-            repo, model, revision, await self.objects(repo, model, revision)
+            repo, model, revision, await self.graph_objects(repo, model, revision)
         )
         source = next(
             (
@@ -277,38 +254,53 @@ class TransactionResolutionService(Service):
         }
         return {"columns": input_columns(owner, source["definition"]["columns"])}
 
-    async def preview_input(self, model, revision, payload):
-        return await self._preview(model, revision, payload, PreviewTarget.PIVOT_INPUT)
-
-    async def preview_calendar(self, model, revision, payload):
+    async def preview_input(self, model, revision, payload, *, sql_only=False):
         return await self._preview(
-            model, revision, payload, PreviewTarget.CALENDAR_INPUT
+            model, revision, payload, PreviewTarget.PIVOT_INPUT, sql_only=sql_only
         )
 
-    async def preview_unmapped(self, model, revision, payload):
+    async def preview_calendar(self, model, revision, payload, *, sql_only=False):
         return await self._preview(
-            model, revision, payload, PreviewTarget.UNMAPPED_TRANSACTION
+            model, revision, payload, PreviewTarget.CALENDAR_INPUT, sql_only=sql_only
         )
 
-    async def preview_dimension(self, model, revision, payload):
+    async def preview_unmapped(self, model, revision, payload, *, sql_only=False):
         return await self._preview(
-            model, revision, payload, PreviewTarget.DIMENSION_OUTPUT
+            model,
+            revision,
+            payload,
+            PreviewTarget.UNMAPPED_TRANSACTION,
+            sql_only=sql_only,
         )
 
-    async def preview(self, model, revision, payload):
+    async def preview_dimension(self, model, revision, payload, *, sql_only=False):
         return await self._preview(
-            model, revision, payload, PreviewTarget.TRANSACTION_OUTPUT
+            model, revision, payload, PreviewTarget.DIMENSION_OUTPUT, sql_only=sql_only
         )
 
-    async def _preview(self, model, revision, payload, target):
-        standalone = target != PreviewTarget.TRANSACTION_OUTPUT
+    async def preview(self, model, revision, payload, *, sql_only=False):
+        return await self._preview(
+            model,
+            revision,
+            payload,
+            PreviewTarget.TRANSACTION_OUTPUT,
+            sql_only=sql_only,
+        )
+
+    async def _preview(self, model, revision, payload, target, *, sql_only=False):
+        unbound = (
+            target == PreviewTarget.TRANSACTION_OUTPUT
+            and payload.definition.dimensionId is None
+        )
+        standalone = target != PreviewTarget.TRANSACTION_OUTPUT or unbound
+        pipeline_target = PreviewTarget.UNMAPPED_TRANSACTION if unbound else target
         read_id = "read_" + uuid4().hex
 
         async def snapshot(repo):
             rev = await metadata_repositories(repo).revisions.require(
                 RevisionLookup(model_id=model, revision_id=revision), "Revision"
             )
-            objects = await self.objects(repo, model, revision)
+            objects = await self.graph_objects(repo, model, revision)
             candidate = {**payload.model_dump(), **scope(model, revision), "version": 0}
             if target == PreviewTarget.CALENDAR_INPUT:
                 candidate = {
@@ -350,12 +342,34 @@ class TransactionResolutionService(Service):
                     **scope(model, revision),
                     "version": 0,
                 }
+            previous = next(
+                (
+                    obj
+                    for obj in objects
+                    if obj["objectId"] == candidate["objectId"]
+                    and obj["kind"] == "transaction"
+                ),
+                None,
+            )
             objects = [o for o in objects if o["objectId"] != candidate["objectId"]] + [
                 candidate
             ]
+            native_compiled = None
+            if target == PreviewTarget.TRANSACTION_OUTPUT:
+                rebound = {
+                    measure["objectId"]: measure
+                    for measure in rebind_transaction_measures(
+                        previous, candidate, objects
+                    )
+                }
+                objects = await self.effective(
+                    repo,
+                    model,
+                    revision,
+                    [rebound.get(obj["objectId"], obj) for obj in objects],
+                )
+                self.validate(objects, rev["baseDimensionId"])
             if standalone:
-                from ..engine.calendar_resolution import CalendarResolutionPlanner
-
                 effective = await self.effective(repo, model, revision, objects)
                 source = next(
                     (
@@ -380,35 +394,23 @@ class TransactionResolutionService(Service):
                     None,
                 )
             else:
-                self.validate(
-                    await self.effective(repo, model, revision, objects),
-                    rev["basePlanningLevelId"],
-                )
                 by_id = {o["objectId"]: o for o in objects}
-                level = by_id[candidate["definition"]["planningLevelId"]]
-                captured = await self.planning.capture_population_inputs(
-                    repo, model, revision, level, objects
+                level = by_id[candidate["definition"]["dimensionId"]]
+                captured = await self.populations.capture_population_inputs(
+                    repo, model, revision, level, objects, virtual=True
                 )
-                binding = await metadata_repositories(repo).bindings.require(
-                    BindingLookup(
-                        model_id=model,
-                        revision_id=revision,
-                        resource_kind="planningLevel",
-                        resource_id=level["objectId"],
-                    ),
-                    "Built native planning table",
+                plan = self.populations.planner.plan(
+                    level, objects, captured["relations"]
                 )
-                if (
-                    binding["definitionHash"] != self.planning.definition_hash(level)
-                    or binding["inputHash"] != captured["inputHash"]
-                ):
-                    raise Conflict(
-                        "Build the current native planning table before previewing resolution."
-                    )
-                population = await metadata_repositories(repo).artifacts.require(
-                    ArtifactLookup(artifact_id=binding["artifactId"]),
-                    "Native population",
-                )
+                native_compiled = self.populations.compiler.compile(plan)
+                # Dimension output uses public names; resolution consumes logical IDs,
+                # just as it does when reading a persisted population table.
+                population = {
+                    "artifactId": "virtual_" + captured["inputHash"],
+                    "physicalName": "__dimension_preview",
+                    "columns": list(plan.schema.columns),
+                    "query": logical_population_query(native_compiled),
+                }
             for sid in [
                 candidate["definition"]["sourceId"],
                 *calendar_source_ids(objects, candidate),
@@ -416,7 +418,7 @@ class TransactionResolutionService(Service):
                 source = next(
                     document for document in objects if document["objectId"] == sid
                 )
-                source_snapshot = await self.planning.input_capture.capture_source(
+                source_snapshot = await self.populations.input_capture.capture_source(
                     repo, model, revision, source
                 )
                 captured["relations"][sid] = source_snapshot.artifact
@@ -426,7 +428,7 @@ class TransactionResolutionService(Service):
                 for sid, artifact in captured["relations"].items()
                 if sid in captured["managed"]
             }
-            inputs = {a["artifactId"]: a for a in [population, *managed.values()] if a}
+            inputs = {a["artifactId"]: a for a in managed.values()}
             await self.read_leases.acquire(
                 repo,
                 read_id,
@@ -443,6 +445,7 @@ class TransactionResolutionService(Service):
                 captured["managed"],
                 list(inputs),
                 rev["version"],
+                native_compiled,
             )
 
         (
@@ -454,15 +457,15 @@ class TransactionResolutionService(Service):
             definitions,
             aids,
             version,
+            native_compiled,
         ) = await self.store.transaction(snapshot)
 
         async with self.read_leases.hold(
             read_id, aids, "Resolution read lease expired. Retry."
         ) as heartbeat:
-            await self.planning.storage.ensure_inputs(
-                [population] if population else []
-            )
             await self.managed.input_verifier.verify(objects, managed, definitions)
+            if native_compiled is not None and not sql_only:
+                await self.executor.checks(native_compiled)
             profiles = (
                 {}
                 if standalone
@@ -486,7 +489,7 @@ class TransactionResolutionService(Service):
                     resolution_max_rows=self.settings.resolution_max_rows,
                 )
                 compiler.max_nodes = self.settings.measure_max_nodes
-                resolved = InputPipelineCompiler(compiler).compile(tx, target)
+                resolved = InputPipelineCompiler(compiler).compile(tx, pipeline_target)
             else:
                 compiler = MeasureCompiler(
                     self.settings.clickhouse_database,
@@ -507,6 +510,8 @@ class TransactionResolutionService(Service):
                 self.settings.measure_max_sql_bytes,
             )
             compiled = preview.execution
+            if sql_only:
+                return {"sql": compiled.formatted_sql, "dialect": "clickhouse"}
             await self.executor.checks(compiled)
 
             rows, diagnostics = await self.warehouse.queries.resolution_preview(

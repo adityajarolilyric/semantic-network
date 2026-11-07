@@ -1,7 +1,7 @@
 # ruff: noqa: F811
 from copy import deepcopy
 import pytest
-from .test_csv_clickhouse import clickhouse_app  # noqa: F401
+from .test_csv_clickhouse import authored_clickhouse_app, clickhouse_app  # noqa: F401
 from .test_planning_clickhouse import BASE, managed, create, build, table, level
 from .test_measures_clickhouse import assert_post, measure, build_values, values
 from .test_transaction_resolution_clickhouse import setup_resolution
@@ -12,8 +12,8 @@ from backend.app.engine.filters import FilterCompiler
 pytestmark = pytest.mark.integration
 
 
-def test_typed_predicates_in_clickhouse(clickhouse_app):
-    _, admin, _, _ = clickhouse_app
+def test_typed_predicates_in_clickhouse(authored_clickhouse_app):
+    _, admin, _, _ = authored_clickhouse_app
     source = "SELECT 'Promo_20%' AS name, toFloat64(12.5) AS qty, toBool(1) AS active, toDate('2026-01-02') AS day, toDateTime64('2026-01-02 10:30:00', 3, 'UTC') AS stamp, CAST(NULL AS Nullable(String)) AS empty"
     columns = {
         "name": "String",
@@ -49,21 +49,21 @@ def test_typed_predicates_in_clickhouse(clickhouse_app):
     )
 
 
-def test_dimension_filters_after_owned_pivot_and_lookup(clickhouse_app):
-    client, _, _, _ = clickhouse_app
+def test_dimension_filters_after_owned_pivot_and_lookup(authored_clickhouse_app):
+    client, _, _, _ = authored_clickhouse_app
     sid = managed(
         client,
         "LongCustomerFilter",
         b"customer,attribute,value\nC1,channel,Retail\nC2,channel,Wholesale\n",
     )
     p = pivot(["col_1"], ["channel"], keys=["col_1"])
-    cols = schema(client, "dimensions", "Customer", sid, p)
+    cols = schema(client, "dimension-members", "Customer", sid, p)
     channel = next(c["columnId"] for c in cols if c["name"] == "channel")
     dim = {
         "objectId": "Customer",
         "name": "Customer",
         "displayName": "Customer",
-        "kind": "dimension",
+        "kind": "dimensionMembers",
         "isTimeDim": False,
         "definition": {
             "sourceId": sid,
@@ -83,16 +83,16 @@ def test_dimension_filters_after_owned_pivot_and_lookup(clickhouse_app):
             "filters": filters(rule(channel, "contains", "Retail")),
         },
     }
-    response = client.post(BASE + "/dimensions/preview", json=dim)
+    response = client.post(BASE + "/dimension-members/preview", json=dim)
     assert response.status_code == 200, response.text
     assert response.json()["rows"] == [["C1", "Retail"]]
-    assert_post(client, "/dimensions", dim)
+    assert_post(client, "/dimension-members", dim)
     pop = managed(client, "PopulationFilter", b"customer\nC1\n")
     pl = level(pop, attribute=False)
-    pl["definition"]["dimensionBindings"] = [
+    pl["definition"]["memberBindings"] = [
         {
-            "dimensionId": "Customer",
-            "keyMappings": [{"grainColumnId": "product", "dimensionColumnId": "col_1"}],
+            "memberCatalogId": "Customer",
+            "keyMappings": [{"grainColumnId": "product", "memberColumnId": "col_1"}],
             "selectedAttributeColumnIds": [channel],
         }
     ]
@@ -101,11 +101,11 @@ def test_dimension_filters_after_owned_pivot_and_lookup(clickhouse_app):
     assert table(client, "pl_main")["rows"] == [["C1", "Retail"]]
 
 
-def test_planning_filters_for_source_cartesian_and_projection(clickhouse_app):
-    client, _, _, _ = clickhouse_app
+def test_planning_filters_for_source_cartesian_and_projection(authored_clickhouse_app):
+    client, _, _, _ = authored_clickhouse_app
     sid = managed(client, "FilterPopulation", b"product,category\nP1,Keep\nP2,Drop\n")
     base = level(sid)
-    response = client.post(BASE + "/planning-levels/schema", json=base)
+    response = client.post(BASE + "/dimensions/schema", json=base)
     assert response.status_code == 200, response.text
     assert {c["columnId"] for c in response.json()["columns"]} == {
         "product",
@@ -116,7 +116,7 @@ def test_planning_filters_for_source_cartesian_and_projection(clickhouse_app):
     child = level(sid, oid="child")
     child["definition"]["population"] = {
         "operation": "distinct_projection",
-        "sourcePlanningLevelId": "pl_main",
+        "sourceDimensionId": "pl_main",
     }
     child["definition"]["grain"]["columns"][0]["populationRef"] = {
         "sourceGrainColumnId": "product"
@@ -155,15 +155,15 @@ def test_planning_filters_for_source_cartesian_and_projection(clickhouse_app):
     assert table(client, "cart")["rows"] == [["P1", "W2", "Keep"]]
 
 
-def test_direct_transaction_filter_before_measure_aggregation(clickhouse_app):
-    client, _, _, _ = clickhouse_app
+def test_direct_transaction_filter_before_measure_aggregation(authored_clickhouse_app):
+    client, _, _, _ = authored_clickhouse_app
     pop = managed(client, "DirectPopulation", b"product\nP1\nP2\n")
     create(client, level(pop, attribute=False))
     assert build(client, "pl_main")["state"] == "succeeded"
     revision = client.get(BASE).json()
     response = client.put(
         BASE,
-        json={"basePlanningLevelId": "pl_main", "changeReason": ""},
+        json={"baseDimensionId": "pl_main", "changeReason": ""},
         headers={"If-Match": str(revision["version"])},
     )
     assert response.status_code == 200, response.text
@@ -179,7 +179,7 @@ def test_direct_transaction_filter_before_measure_aggregation(clickhouse_app):
         "displayName": "Orders",
         "definition": {
             "sourceId": sid,
-            "planningLevelId": "pl_main",
+            "dimensionId": "pl_main",
             "keyMappings": [{"sourceColumnId": "col_1", "grainColumnId": "product"}],
             "filters": filters(
                 rule("col_3", "eq", True),
@@ -202,9 +202,9 @@ def test_direct_transaction_filter_before_measure_aggregation(clickhouse_app):
 
 
 def test_multi_grain_filters_after_last_wins_without_resurrecting_old_assignment(
-    clickhouse_app,
+    authored_clickhouse_app,
 ):
-    client, _, _, _ = clickhouse_app
+    client, _, _, _ = authored_clickhouse_app
     tx = setup_resolution(client)
     sid = managed(
         client,

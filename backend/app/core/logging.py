@@ -1,7 +1,7 @@
-from datetime import UTC, datetime
 import json
 import logging
 import traceback
+from datetime import UTC, datetime
 
 
 class JsonFormatter(logging.Formatter):

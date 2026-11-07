@@ -1,6 +1,7 @@
 """Shared value capabilities; no database or execution state."""
 
 import re
+
 from .measure_policies import referenced_result_type
 
 NUMERIC = {"number", "integer", "decimal"}

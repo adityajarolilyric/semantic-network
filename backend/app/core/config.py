@@ -50,8 +50,8 @@ class Settings(BaseSettings):
     measure_max_nodes: int = Field(default=1024, ge=10, le=10000)
     measure_max_sql_bytes: int = Field(default=4_194_304, ge=65536, le=16777216)
 
-    planning_view_max_groups: int = Field(default=5000, ge=1, le=50000)
-    planning_view_max_cells: int = Field(default=50000, ge=1, le=200000)
+    decision_view_max_groups: int = Field(default=5000, ge=1, le=50000)
+    decision_view_max_cells: int = Field(default=50000, ge=1, le=200000)
 
     clickhouse_max_threads: int = Field(default=4, ge=1, le=32)
 

@@ -1,11 +1,13 @@
 """A cached LALR grammar; each parse returns request-local syntax nodes."""
 
 import json
+import math
 from functools import lru_cache
 from importlib.resources import files
+
 from lark import Lark, Transformer_NonRecursive, UnexpectedInput
 from lark.exceptions import VisitError
-import math
+
 from ..core.errors import MetadataError
 
 

@@ -1,6 +1,6 @@
+import json
 from dataclasses import dataclass
 from hashlib import sha256
-import json
 from typing import Any
 
 
@@ -64,6 +64,11 @@ class ExecutionPlan:
     def sql(self):
         return self.query.sql(dialect="clickhouse")
 
+    @property
+    def formatted_sql(self):
+        """Human-readable serialization of the same execution AST."""
+        return self.query.sql(dialect="clickhouse", pretty=True)
+
 
 @dataclass(frozen=True)
 class RelationScan:
@@ -75,6 +80,7 @@ class RelationScan:
     transform: LogicalPlan | None = None
     filter_columns: tuple[dict, ...] = ()
     input_pipeline: dict | None = None
+    query: str | None = None
 
 
 @dataclass(frozen=True)
@@ -104,7 +110,7 @@ class Filter:
 
 
 @dataclass(frozen=True)
-class PlanningPlan:
+class DimensionPlan:
     root: Any
     schema: RelationSchema
     key_ids: tuple[str, ...]

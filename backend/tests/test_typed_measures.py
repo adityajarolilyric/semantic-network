@@ -62,11 +62,11 @@ def test_invalid_types_fail_before_execution(expression):
 
 def test_typed_creation_policy_validation_and_attribute_catalog(populated):
     catalog = populated.get(
-        ROOT + "/measures/formula/attributes?planningLevelId=pl_plt"
+        ROOT + "/measures/formula/attributes?dimensionId=pl_plt"
     )
     assert catalog.status_code == 200, catalog.text
     assert any(
-        attribute["reference"].get("dimensionId") == "dim_product"
+        attribute["reference"].get("memberCatalogId") == "dim_product"
         for attribute in catalog.json()
     )
     measure = definition("measure_error")
@@ -97,7 +97,7 @@ def test_direct_attribute_binding_is_required(populated):
         "displayText": "ATTR",
         "expression": {
             "type": "attributeRef",
-            "dimensionId": "dim_product",
+            "memberCatalogId": "dim_product",
             "columnId": "not_present",
         },
     }
@@ -108,7 +108,7 @@ def test_direct_attribute_binding_is_required(populated):
 def test_typed_aggregate_first_can_be_recalculated_for_a_finer_formula(populated):
     flag = definition("measure_error")
     flag["objectId"] = "CoarseFlag"
-    flag["definition"]["nativePlanningLevelId"] = "pl_pt"
+    flag["definition"]["nativeDimensionId"] = "pl_pt"
     flag["definition"]["formula"] = {
         "displayText": "SQTY > 0",
         "expression": {

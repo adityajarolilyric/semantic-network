@@ -1,17 +1,16 @@
 """Managed-view build lifecycle, dispatched by the generic engine worker."""
 
+from .build_lifecycle import current_build_revision
+from ..core.errors import Conflict
+from ..core.metadata import revision_scope as scope
+from ..core.metadata import utc_now as now
 from ..repositories.metadata import metadata_repositories
 from ..repositories.metadata.criteria import (
     ArtifactLookup,
     ManagedTableLookup,
     ObjectLookup,
-    RevisionLookup,
     RunInputLookup,
 )
-
-from ..core.errors import Conflict
-from ..core.metadata import revision_scope as scope
-from ..core.metadata import utc_now as now
 from ..schemas.managed_tables import ManagedDefinition
 from .contracts import digest
 from .resolver import EffectiveSchemaResolver
@@ -70,11 +69,7 @@ class ManagedTableBuildHandler:
         async def operation(repo):
             current_run = await worker.fenced(repo, run)
             query = scope(run["modelId"], run["revisionId"])
-            revision = await metadata_repositories(repo).revisions.require(
-                RevisionLookup(model_id=run["modelId"], revision_id=run["revisionId"]),
-                "Revision",
-            )
-            service.check_version(revision, run["revisionVersion"])
+            revision = await current_build_revision(repo, run)
             if not run["repair"] and revision["approvalStatus"] != "draft":
                 raise Conflict("The revision was published while this build ran.")
             source = await service.source(
@@ -105,7 +100,9 @@ class ManagedTableBuildHandler:
                 else:
                     document = old
             else:
-                objects = await service.objects(repo, run["modelId"], run["revisionId"])
+                objects = await service.graph_objects(
+                    repo, run["modelId"], run["revisionId"]
+                )
                 managed = await metadata_repositories(repo).managed_tables.list(
                     ManagedTableLookup(
                         model_id=run["modelId"], revision_id=run["revisionId"]
@@ -121,7 +118,7 @@ class ManagedTableBuildHandler:
                 for obj in effective:
                     if obj["objectId"] == run["sourceId"]:
                         obj["definition"]["inScope"] = True
-                service.validate(effective, revision["basePlanningLevelId"])
+                service.validate(effective, revision["baseDimensionId"])
                 if old:
                     await metadata_repositories(repo).managed_tables.replace(
                         ManagedTableLookup(

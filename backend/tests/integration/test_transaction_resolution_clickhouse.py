@@ -1,15 +1,20 @@
 # ruff: noqa: F811
 import pytest
-from .test_csv_clickhouse import clickhouse_app  # noqa: F401
+from .test_csv_clickhouse import authored_clickhouse_app, clickhouse_app  # noqa: F401
 from .test_planning_clickhouse import BASE, managed, create, build
 from .test_measures_clickhouse import assert_post, measure, build_values, values
-from .test_planning_view_clickhouse import dimension
+from .test_decision_view_clickhouse import dimension
 
 pytestmark = pytest.mark.integration
 
 
 def setup_resolution(
-    client, rows=b"brand,A,zone,N,100,10\nid,P1,id,L1,30,20\n", mode="split"
+    client,
+    rows=b"brand,A,zone,N,100,10\nid,P1,id,L1,30,20\n",
+    mode="split",
+    *,
+    build_native=True,
+    grain_names=("product", "location"),
 ):
     pop = managed(client, "NativeRows", b"product,location\nP1,L1\nP2,L1\nP3,L2\n")
     products = managed(client, "Products", b"product,brand\nP1,A\nP2,A\nP3,B\n")
@@ -20,7 +25,7 @@ def setup_resolution(
         client,
         {
             "objectId": "native",
-            "kind": "planningLevel",
+            "kind": "dimension",
             "name": "PL",
             "displayName": "PL",
             "definition": {
@@ -30,30 +35,30 @@ def setup_resolution(
                     "columns": [
                         {
                             "grainColumnId": "product",
-                            "name": "product",
+                            "name": grain_names[0],
                             "populationRef": {"columnId": "col_1"},
                         },
                         {
                             "grainColumnId": "location",
-                            "name": "location",
+                            "name": grain_names[1],
                             "populationRef": {"columnId": "col_2"},
                         },
                     ],
                 },
-                "dimensionBindings": [
+                "memberBindings": [
                     {
-                        "dimensionId": "Product",
+                        "memberCatalogId": "Product",
                         "keyMappings": [
-                            {"grainColumnId": "product", "dimensionColumnId": "product"}
+                            {"grainColumnId": "product", "memberColumnId": "product"}
                         ],
                         "selectedAttributeColumnIds": [],
                     },
                     {
-                        "dimensionId": "Location",
+                        "memberCatalogId": "Location",
                         "keyMappings": [
                             {
                                 "grainColumnId": "location",
-                                "dimensionColumnId": "location",
+                                "memberColumnId": "location",
                             }
                         ],
                         "selectedAttributeColumnIds": [],
@@ -66,12 +71,13 @@ def setup_resolution(
     assert (
         client.put(
             BASE,
-            json={"basePlanningLevelId": "native", "changeReason": ""},
+            json={"baseDimensionId": "native", "changeReason": ""},
             headers={"If-Match": str(rev["version"])},
         ).status_code
         == 200
     )
-    assert build(client, "native")["state"] == "succeeded"
+    if build_native:
+        assert build(client, "native")["state"] == "succeeded"
     source = managed(
         client,
         "MixedAssignments",
@@ -85,7 +91,7 @@ def setup_resolution(
             "selectorColumnId": selector,
             "valueColumnId": value,
             "selectors": [
-                {"value": literal, "target": {"dimensionId": dim, "columnId": col}}
+                {"value": literal, "target": {"memberCatalogId": dim, "columnId": col}}
                 for literal, col in columns
             ],
         }
@@ -97,7 +103,7 @@ def setup_resolution(
         "displayName": "Mixed assignments",
         "definition": {
             "sourceId": source,
-            "planningLevelId": "native",
+            "dimensionId": "native",
             "mappingMode": "resolve_multi_grain",
             "keyMappings": [],
             "resolution": {
@@ -147,8 +153,10 @@ def by_cell(result):
 
 
 @pytest.mark.parametrize("mode,expected", [("split", "50.0"), ("copy", "100.0")])
-def test_resolution_split_copy_and_measure_loading(clickhouse_app, mode, expected):
-    client, admin, database, _ = clickhouse_app
+def test_resolution_split_copy_and_measure_loading(
+    authored_clickhouse_app, mode, expected
+):
+    client, admin, database, _ = authored_clickhouse_app
     tx = setup_resolution(client, mode=mode)
     result = preview(client, tx)
     assert result.status_code == 200, result.text
@@ -190,11 +198,24 @@ def test_resolution_split_copy_and_measure_loading(clickhouse_app, mode, expecte
             parameters={"db": database},
         )
     )
-    assert count == 2
+    bindings = client.app.state.container.store.documents["engine_artifact_bindings"]
+    populations = [
+        binding for binding in bindings if binding.get("resourceKind") == "dimension"
+    ]
+    value_bindings = [
+        binding
+        for binding in bindings
+        if binding.get("resourceKind") == "measureValues"
+    ]
+    # Lookup-only Dimensions have populations, not measure representations.
+    assert {binding["resourceId"] for binding in value_bindings} == {"native"}
+    assert count == len(populations) + len(value_bindings)
 
 
-def test_resolution_later_coarse_wins_regardless_of_input_storage_order(clickhouse_app):
-    client, _, _, _ = clickhouse_app
+def test_resolution_later_coarse_wins_regardless_of_input_storage_order(
+    authored_clickhouse_app,
+):
+    client, _, _, _ = authored_clickhouse_app
     tx = setup_resolution(client, b"brand,A,zone,N,100,20\nid,P1,id,L1,30,10\n")
     result = preview(client, tx)
     assert result.status_code == 200, result.text
@@ -211,9 +232,9 @@ def test_resolution_later_coarse_wins_regardless_of_input_storage_order(clickhou
     ],
 )
 def test_resolution_rejects_ambiguous_or_unmatched_assignments(
-    clickhouse_app, rows, code
+    authored_clickhouse_app, rows, code
 ):
-    client, _, _, _ = clickhouse_app
+    client, _, _, _ = authored_clickhouse_app
     tx = setup_resolution(client, rows)
     result = preview(client, tx)
     assert result.status_code == 422, result.text
@@ -221,9 +242,9 @@ def test_resolution_rejects_ambiguous_or_unmatched_assignments(
 
 
 def test_resolution_reduces_same_constraints_without_changing_split_denominator(
-    clickhouse_app,
+    authored_clickhouse_app,
 ):
-    client, _, _, _ = clickhouse_app
+    client, _, _, _ = authored_clickhouse_app
     tx = setup_resolution(
         client, b"brand,A,zone,N,100,10\nbrand,A,zone,N,200,20\nid,P1,id,L1,30,30\n"
     )
@@ -233,16 +254,16 @@ def test_resolution_reduces_same_constraints_without_changing_split_denominator(
     assert result.json()["diagnostics"]["shadowedAssignments"] == 1
 
 
-def test_resolution_null_winner_is_not_filled_from_earlier_row(clickhouse_app):
-    client, _, _, _ = clickhouse_app
+def test_resolution_null_winner_is_not_filled_from_earlier_row(authored_clickhouse_app):
+    client, _, _, _ = authored_clickhouse_app
     tx = setup_resolution(client, b"brand,A,zone,N,100,10\nid,P1,id,L1,,20\n")
     result = preview(client, tx)
     assert result.status_code == 200, result.text
     assert by_cell(result.json()) == {("P1", "L1"): None, ("P2", "L1"): "50.0"}
 
 
-def test_resolution_expansion_limit_is_not_silent_truncation(clickhouse_app):
-    client, _, _, settings = clickhouse_app
+def test_resolution_expansion_limit_is_not_silent_truncation(authored_clickhouse_app):
+    client, _, _, settings = authored_clickhouse_app
     tx = setup_resolution(client)
     settings.resolution_max_rows = 1
     result = preview(client, tx)
@@ -250,8 +271,8 @@ def test_resolution_expansion_limit_is_not_silent_truncation(clickhouse_app):
     assert result.json()["error"]["code"] == "resolution_expansion_limit"
 
 
-def test_resolution_fixed_columns_and_explicit_all_members(clickhouse_app):
-    client, _, _, _ = clickhouse_app
+def test_resolution_fixed_columns_and_explicit_all_members(authored_clickhouse_app):
+    client, _, _, _ = authored_clickhouse_app
     tx = setup_resolution(client, b"id,P1,id,L1,60,10\n")
     axes = tx["definition"]["resolution"]["axes"]
     axes[0]["rules"] = [
@@ -259,7 +280,7 @@ def test_resolution_fixed_columns_and_explicit_all_members(clickhouse_app):
             "ruleId": "fixed",
             "kind": "column",
             "sourceColumnId": "col_2",
-            "target": {"dimensionId": "Product", "columnId": "product"},
+            "target": {"memberCatalogId": "Product", "columnId": "product"},
         }
     ]
     axes[1]["rules"] = []
@@ -269,8 +290,10 @@ def test_resolution_fixed_columns_and_explicit_all_members(clickhouse_app):
     assert by_cell(result.json()) == {("P1", "L1"): "60.0"}
 
 
-def test_resolution_string_tie_breaker_and_independent_partitions(clickhouse_app):
-    client, _, _, _ = clickhouse_app
+def test_resolution_string_tie_breaker_and_independent_partitions(
+    authored_clickhouse_app,
+):
+    client, _, _, _ = authored_clickhouse_app
     tx = setup_resolution(client, b"brand,A,zone,N,100,10\nid,P1,id,L1,30,10\n")
     config = tx["definition"]["resolution"]
     config["orderColumnIds"].append("col_1")
@@ -302,10 +325,10 @@ def setup_date_range(
     )
     assert_post(
         client,
-        "/dimensions",
+        "/dimension-members",
         {
             "objectId": "Time",
-            "kind": "dimension",
+            "kind": "dimensionMembers",
             "name": "Calendar",
             "displayName": "Calendar",
             "isTimeDim": True,
@@ -337,7 +360,7 @@ def setup_date_range(
         },
     )
     if month:
-        current = client.get(BASE + "/dimensions/Time").json()
+        current = client.get(BASE + "/dimension-members/Time").json()
         current["definition"]["columns"].append(
             {
                 "columnId": "month",
@@ -353,7 +376,7 @@ def setup_date_range(
             if k not in ("modelId", "revisionId", "version", "createdAt", "updatedAt")
         }
         response = client.put(
-            BASE + "/dimensions/Time",
+            BASE + "/dimension-members/Time",
             json=payload,
             headers={"If-Match": str(current["version"])},
         )
@@ -371,7 +394,7 @@ def setup_date_range(
         client,
         {
             "objectId": "period_native",
-            "kind": "planningLevel",
+            "kind": "dimension",
             "name": "Product Period",
             "displayName": "Product Period",
             "definition": {
@@ -391,13 +414,13 @@ def setup_date_range(
                         },
                     ],
                 },
-                "dimensionBindings": [
+                "memberBindings": [
                     {
-                        "dimensionId": "Time",
+                        "memberCatalogId": "Time",
                         "keyMappings": [
                             {
                                 "grainColumnId": "period",
-                                "dimensionColumnId": "day" if day else "week",
+                                "memberColumnId": "day" if day else "week",
                             }
                         ],
                         "selectedAttributeColumnIds": [],
@@ -407,7 +430,7 @@ def setup_date_range(
         },
     )
     if month:
-        current = client.get(BASE + "/planning-levels/period_native").json()
+        current = client.get(BASE + "/dimensions/period_native").json()
         current["definition"]["grain"]["keyIds"].append("month")
         current["definition"]["grain"]["columns"].append(
             {
@@ -416,8 +439,8 @@ def setup_date_range(
                 "populationRef": {"columnId": "col_3"},
             }
         )
-        current["definition"]["dimensionBindings"][0]["keyMappings"].append(
-            {"grainColumnId": "month", "dimensionColumnId": "month"}
+        current["definition"]["memberBindings"][0]["keyMappings"].append(
+            {"grainColumnId": "month", "memberColumnId": "month"}
         )
         payload = {
             k: v
@@ -425,7 +448,7 @@ def setup_date_range(
             if k not in ("modelId", "revisionId", "version", "createdAt", "updatedAt")
         }
         response = client.put(
-            BASE + "/planning-levels/period_native",
+            BASE + "/dimensions/period_native",
             json=payload,
             headers={"If-Match": str(current["version"])},
         )
@@ -433,7 +456,7 @@ def setup_date_range(
     rev = client.get(BASE).json()
     response = client.put(
         BASE,
-        json={"basePlanningLevelId": "period_native", "changeReason": ""},
+        json={"baseDimensionId": "period_native", "changeReason": ""},
         headers={"If-Match": str(rev["version"])},
     )
     assert response.status_code == 200, response.text
@@ -451,7 +474,7 @@ def setup_date_range(
         "displayName": "Date assignments",
         "definition": {
             "sourceId": source,
-            "planningLevelId": "period_native",
+            "dimensionId": "period_native",
             "mappingMode": "resolve_multi_grain",
             "keyMappings": [],
             "resolution": {
@@ -460,7 +483,7 @@ def setup_date_range(
                     {
                         "grainColumnId": "period",
                         "dateRange": {
-                            "dimensionId": "Time",
+                            "memberCatalogId": "Time",
                             "calendarKeyColumnId": "day" if day else "week",
                             "startColumnId": "col_2",
                             "endColumnId": "col_3",
@@ -477,9 +500,9 @@ def setup_date_range(
 
 
 def test_resolution_daily_ranges_map_to_fiscal_weeks_and_configured_measure_aggregation(
-    clickhouse_app,
+    authored_clickhouse_app,
 ):
-    client, _, _, _ = clickhouse_app
+    client, _, _, _ = authored_clickhouse_app
     tx = setup_date_range(client)
     result = preview(client, tx)
     assert result.status_code == 200, result.text
@@ -528,9 +551,9 @@ def test_resolution_daily_ranges_map_to_fiscal_weeks_and_configured_measure_aggr
     ],
 )
 def test_resolution_range_distribution_policies(
-    clickhouse_app, member_mode, time_mode, expected
+    authored_clickhouse_app, member_mode, time_mode, expected
 ):
-    client, _, _, _ = clickhouse_app
+    client, _, _, _ = authored_clickhouse_app
     tx = setup_date_range(client)
     tx["definition"]["resolution"]["values"][0].update(
         mode=member_mode, timeMode=time_mode
@@ -543,8 +566,8 @@ def test_resolution_range_distribution_policies(
     assert {r[qty] for r in data["rows"]} == {expected}
 
 
-def test_resolution_partial_week_overrides_preserve_other_days(clickhouse_app):
-    client, _, _, _ = clickhouse_app
+def test_resolution_partial_week_overrides_preserve_other_days(authored_clickhouse_app):
+    client, _, _, _ = authored_clickhouse_app
     tx = setup_date_range(
         client, b"140,2026-01-01,2026-01-07,10\n60,2026-01-02,2026-01-03,20\n"
     )
@@ -581,17 +604,17 @@ def test_resolution_partial_week_overrides_preserve_other_days(clickhouse_app):
     ],
 )
 def test_resolution_range_rejects_invalid_dates_coverage_and_ties(
-    clickhouse_app, rows, code
+    authored_clickhouse_app, rows, code
 ):
-    client, _, _, _ = clickhouse_app
+    client, _, _, _ = authored_clickhouse_app
     tx = setup_date_range(client, rows)
     result = preview(client, tx)
     assert result.status_code == 422, result.text
     assert result.json()["error"]["code"] == code
 
 
-def test_resolution_range_missing_native_week_is_not_clipped(clickhouse_app):
-    client, _, _, _ = clickhouse_app
+def test_resolution_range_missing_native_week_is_not_clipped(authored_clickhouse_app):
+    client, _, _, _ = authored_clickhouse_app
     tx = setup_date_range(
         client, population=b"product,period\nP1,FISCAL_A\nP1,FISCAL_B\nP2,FISCAL_A\n"
     )
@@ -600,8 +623,8 @@ def test_resolution_range_missing_native_week_is_not_clipped(clickhouse_app):
     assert result.json()["error"]["code"] == "resolution_native_coverage"
 
 
-def test_resolution_range_daily_native(clickhouse_app):
-    client, _, _, _ = clickhouse_app
+def test_resolution_range_daily_native(authored_clickhouse_app):
+    client, _, _, _ = authored_clickhouse_app
     tx = setup_date_range(client, day=True)
     result = preview(client, tx)
     assert result.status_code == 200, result.text
@@ -614,8 +637,8 @@ def test_resolution_range_daily_native(clickhouse_app):
     assert {r[cols["Daily"]] for r in data["rows"]} == {"10.0"}
 
 
-def test_resolution_range_first_last_uses_daily_calendar_order(clickhouse_app):
-    client, _, _, _ = clickhouse_app
+def test_resolution_range_first_last_uses_daily_calendar_order(authored_clickhouse_app):
+    client, _, _, _ = authored_clickhouse_app
     tx = setup_date_range(
         client, b"140,2026-01-01,2026-01-07,10\n60,2026-01-02,2026-01-03,20\n"
     )
@@ -648,7 +671,7 @@ def test_resolution_range_first_last_uses_daily_calendar_order(clickhouse_app):
 
 def calendar_stage(client, tx):
     cfg = {
-        "dimensionId": "Time",
+        "memberCatalogId": "Time",
         "startColumnId": "col_2",
         "endColumnId": "col_3",
         "selectedColumnIds": ["week"],
@@ -663,7 +686,7 @@ def calendar_stage(client, tx):
     week = next(
         c["columnId"]
         for c in schema.json()["columns"]
-        if c.get("dimensionColumnId") == "week"
+        if c.get("memberColumnId") == "week"
     )
     tx["definition"]["calendarResolution"] = cfg
     tx["definition"]["resolution"]["axes"][1] = {
@@ -680,8 +703,10 @@ def calendar_stage(client, tx):
     return payload
 
 
-def test_calendar_stage_previews_before_native_mapping_and_materialises(clickhouse_app):
-    client, _, _, _ = clickhouse_app
+def test_calendar_stage_previews_before_native_mapping_and_materialises(
+    authored_clickhouse_app,
+):
+    client, _, _, _ = authored_clickhouse_app
     tx = setup_date_range(client)
     payload = calendar_stage(client, tx)
     result = client.post(BASE + "/transactions/calendar/preview", json=payload)
@@ -707,8 +732,10 @@ def test_calendar_stage_previews_before_native_mapping_and_materialises(clickhou
     ]
 
 
-def test_calendar_stage_overlaps_preserve_daily_last_assignment(clickhouse_app):
-    client, _, _, _ = clickhouse_app
+def test_calendar_stage_overlaps_preserve_daily_last_assignment(
+    authored_clickhouse_app,
+):
+    client, _, _, _ = authored_clickhouse_app
     tx = setup_date_range(
         client, b"140,2026-01-01,2026-01-07,10\n30,2026-01-02,2026-01-03,20\n"
     )
@@ -726,8 +753,8 @@ def test_calendar_stage_overlaps_preserve_daily_last_assignment(clickhouse_app):
 
 
 @pytest.mark.parametrize("direct", [False, True])
-def test_calendar_stage_week_month_cross_boundary(clickhouse_app, direct):
-    client, _, _, _ = clickhouse_app
+def test_calendar_stage_week_month_cross_boundary(authored_clickhouse_app, direct):
+    client, _, _, _ = authored_clickhouse_app
     tx = setup_date_range(
         client,
         b"100,2026-01-30,2026-02-02,10\n",
@@ -736,7 +763,7 @@ def test_calendar_stage_week_month_cross_boundary(clickhouse_app, direct):
         population=b"product,period,month\nP1,W1,JAN\nP1,W1,FEB\nP1,W2,FEB\nP2,W1,JAN\nP2,W1,FEB\nP2,W2,FEB\n",
     )
     cfg = {
-        "dimensionId": "Time",
+        "memberCatalogId": "Time",
         "startColumnId": "col_2",
         "endColumnId": "col_3",
         "selectedColumnIds": ["week", "month"],
@@ -751,7 +778,7 @@ def test_calendar_stage_week_month_cross_boundary(clickhouse_app, direct):
         },
     )
     assert result.status_code == 200, result.text
-    cols = {c.get("dimensionColumnId"): c["columnId"] for c in result.json()["columns"]}
+    cols = {c.get("memberColumnId"): c["columnId"] for c in result.json()["columns"]}
     rules = [
         {
             "grainColumnId": k,
@@ -821,8 +848,10 @@ def test_calendar_stage_week_month_cross_boundary(clickhouse_app, direct):
         (b"10,2025-12-31,2026-01-03,10\n", "resolution_calendar_coverage"),
     ],
 )
-def test_calendar_stage_rejects_bad_ranges_before_mapping(clickhouse_app, rows, code):
-    client, _, _, _ = clickhouse_app
+def test_calendar_stage_rejects_bad_ranges_before_mapping(
+    authored_clickhouse_app, rows, code
+):
+    client, _, _, _ = authored_clickhouse_app
     tx = setup_date_range(client, rows)
     payload = calendar_stage(client, tx)
     result = client.post(BASE + "/transactions/calendar/preview", json=payload)
@@ -830,8 +859,10 @@ def test_calendar_stage_rejects_bad_ranges_before_mapping(clickhouse_app, rows, 
     assert result.json()["error"]["code"] == code
 
 
-def test_calendar_stage_sparse_calendar_counts_only_eligible_days(clickhouse_app):
-    client, _, _, _ = clickhouse_app
+def test_calendar_stage_sparse_calendar_counts_only_eligible_days(
+    authored_clickhouse_app,
+):
+    client, _, _, _ = authored_clickhouse_app
     tx = setup_date_range(
         client,
         calendar_rows=b"day,week\n2026-01-01,FISCAL_A\n2026-01-03,FISCAL_A\n2026-01-05,FISCAL_B\n2026-01-07,FISCAL_B\n",
@@ -846,9 +877,9 @@ def test_calendar_stage_sparse_calendar_counts_only_eligible_days(clickhouse_app
 
 
 def test_calendar_stage_direct_preserves_duplicate_records_and_aggregation_order(
-    clickhouse_app,
+    authored_clickhouse_app,
 ):
-    client, _, _, _ = clickhouse_app
+    client, _, _, _ = authored_clickhouse_app
     tx = setup_date_range(client)
     calendar_stage(client, tx)
     week = tx["definition"]["resolution"]["axes"][1]["rules"][0]["sourceColumnId"]
@@ -892,8 +923,10 @@ def test_calendar_stage_direct_preserves_duplicate_records_and_aggregation_order
     assert result["rows"][0][cols["TimeFirst"]] == "126.666667"
 
 
-def test_resolution_retained_text_can_control_application_order(clickhouse_app):
-    client, _, _, _ = clickhouse_app
+def test_resolution_retained_text_can_control_application_order(
+    authored_clickhouse_app,
+):
+    client, _, _, _ = authored_clickhouse_app
     tx = setup_resolution(client, rows=b"brand,A,zone,N,100,10\nid,P1,id,L1,30,20\n")
     d = tx["definition"]["resolution"]
     # Level selector is retained text: 'id' sorts after 'brand', even though
@@ -909,3 +942,28 @@ def test_resolution_retained_text_can_control_application_order(clickhouse_app):
         ("30.0", "id"),
         ("50.0", "brand"),
     ]
+
+
+@pytest.mark.parametrize("build_native", [False, True])
+def test_resolution_preview_preserves_logical_column_ids(
+    authored_clickhouse_app, build_native
+):
+    client, admin, _, _ = authored_clickhouse_app
+    tx = setup_resolution(
+        client,
+        build_native=build_native,
+        grain_names=("Product ID", "location_id"),
+    )
+    sql_response = client.post(
+        BASE + "/transactions/resolution/preview?sql_only=true", json=tx
+    )
+    assert sql_response.status_code == 200, sql_response.text
+    assert (
+        admin.command("SELECT count() FROM (" + sql_response.json()["sql"] + ")") == 2
+    )
+    response = preview(client, tx)
+    assert response.status_code == 200, response.text
+    assert by_cell(response.json()) == {("P1", "L1"): "30.0", ("P2", "L1"): "50.0"}
+    status = client.get(BASE + "/dimensions/native/table").json()
+    assert status["state"] == "ready"
+    assert status["storage"] == "virtual"

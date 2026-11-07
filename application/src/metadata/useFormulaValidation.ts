@@ -14,7 +14,7 @@ export type FormulaRequest = {
   objectId: string
   name: string
   displayText: string
-  nativePlanningLevelId: string
+  nativeGrainId: string
   calculationType: 'AggregateFirst' | 'CalculateFirst'
   languageVersion: 'planning-v1'
 }
@@ -31,7 +31,7 @@ export function useFormulaValidation(base: string | undefined, payload: FormulaR
   const key = JSON.stringify(payload)
   const [result, setResult] = useState<{ key: string; value: FormulaValidation } | null>(null)
   useEffect(() => {
-    if (!base || !payload || !payload.displayText.trim() || !payload.nativePlanningLevelId) return
+    if (!base || !payload || !payload.displayText.trim() || !payload.nativeGrainId) return
     const controller = new AbortController()
     const timer = setTimeout(() => {
       void validateFormula(base, payload, controller.signal)

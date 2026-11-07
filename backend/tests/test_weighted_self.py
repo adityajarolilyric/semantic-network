@@ -95,7 +95,7 @@ def test_calculate_first_defaults_to_self_but_aggregate_first_does_not():
 
     d = {
         "measureType": "calculated",
-        "nativePlanningLevelId": "native",
+        "nativeDimensionId": "native",
         "calculationType": "CalculateFirst",
         "formula": {"displayText": "1", "expression": {"type": "literal", "value": 1}},
         "aggregation": {"nonTime": "sum", "time": "sum"},

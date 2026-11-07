@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from backend.tests.fixture_app import create_fixture_app as create_app
+from backend.app.warehouse.csv_parser import CsvParser
 from .conftest import ROOT, seed
 from .fake_warehouse import FakeWarehouse
 from .memory_store import MemoryStore
@@ -14,14 +15,15 @@ def registration_client(settings):
     warehouse = FakeWarehouse()
     with TestClient(create_app(settings, store, warehouse)) as client:
         seed(client)
-        assert (
-            upload(
-                client,
-                b'product_id,Product Name,quantity\n001,"One, first",10.25\n',
-                table="Uploaded",
-            ).status_code
-            == 201
-        )
+        # Manual registration concerns pre-existing warehouse tables. CSV uploads
+        # now register automatically and are covered by the upload-default tests.
+        warehouse.tables["Uploaded"] = {
+            "parsed": CsvParser().parse(
+                b'product_id,Product Name,quantity\n001,"One, first",10.25\n'
+            ),
+            "id": "fixture",
+            "fingerprint": "fixture",
+        }
         yield client, warehouse, store
 
 
@@ -176,17 +178,17 @@ def test_checkbox_registration_generates_internal_identity_without_keys(
                     }
                 ],
             },
-            "dimensionBindings": [],
+            "memberBindings": [],
         },
     }
-    assert client.post(ROOT + "/planning-levels", json=level).status_code == 201
+    assert client.post(ROOT + "/dimensions", json=level).status_code == 201
     transaction = {
         "objectId": "tx_uploaded",
         "name": "Uploaded",
         "displayName": "Uploaded",
         "definition": {
             "sourceId": source["objectId"],
-            "planningLevelId": "pl_uploaded",
+            "dimensionId": "pl_uploaded",
             "keyMappings": [{"sourceColumnId": "col_1", "grainColumnId": "product"}],
             "expectedRowsPerGrain": "zero_or_one",
         },

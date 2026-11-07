@@ -17,8 +17,8 @@ REVISION = "rev_1"
 ROOT = f"/api/v1/models/{MODEL}/revisions/{REVISION}"
 RESOURCES = {
     "source": "sources",
+    "dimensionMembers": "dimension-members",
     "dimension": "dimensions",
-    "planningLevel": "planning-levels",
     "transaction": "transactions",
     "measure": "measures",
 }
@@ -50,7 +50,7 @@ def seed(client):
         json={
             "revisionId": REVISION,
             "expectedModelVersion": 1,
-            "basePlanningLevelId": "pl_plt",
+            "baseDimensionId": "pl_plt",
         },
     )
     assert response.status_code == 201, response.text

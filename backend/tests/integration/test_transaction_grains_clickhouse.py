@@ -6,7 +6,7 @@ from .test_csv_clickhouse import clickhouse_app  # noqa: F401
 from .test_planning_clickhouse import BASE, managed, build, table
 from .test_measures_clickhouse import measure, build_values, transaction
 from .test_managed_clickhouse import await_run
-from backend.app.schemas.planning_view import PlanningViewField
+from backend.app.schemas.decision_view import DecisionViewField
 
 pytestmark = pytest.mark.integration
 
@@ -18,7 +18,7 @@ def onboarding(source, oid="Forecast"):
         "displayName": oid,
         "sourceId": source,
         "grainColumnIds": ["col_1", "col_2", "col_3"],
-        "planningLevelName": oid + " grain",
+        "dimensionName": oid + " grain",
     }
 
 
@@ -41,18 +41,18 @@ def test_one_table_no_dimensions_pivot_edit_and_sales_reuse(clickhouse_app):
     assert response.status_code == 200, response.text
     assert response.json()["rowCount"] == 2
     assert client.get(BASE).json()["version"] == before["version"]
-    assert client.get(BASE + "/planning-levels").json()["items"] == []
+    assert client.get(BASE + "/dimensions").json()["items"] == []
     created = post(client, payload)
-    level = created["planningLevel"]
+    level = created["dimension"]
     lid = level["objectId"]
     mappings = created["transaction"]["definition"]["keyMappings"]
     assert created["transaction"]["definition"]["mappingMode"] == "direct"
-    assert level["definition"]["dimensionBindings"] == []
-    assert client.get(BASE).json()["basePlanningLevelId"] == lid
+    assert level["definition"]["memberBindings"] == []
+    assert client.get(BASE).json()["baseDimensionId"] == lid
     version = client.get(BASE).json()["version"]
     assert post(client, payload) == created
     assert client.get(BASE).json()["version"] == version
-    assert client.get(BASE + "/dimensions").json()["items"] == []
+    assert client.get(BASE + "/dimension-members").json()["items"] == []
     assert build(client, lid)["state"] == "succeeded"
     assert table(client, lid)["rows"] == [["P1", "L1", "W1"], ["P2", "L1", "W1"]]
     measure(client, "FQTY", "Forecast", lid, "col_4", mode="weighted_by_self")
@@ -69,26 +69,26 @@ def test_one_table_no_dimensions_pivot_edit_and_sales_reuse(clickhouse_app):
     )
     assert response.status_code == 200, response.text
     assert build_values(client)["state"] == "succeeded"
-    options = client.get(BASE + "/planning-view/options").json()
+    options = client.get(BASE + "/decision-view/options").json()
     assert (
-        options["dimensions"] == []
-        and options["planningLevels"][0]["planningLevelId"] == lid
+        options["dimensionMembers"] == []
+        and options["dimensions"][0]["dimensionId"] == lid
     )
     product = next(
         m["grainColumnId"] for m in mappings if m["sourceColumnId"] == "col_1"
     )
     view = {
-        "rows": [{"planningLevelId": lid, "columnId": product}],
+        "rows": [{"dimensionId": lid, "columnId": product}],
         "columns": [],
         "measures": ["FQTY"],
     }
-    response = client.post(BASE + "/planning-view/query", json=view)
+    response = client.post(BASE + "/decision-view/query", json=view)
     assert response.status_code == 200, response.text
     result = response.json()
     assert result["rows"] == [["P1", "150.0"], ["P2", "200.0"]]
     assert result["measures"][0]["editable"] is True
     edit = client.post(
-        BASE + "/planning-view/edits",
+        BASE + "/decision-view/edits",
         json={
             "view": view,
             "measureId": "FQTY",
@@ -101,7 +101,7 @@ def test_one_table_no_dimensions_pivot_edit_and_sales_reuse(clickhouse_app):
     )
     run = await_run(client, BASE, edit)
     assert run["state"] == "succeeded", run
-    assert client.post(BASE + "/planning-view/query", json=view).json()["rows"][0] == [
+    assert client.post(BASE + "/decision-view/query", json=view).json()["rows"][0] == [
         "P1",
         "180.0",
     ]
@@ -120,11 +120,11 @@ def test_one_table_no_dimensions_pivot_edit_and_sales_reuse(clickhouse_app):
     measure(client, "SQTY", "Sales", lid, "col_4")
     assert build_values(client)["state"] == "succeeded"
     view["measures"].append("SQTY")
-    response = client.post(BASE + "/planning-view/query", json=view)
+    response = client.post(BASE + "/decision-view/query", json=view)
     assert response.status_code == 200, response.text
     assert response.json()["rows"] == [["P1", "150.0", "60.0"], ["P2", "200.0", "70.0"]]
-    assert client.get(BASE + "/planning-levels").json()["items"][0]["objectId"] == lid
-    assert client.get(BASE + "/dimensions").json()["items"] == []
+    assert client.get(BASE + "/dimensions").json()["items"][0]["objectId"] == lid
+    assert client.get(BASE + "/dimension-members").json()["items"] == []
 
 
 def test_replay_conflict_validation_and_missing_sales_intersections(clickhouse_app):
@@ -138,18 +138,18 @@ def test_replay_conflict_validation_and_missing_sales_intersections(clickhouse_a
     assert (
         client.post(BASE + "/transactions/from-grain", json=invalid).status_code == 422
     )
-    assert client.get(BASE + "/planning-levels").json()["items"] == []
+    assert client.get(BASE + "/dimensions").json()["items"] == []
     created = post(client, payload)
     invalid = deepcopy(payload)
     invalid["grainColumnIds"] = ["col_1"]
     assert (
         client.post(BASE + "/transactions/from-grain", json=invalid).status_code == 409
     )
-    lid = created["planningLevel"]["objectId"]
+    lid = created["dimension"]["objectId"]
     assert build(client, lid)["state"] == "succeeded"
     other = post(client, onboarding(sid, "Other"))
-    assert client.get(BASE).json()["basePlanningLevelId"] == lid
-    assert build(client, other["planningLevel"]["objectId"])["state"] == "succeeded"
+    assert client.get(BASE).json()["baseDimensionId"] == lid
+    assert build(client, other["dimension"]["objectId"])["state"] == "succeeded"
     sale = managed(
         client, "OutOfPopulationSales", b"product,location,time,qty\nP2,L1,W1,5\n"
     )
@@ -172,7 +172,7 @@ def test_replay_conflict_validation_and_missing_sales_intersections(clickhouse_a
     replacement = managed(
         client, "ValidIntersections", b"time,product,location\nW1,P1,L1\nW1,P2,L1\n"
     )
-    level_doc = client.get(BASE + "/planning-levels/" + lid).json()
+    level_doc = client.get(BASE + "/dimensions/" + lid).json()
     definition = {
         k: v
         for k, v in level_doc.items()
@@ -187,7 +187,7 @@ def test_replay_conflict_validation_and_missing_sales_intersections(clickhouse_a
     ):
         column["populationRef"] = {"columnId": cid}
     updated = client.put(
-        BASE + "/planning-levels/" + lid,
+        BASE + "/dimensions/" + lid,
         json=definition,
         headers={"If-Match": str(level_doc["version"])},
     )
@@ -204,12 +204,12 @@ def test_field_owner_is_exclusive():
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError):
-        PlanningViewField(columnId="key")
+        DecisionViewField(columnId="key")
     with pytest.raises(ValidationError):
-        PlanningViewField(columnId="key", dimensionId="d", planningLevelId="p")
-    assert PlanningViewField(columnId="key", dimensionId="d").model_dump() == {
+        DecisionViewField(columnId="key", memberCatalogId="d", dimensionId="p")
+    assert DecisionViewField(columnId="key", memberCatalogId="d").model_dump() == {
         "columnId": "key",
-        "dimensionId": "d",
+        "memberCatalogId": "d",
     }
 
 
@@ -231,10 +231,10 @@ def test_onboarding_uses_transformed_population_and_preserves_input(
         b"day,week\n2026-01-01,WA\n2026-01-02,WA\n2026-01-03,WB\n",
     )
     response = client.post(
-        BASE + "/dimensions",
+        BASE + "/dimension-members",
         json={
             "objectId": "Time",
-            "kind": "dimension",
+            "kind": "dimensionMembers",
             "name": "Time",
             "displayName": "Time",
             "isTimeDim": True,
@@ -266,10 +266,10 @@ def test_onboarding_uses_transformed_population_and_preserves_input(
         },
     )
     assert response.status_code == 201, response.text
-    # A calendar must be discoverable before a native planning level exists.
+    # A calendar must be discoverable before a native dimension exists.
     options = client.get(BASE + "/transactions/resolution/options")
     assert options.status_code == 200, options.text
-    assert options.json()["calendars"][0]["dimensionId"] == "Time"
+    assert options.json()["calendars"][0]["memberCatalogId"] == "Time"
     assert options.json()["targets"] == []
     pivot = (
         {
@@ -292,7 +292,7 @@ def test_onboarding_uses_transformed_population_and_preserves_input(
     )
     calendar = (
         {
-            "dimensionId": "Time",
+            "memberCatalogId": "Time",
             "startColumnId": "col_3",
             "endColumnId": "col_4",
             "selectedColumnIds": ["week"],
@@ -358,9 +358,11 @@ def test_onboarding_uses_transformed_population_and_preserves_input(
     assert filtered_preview.status_code == 200, filtered_preview.text
     assert filtered_preview.json()["rowCount"] == (3 if calendar else 1)
     assert client.get(BASE).json()["version"] == before
-    assert client.get(BASE + "/planning-levels").json()["items"] == []
+    assert [d["name"] for d in client.get(BASE + "/dimensions").json()["items"]] == [
+        "Time"
+    ]
     created = post(client, payload)
-    level = created["planningLevel"]
+    level = created["dimension"]
     lid = level["objectId"]
     config = level["definition"]["population"]["inputTransform"]
     assert config["objectId"] == "Promotion"
@@ -372,9 +374,9 @@ def test_onboarding_uses_transformed_population_and_preserves_input(
     run = build(client, lid)
     assert run["state"] == "succeeded", run
     assert table(client, lid)["rowCount"] == (4 if calendar else 2)
-    # The ordinary Planning Level APIs can infer transformed key types and rebuild it.
+    # The ordinary Dimension APIs can infer transformed key types and rebuild it.
     response = client.post(
-        BASE + "/planning-levels/schema",
+        BASE + "/dimensions/schema",
         json={
             k: v
             for k, v in level.items()
@@ -386,15 +388,13 @@ def test_onboarding_uses_transformed_population_and_preserves_input(
     run = build_values(client)
     assert run["state"] == "succeeded", run
     assert len(
-        client.get(BASE + "/planning-view/options").json()["planningLevels"][0][
-            "columns"
-        ]
+        client.get(BASE + "/decision-view/options").json()["dimensions"][0]["columns"]
     ) >= len(grain)
     response = client.post(
-        BASE + "/planning-view/query",
+        BASE + "/decision-view/query",
         json={
             "rows": [
-                {"planningLevelId": lid, "columnId": key}
+                {"dimensionId": lid, "columnId": key}
                 for key in level["definition"]["grain"]["keyIds"]
             ],
             "columns": [],
@@ -421,7 +421,7 @@ def test_onboarding_uses_transformed_population_and_preserves_input(
         response = client.post(BASE + "/transactions/from-grain/preview", json=invalid)
         assert response.status_code == 422, response.text
         assert "invalid_resolution_range" in response.text
-        unchanged = client.get(BASE + "/planning-levels/" + lid).json()
+        unchanged = client.get(BASE + "/dimensions/" + lid).json()
         assert unchanged["definition"] == level["definition"]
         assert unchanged["version"] == level["version"]
 
@@ -461,7 +461,7 @@ def test_onboarding_filters_preview_and_materialise_without_changing_population(
     assert client.get(BASE + "/transactions").json()["items"] == []
     created = post(client, payload)
     assert created["transaction"]["definition"]["filters"] == payload["filters"]
-    level = created["planningLevel"]["objectId"]
+    level = created["dimension"]["objectId"]
     assert build(client, level)["state"] == "succeeded"
     assert table(client, level)["rowCount"] == 2
     # The resource envelope is not part of a typed preview input.
@@ -508,7 +508,7 @@ def test_create_multiple_measures_and_materialise_configured_policies(
     payload = onboarding(source, "Multi")
     if mapped:
         existing = post(client, onboarding(source, "Initial"))
-        level = existing["planningLevel"]["objectId"]
+        level = existing["dimension"]["objectId"]
         payload = {
             k: v
             for k, v in existing["transaction"].items()
@@ -520,7 +520,7 @@ def test_create_multiple_measures_and_materialise_configured_policies(
         assert response.status_code == 201, response.text
     else:
         payload["measures"] = selections
-        level = post(client, payload)["planningLevel"]["objectId"]
+        level = post(client, payload)["dimension"]["objectId"]
     assert build(client, level)["state"] == "succeeded"
     measures = client.get(BASE + "/measures").json()["items"]
     assert sorted(m["name"] for m in measures) == ["price", "qty"]

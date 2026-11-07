@@ -5,7 +5,7 @@ from backend.app.schemas.measures import Allocation, ReferencedMeasureDefinition
 def source_level(oid, source="matrix", keys=("product", "location"), bindings=()):
     return {
         "objectId": oid,
-        "kind": "planningLevel",
+        "kind": "dimension",
         "name": oid,
         "definition": {
             "population": {"operation": "source", "sourceId": source},
@@ -21,7 +21,7 @@ def source_level(oid, source="matrix", keys=("product", "location"), bindings=()
                 ],
             },
             "populationAttributes": [],
-            "dimensionBindings": list(bindings),
+            "memberBindings": list(bindings),
         },
     }
 
@@ -32,7 +32,7 @@ def test_no_relationship_is_inferred_from_equal_names():
     analyzer = LevelRelationshipAnalyzer([a, b])
     assert analyzer.analyze("a", "b")["relationship"] == "incompatible"
     assert not analyzer.can_edit(
-        {"definition": {"editable": True, "nativePlanningLevelId": "a"}}, "b"
+        {"definition": {"editable": True, "nativeDimensionId": "a"}}, "b"
     )
 
 
@@ -40,11 +40,11 @@ def test_key_projection_without_dimension_bindings_and_edit_direction():
     base = source_level("base")
     coarse = {
         "objectId": "coarse",
-        "kind": "planningLevel",
+        "kind": "dimension",
         "definition": {
             "population": {
                 "operation": "distinct_projection",
-                "sourcePlanningLevelId": "base",
+                "sourceDimensionId": "base",
             },
             "grain": {
                 "keyIds": ["p"],
@@ -55,31 +55,31 @@ def test_key_projection_without_dimension_bindings_and_edit_direction():
                     }
                 ],
             },
-            "dimensionBindings": [],
+            "memberBindings": [],
         },
     }
     analyzer = LevelRelationshipAnalyzer([base, coarse])
     assert analyzer.analyze("base", "coarse")["relationship"] == "roll_up"
     assert analyzer.analyze("coarse", "base")["relationship"] == "roll_down"
     assert analyzer.can_edit(
-        {"definition": {"editable": True, "nativePlanningLevelId": "base"}}, "coarse"
+        {"definition": {"editable": True, "nativeDimensionId": "base"}}, "coarse"
     )
     assert not analyzer.can_edit(
-        {"definition": {"editable": True, "nativePlanningLevelId": "coarse"}}, "base"
+        {"definition": {"editable": True, "nativeDimensionId": "coarse"}}, "base"
     )
 
 
 def test_attribute_hierarchy_requires_binding_and_uses_dimension_identity():
     binding = {
-        "dimensionId": "product_dim",
-        "keyMappings": [{"grainColumnId": "product", "dimensionColumnId": "id"}],
+        "memberCatalogId": "product_dim",
+        "keyMappings": [{"grainColumnId": "product", "memberColumnId": "id"}],
         "selectedAttributeColumnIds": [],
     }
     base = source_level("base", bindings=[binding])
     brand = source_level("brand", "products", ("brand",))
     dim = {
         "objectId": "product_dim",
-        "kind": "dimension",
+        "kind": "dimensionMembers",
         "isTimeDim": False,
         "definition": {
             "sourceId": "products",
@@ -93,10 +93,10 @@ def test_attribute_hierarchy_requires_binding_and_uses_dimension_identity():
     analyzer = LevelRelationshipAnalyzer([base, brand, dim])
     path = analyzer.analyze("base", "brand")
     assert path["relationship"] == "roll_up" and path["requiresDimensionLookup"]
-    brand["definition"]["dimensionBindings"] = [
+    brand["definition"]["memberBindings"] = [
         {
-            "dimensionId": "product_dim",
-            "keyMappings": [{"grainColumnId": "brand", "dimensionColumnId": "brand"}],
+            "memberCatalogId": "product_dim",
+            "keyMappings": [{"grainColumnId": "brand", "memberColumnId": "brand"}],
             "selectedAttributeColumnIds": [],
         }
     ]
@@ -104,7 +104,7 @@ def test_attribute_hierarchy_requires_binding_and_uses_dimension_identity():
     assert analyzer.analyze("base", "brand")["relationship"] == "roll_up"
     assert analyzer.analyze("brand", "base")["relationship"] == "roll_down"
     assert not analyzer.mapping("brand", "base")["product"]
-    base["definition"]["dimensionBindings"] = []
+    base["definition"]["memberBindings"] = []
     assert (
         LevelRelationshipAnalyzer([base, brand, dim]).analyze("base", "brand")[
             "relationship"
@@ -120,7 +120,7 @@ def test_null_disaggregation_is_canonical_repeat():
         "measureType": "referenced",
         "transactionId": "tx",
         "valueColumnId": "v",
-        "nativePlanningLevelId": "base",
+        "nativeDimensionId": "base",
         "resultType": {"type": "integer"},
         "aggregation": {"nonTime": "avg", "time": "max"},
         "allocation": None,
@@ -137,12 +137,12 @@ def test_base_visibility_endpoint_reuses_proven_level_relationships(populated):
     from backend.app.engine.relationships import LevelRelationshipAnalyzer
     from .conftest import EXAMPLE
 
-    levels = [o for o in EXAMPLE["semantic_objects"] if o["kind"] == "planningLevel"]
+    levels = [o for o in EXAMPLE["semantic_objects"] if o["kind"] == "dimension"]
     analyzer = LevelRelationshipAnalyzer(EXAMPLE["semantic_objects"])
     for level in levels:
         result = populated.get(
             ROOT + "/measures/execution/base-visibility",
-            params={"nativePlanningLevelId": level["objectId"]},
+            params={"nativeDimensionId": level["objectId"]},
         )
         assert result.status_code == 200, result.text
         data = result.json()
@@ -158,7 +158,7 @@ def test_base_visibility_endpoint_reuses_proven_level_relationships(populated):
     assert (
         populated.get(
             ROOT + "/measures/execution/base-visibility",
-            params={"nativePlanningLevelId": "missing"},
+            params={"nativeDimensionId": "missing"},
         ).status_code
         == 404
     )

@@ -4,6 +4,7 @@ import { useState } from 'react'
 import type { WarehouseTable } from '../types'
 
 export type TableManagement = {
+  onImported?: () => void
   pending?: Record<string, boolean>
   managed: Set<string>
   disabled: boolean

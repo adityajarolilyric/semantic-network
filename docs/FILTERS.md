@@ -1,11 +1,11 @@
 # Final-output filters
 
-Dimensions, Planning Levels and Transactions optionally store `definition.filters`. This is revision-owned metadata and uses stable output column IDs. The shared engine module is `backend/app/engine/filters.py`; `FilterCompiler` validates typed predicates and generates SQL from allowlisted operators and quoted literals. The reusable UI is `FilterEditor`; schema loading is separate from authoring and never builds or saves data.
+Dimensions, Dimensions and Transactions optionally store `definition.filters`. This is revision-owned metadata and uses stable output column IDs. The shared engine module is `backend/app/engine/filters.py`; `FilterCompiler` validates typed predicates and generates SQL from allowlisted operators and quoted literals. The reusable UI is `FilterEditor`; schema loading is separate from authoring and never builds or saves data.
 
 ## Placement
 
 - Dimension: managed input → optional owned Pivot → semantic column aliases → Filters → exposure/consumption.
-- Planning Level: population (source, Cartesian or parent projection) → dimension enrichment → Filters → final public DISTINCT output. Enriched attributes can be filtered too.
+- Dimension: population (source, Cartesian or parent projection) → dimension enrichment → Filters → final public DISTINCT output. Enriched attributes can be filtered too.
 - Transaction: managed input → optional owned Pivot → optional Date resolution → direct/multi-grain mapping and winning assignments → Filters → measure aggregation/LEFT JOIN.
 
 Filters wrap the preceding relation with `SELECT * FROM (...) WHERE ...`. Do not push transaction predicates ahead of splitting or assignment precedence: filtering a winning row must not resurrect an earlier assignment, and numeric predicates see distributed values. Full-input transformation/data checks still run. Filters do not modify raw or shared managed inputs, allocation policies, measure editing rules or physical table counts. Intermediate Pivot/Calendar previews exclude final filters; normal Preview includes them, shows at most 50 rows and reports the filtered total.
@@ -36,7 +36,7 @@ Groups combine children with AND or OR; nesting represents parentheses. Limits: 
 
 ## Schemas and compatibility
 
-Dimension filter columns come from semantic aliases over the effective pivot schema, including unexposed attributes. Planning-level columns are analyzed by `POST /planning-levels/schema`; Transaction columns by `POST /transactions/resolution/schema`. Both accept an unsaved complete object definition and return metadata only. Multi-grain filters can use generated native keys, resolved dates, configured values and retained columns; a raw column discarded by mapping must be retained first. Planning schema analysis requires ready input managed views/parent populations, but does not create an output table. Requests are revision-scoped.
+Dimension filter columns come from semantic aliases over the effective pivot schema, including unexposed attributes. Dimension columns are analyzed by `POST /dimensions/schema`; Transaction columns by `POST /transactions/resolution/schema`. Both accept an unsaved complete object definition and return metadata only. Multi-grain filters can use generated native keys, resolved dates, configured values and retained columns; a raw column discarded by mapping must be retained first. Planning schema analysis requires ready input managed views/parent populations, but does not create an output table. Requests are revision-scoped.
 
 Existing Dimension/Planning filter shapes and IDs remain supported. Absent Transaction filters are omitted from serialization to preserve existing definition hashes. Disabled filters serialize as absent/null, so existing definitions without filters keep their existing execution path. Changing a filter invalidates the normal definition/build fingerprint; normal Preview and Save retain the established build/commit behavior. No data migration or new collection is needed.
 

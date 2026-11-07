@@ -12,8 +12,8 @@ Requests flow through a resource API class, an application service class, and a 
 
 ```text
 app/
-  api/             ModelAPI, RevisionAPI, SourceAPI, DimensionAPI,
-                   PlanningLevelAPI, TransactionAPI, MeasureAPI,
+  api/             ModelAPI, RevisionAPI, SourceAPI, DimensionMembersAPI,
+                   DimensionAPI, TransactionAPI, MeasureAPI,
                    EvidenceAPI, ExampleAPI, ContractAPI, WarehouseSourcesAPI, HealthAPI
   schemas/         Typed Pydantic request/response models, one domain per module
   services/        Capture intent, CRUD, build submission and read/query services
@@ -31,6 +31,8 @@ app/
 Backend module boundaries and compatibility guarantees are documented in [engine structure](../docs/ENGINE_AND_STORAGE.md#backend-module-boundaries).
 
 Services and engine coordinators consume repository/warehouse methods, with no clients, raw MongoDB selectors or SQL execution. Stateless dependencies are app-scoped; repositories are cached per read adapter or Mongo transaction attempt. Stateful compilation/validation stays operation-local. See [persistence boundaries and lifetimes](../docs/ENGINE_AND_STORAGE.md#persistence-boundaries-and-component-lifetimes).
+
+Shared aggregation plans, snapshot reads, operation-local graph resolution and capture memoisation are described in [engine operators and compatibility](../docs/ENGINE_AND_STORAGE.md#shared-engine-operators-and-compatibility). Runtime library pins remain unchanged; Hypothesis is included only in development requirements. Base rules and existing build fingerprints are preserved.
 
 Each context's routes are registered by its own API class and module. `RevisionResourceAPI` shares pagination, ETags, and delete mechanics; its concrete subclasses declare resource-specific typed bodies. A router registry in `main.py` wires classes together and contains no CRUD handlers.
 
@@ -58,7 +60,7 @@ Development Compose provisions a **single-node replica set** on host loopback po
 - Source table and column names/definitions are immutable through update. Catalog description, scope, and declared key metadata may be updated if dependencies stay valid. Creating/deleting a catalog entry does not create/drop a physical table.
 - Source documents and their columns reject `displayName`. Dimension columns own semantic display names and map to `sourceColumnId`.
 - Dimensions store root-level `isTimeDim`; only one time dimension is allowed. `time` configuration must exist exactly when the flag is true.
-- Revisions store `basePlanningLevelId`; planning-level documents reject `isBase`. Publication requires a valid base in the same revision. The base cannot be a coarser projection of another level.
+- Revisions store `baseDimensionId`; dimension documents reject `isBase`. Publication requires a valid base in the same revision. The base cannot be a coarser projection of another level.
 - Cartesian populations and distinct projections express PLT and PT. Mappings use stable IDs, not display labels.
 - Forecast/FQTY are native at PLT. Sales/SQTY and AggregateFirst Error are native at PT. FQTY is available at PT through projection lineage; SQTY cannot appear at PLT without an explicit allocation rule.
 - Formula ASTs are authoritative. `displayText` is descriptive text, not executable SQL. Measure formulas, managed-table views and pivots compile through the separate SQLGlot engine module.
@@ -95,14 +97,14 @@ Referenced measures store:
 - `definition.sourceNullPolicy` is fixed to `preserve`: existing source NULL values pass through to aggregation. Legacy `reject` inputs are normalized to `preserve`. There is no UI selector. Aggregation null policies, missing joined rows and result nullability remain separate.
 - `definition.aggregation.nullInputPolicy`: `ignore` (default) excludes NULL values from the aggregate inputs; `propagate` makes any group containing NULL return NULL. With Preserve and SUM over `[10, null, 20]`, Ignore returns `30` and Propagate returns `null`. AVG with Ignore returns `15`, not `10`.
 - `definition.aggregation.allNullResult`: under Ignore, an all-null group returns `null` (default) or `zero`. With Preserve, Ignore, and `[null, null]`, the chosen output is NULL or 0. Inputs `[0, 0]` are actual values and SUM to zero regardless of this setting.
-- `definition.missingTransactionValue`: determines `null` (default) versus `zero` when an aggregated transaction has no row for a native planning-level key after the LEFT JOIN. It does not replace NULLs in existing source rows.
+- `definition.missingTransactionValue`: determines `null` (default) versus `zero` when an aggregated transaction has no row for a native dimension key after the LEFT JOIN. It does not replace NULLs in existing source rows.
 
 Execution precedence is explicit:
 
 1. Validate/read the referenced source values; Reject fails on an actual source NULL.
-2. Group each transaction independently by all mapped native planning-level keys and aggregate using the measure's rules.
+2. Group each transaction independently by all mapped native dimension keys and aggregate using the measure's rules.
 3. In each aggregation group, Propagate takes precedence: any NULL yields NULL, even if `allNullResult` is `zero`. With Ignore, aggregate non-null inputs; only when none remain, apply `allNullResult`.
-4. Perform `NativePlanningLevel LEFT JOIN AggregatedTransaction`. Apply `missingTransactionValue` to absent matches, keeping them distinct from present all-null groups.
+4. Perform `NativeDimension LEFT JOIN AggregatedTransaction`. Apply `missingTransactionValue` to absent matches, keeping them distinct from present all-null groups.
 5. Apply aggregation null policies again when rolling measure results up to a coarser grain. Join-introduced or calculated NULL measure values are aggregation inputs, not source-row errors.
 
 A future compiler must enforce these semantics explicitly instead of relying on warehouse aggregate defaults. The accepted combination Propagate plus All-null Zero still produces NULL for a group containing NULLs. No metadata migration or runtime behavior is implemented by documenting this precedence.
@@ -128,7 +130,7 @@ All metadata endpoints are under `/api/v1`.
 - `/models/{model_id}/revisions`: POST, GET; `/{revision_id}`: GET, PUT, DELETE.
 - `/models/{model_id}/revisions/{revision_id}/validate`: POST, returns diagnostics.
 - `/models/{model_id}/revisions/{revision_id}/publish`: POST, validates and publishes atomically.
-- Under the same revision prefix: `/sources`, `/dimensions`, `/planning-levels`, `/transactions`, `/measures`, `/evidence`, `/examples`. Each has POST/GET collection routes and GET/PUT/DELETE `/{resource_id}` routes.
+- Under the same revision prefix: `/sources`, `/dimensions`, `/transactions`, `/measures`, `/evidence`, `/examples`. Each has POST/GET collection routes and GET/PUT/DELETE `/{resource_id}` routes.
 - `/contracts`: POST, GET; `/contracts/{contract_id}`: GET, PUT, DELETE.
 - `/warehouse/status`, `/warehouse/tables`, `/warehouse/tables/{table}/preview`: GET; `/warehouse/imports/csv`: POST with one multipart file, table name, and `Idempotency-Key`. These routes are independent of model revisions and do not register guessed business keys in MongoDB.
 
@@ -137,7 +139,7 @@ PUT is full replacement of editable request fields, not PATCH. Object IDs and re
 ### Example lifecycle
 
 1. POST a model with `modelId`, `name`, and `displayName`.
-2. POST a revision with `revisionId`, `expectedModelVersion`, and optional `basePlanningLevelId`. A draft may name a base that will be created next; validation/publication requires the target to exist.
+2. POST a revision with `revisionId`, `expectedModelVersion`, and optional `baseDimensionId`. A draft may name a base that will be created next; validation/publication requires the target to exist.
 3. POST sources, then dimensions, levels, transactions, and measures in dependency order. Unknown references are rejected rather than silently accepted as forward references.
 4. GET the revision to obtain its current version; every successful definition mutation increments that version.
 5. POST `/validate` to inspect publication readiness.
@@ -217,15 +219,15 @@ Open Managed Tables to configure grouping, pairs, discovered/expected values, al
 See [SQL engine implementation, APIs, recovery and revision behavior](../docs/ENGINE_AND_STORAGE.md) for authoritative details and test commands.
 
 
-## Planning-level tables (2026-11-01)
+## Dimension tables (2026-11-01)
 
-Planning-table generation is implemented through the shared engine: single managed populations, Cartesian factors, distinct parent projection, population attributes and dimension enrichment, with complete grain/lookup checks and revision-owned MergeTree artifacts. Add dimension tabs incrementally; select grain keys and population attributes side by side. Preview and Build live inside the editor; previews reuse the Source table UI and show at most 50 rows. Contract-2 publication requires ready planning tables. Materialise builds transaction-backed and calculated measure values across compatible levels.
+Planning-table generation is implemented through the shared engine: single managed populations, Cartesian factors, distinct parent projection, population attributes and dimension enrichment, with complete grain/lookup checks and revision-owned MergeTree artifacts. Add dimension tabs incrementally; select grain keys and population attributes side by side. Save stores metadata and Preview queries up to 50 rows without creating tables. Build Semantic prepares populations and values together. Contract-2 publication requires ready planning tables. Materialise builds transaction-backed and calculated measure values across compatible levels.
 
-See [planning-level implementation, APIs, migration and limits](../docs/PLANNING_LEVELS.md) for the current operating contract. Earlier statements that planning materialization is deferred are superseded by this increment.
+See [dimension implementation, APIs, migration and limits](../docs/DIMENSIONS.md) for the current operating contract. Earlier statements that planning materialization is deferred are superseded by this increment.
 
 ## Semantic network materialisation
 
-**Materialise** is a separate navigation item below **Measures**. Build managed views and planning populations, then use **Build Semantic Network** to populate compatible measure representations. Selecting a planning level displays its table preview (maximum 50 rows). All measure rollups use the configured Time/NonTime policy. Dis-Aggregation None/null repeats values; it never selects AVG implicitly. AggregateFirst recalculates at each target grain. Generations activate atomically across levels. Interactive measure editing is available in Planning View.
+**Materialise** is a separate navigation item below **Measures**. Build managed views and planning populations, then use **Build Semantic Network** to populate compatible measure representations. Selecting a dimension displays its table preview (maximum 50 rows). All measure rollups use the configured Time/NonTime policy. Dis-Aggregation None/null repeats values; it never selects AVG implicitly. AggregateFirst recalculates at each target grain. Generations activate atomically across levels. Interactive measure editing is available in Decision View.
 
 See [implementation, policies and APIs](../docs/MEASURES.md).
 
@@ -233,7 +235,7 @@ See [implementation, policies and APIs](../docs/MEASURES.md).
 
 Sources offers **Nuke everything** with one confirmation. It removes all application metadata (including published revisions) and all tables/views in the configured ClickHouse database, then leaves a fresh default semantic model and draft revision. Active application operations are fenced/drained first. A failed reset stays in maintenance and can be retried from Sources. See [scope, coordination and recovery](../docs/OPERATIONS.md#workspace-reset).
 
-Attribute-grain levels such as Brand × Zone × Sold To use distinct selected parent columns. Optional bindings check membership; selected extra attributes must be unambiguous without changing grain. See [attribute-grain planning levels](../docs/PLANNING_LEVELS.md#optional-dimension-membership-and-enrichment).
+Attribute-grain levels such as Brand × Zone × Sold To use distinct selected parent columns. Optional bindings check membership; selected extra attributes must be unambiguous without changing grain. See [attribute-grain dimensions](../docs/DIMENSIONS.md#relationships-and-base).
 
 ## Measure numeric policy
 
@@ -241,15 +243,15 @@ Referenced measures always use Float64, including when their source column is in
 
 ## Planning storage
 
-Each revision/planning level reuses one population table and one values table, including during rebuilds. Candidate rows are generation-scoped inside the same tables; bindings switch only after validation succeeds. See [storage, upgrade and cleanup details](../docs/ENGINE_AND_STORAGE.md#strict-two-table-storage).
+Each materialised revision/dimension has one permanent table containing keys, attributes and measures, exposed through a stable view. Builds use temporary clones/candidates and exchange after validation; sorting uses time-first grain keys followed by initial low-to-high cardinality. Source-backed lookup dimensions need no copy. See [storage, migration and recovery](../docs/ENGINE_AND_STORAGE.md#current-table-storage-and-safe-publication).
 
-New ClickHouse population/value names are `grain_{planning_level_name}_{id}` and `grain_{planning_level_name}_mat_{id}`. Existing-table renames are a one-time operator action using `scripts/rename_planning_tables.py` (preview by default, `--apply` to execute), not service behavior. See the storage document for the journal and recovery procedure.
+New materialised tables use `grain_{dimension_name}_{id}`, with a corresponding `_view`. Consolidate legacy population/value pairs using `scripts/migrate_current_storage.py` (dry run by default, `--apply` to execute). This is an operator action; services never silently migrate an existing live workspace.
 
 ## Planning queries and editor builds
 
-Planning View adds `GET /planning-view/options` and `POST /planning-view/query` under a revision. It queries saved materialisations with policy-aware source selection, formulas and read leases. `METADATA_PLANNING_VIEW_MAX_GROUPS` defaults to 5000; `METADATA_PLANNING_VIEW_MAX_CELLS` to 50000. `METADATA_CLICKHOUSE_MAX_THREADS` defaults to 4 for engine query/build memory control. See [query semantics](../docs/PLANNING_VIEW.md).
+Decision View adds `GET /decision-view/options` and `POST /decision-view/query` under a revision. It queries saved materialisations with policy-aware source selection, formulas and read leases. `METADATA_DECISION_VIEW_MAX_GROUPS` defaults to 5000; `METADATA_DECISION_VIEW_MAX_CELLS` to 50000. `METADATA_CLICKHOUSE_MAX_THREADS` defaults to 4 for engine query/build memory control. See [query semantics](../docs/DECISION_VIEW.md).
 
-Planning-level Preview stages a fully built row generation without saving metadata. Save atomically commits it through `/planning-levels/editor/draft/commit`. No extra physical tables are allocated. See [Preview/Save APIs and consistency](../docs/PLANNING_LEVELS.md#editor-cancel-preview-save).
+Source-backed Dimension previews query the managed input. Derived Dimension builds use isolated candidates; Save commits the validated population. Build Semantic prepares shared population/measure tables, with temporary candidates removed after activation. See [Preview/Save APIs and consistency](../docs/DIMENSIONS.md#save-preview-and-build-semantic).
 
 ## Multi-grain transactions
 
@@ -257,6 +259,6 @@ Transactions support **Resolve multi grain** with fixed or level/value matching,
 
 Transactions also support inclusive **Date range** resolution through a daily Time dimension. Daily contributions map to native Day/Week/Month keys, with independent member/date Split/Copy policies and configured Time aggregation during measure loading. See [date-range resolution](../docs/TRANSACTIONS.md#date-ranges-and-native-periods).
 
-Planning View now edits eligible referenced measures at native or proven coarser grains. Writes use Base where reachable, otherwise the native level, and update compatible coarser representations atomically. Weighted by self edits preserve NULL cells and distribute across populated values. No edit journal is retained: Build Semantic Network replaces manual edits from sources. See [writeback semantics, API and limits](../docs/PLANNING_VIEW.md#edit-eligibility-and-write-target).
+Decision View now edits eligible referenced measures at native or proven coarser grains. Writes use Base where reachable, otherwise the native level, and update compatible coarser representations atomically. Weighted by self edits preserve NULL cells and distribute across populated values. No edit journal is retained: Build Semantic Network replaces manual edits from sources. See [writeback semantics, API and limits](../docs/DECISION_VIEW.md#edit-eligibility-and-write-target).
 
-Final-output filtering is shared by Dimensions, Planning Levels and Transactions through `engine/filters.py`. It supports typed scalar predicates, bounded nested AND/OR groups and metadata-only output-schema endpoints. Transaction predicates run after winning assignments and before measure aggregation. See [Filters](../docs/FILTERS.md).
+Final-output filtering is shared by Dimensions, Dimensions and Transactions through `engine/filters.py`. It supports typed scalar predicates, bounded nested AND/OR groups and metadata-only output-schema endpoints. Transaction predicates run after winning assignments and before measure aggregation. See [Filters](../docs/FILTERS.md).

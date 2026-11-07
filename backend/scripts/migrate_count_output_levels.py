@@ -55,7 +55,7 @@ def main():
             entries.extend(
                 {"before": item, "applied": False}
                 for item in page["items"]
-                if item["definition"].get("countingPlanningLevelId")
+                if item["definition"].get("countingDimensionId")
             )
             cursor = page.get("nextCursor")
             if not cursor:
@@ -75,7 +75,7 @@ def main():
         if name.startswith("CalculatedMeasureDefinition")
     ]
     if not definitions or any(
-        "countingPlanningLevelId" in schema["properties"] for schema in definitions
+        "countingDimensionId" in schema["properties"] for schema in definitions
     ):
         raise SystemExit("Deploy the simplified API before applying this migration.")
     for entry in journal["entries"]:
@@ -84,8 +84,8 @@ def main():
         old = entry["before"]
         current = request(root + "/measures/" + old["objectId"])
         if (
-            current["definition"]["nativePlanningLevelId"]
-            != old["definition"]["countingPlanningLevelId"]
+            current["definition"]["nativeDimensionId"]
+            != old["definition"]["countingDimensionId"]
         ):
             raise SystemExit(
                 "Output level changed concurrently; inspect the journal before retrying."
@@ -97,11 +97,11 @@ def main():
                 }
                 expected = {key: value for key, value in old.items() if key not in META}
                 expected["definition"] = dict(expected["definition"])
-                expected["definition"].pop("countingPlanningLevelId", None)
+                expected["definition"].pop("countingDimensionId", None)
                 # A prior successful same-level update may have lost its journal write.
                 if (
-                    old["definition"]["nativePlanningLevelId"]
-                    == current["definition"]["nativePlanningLevelId"]
+                    old["definition"]["nativeDimensionId"]
+                    == current["definition"]["nativeDimensionId"]
                     and payload == expected
                 ):
                     entry["applied"] = True

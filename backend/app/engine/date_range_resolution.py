@@ -1,9 +1,12 @@
 """Calendar-day expansion and native-period mapping for transaction assignments."""
 
-from .filters import dimension_filter_columns
 from ..core.errors import MetadataError
-from ..warehouse.repository import quote_identifier as q, quote_literal as lit
+from ..warehouse.sql import quote_identifier as q
+from ..warehouse.sql import quote_literal as lit
 from .contracts import Check, digest
+from .filters import dimension_filter_columns
+from .measure_contracts import VALUE
+from .value_states import mixed_group
 
 
 def calendar_source_ids(objects, transaction):
@@ -17,7 +20,7 @@ def calendar_source_ids(objects, transaction):
         configs.append(transaction["definition"]["calendarResolution"])
     return list(
         dict.fromkeys(
-            by_id[c["dimensionId"]]["definition"]["sourceId"] for c in configs
+            by_id[c["memberCatalogId"]]["definition"]["sourceId"] for c in configs
         )
     )
 
@@ -48,10 +51,10 @@ class DateRangePlanner:
     def validate(self):
         if not self.config:
             return
-        d = self.p.objects.get(self.config["dimensionId"])
+        d = self.p.objects.get(self.config["memberCatalogId"])
         if (
             not d
-            or d["kind"] != "dimension"
+            or d["kind"] != "dimensionMembers"
             or not d["isTimeDim"]
             or d["definition"]["time"]["baseGrain"] != "day"
         ):
@@ -88,7 +91,7 @@ class DateRangePlanner:
         coordinate = outputs[self.axis["grainColumnId"]]
         calendar_key = cols[self.config["calendarKeyColumnId"]]
         if coordinate.is_time and not coordinate.tokens & {
-            ("dimension", d["objectId"], calendar_key["columnId"]),
+            ("dimensionMembers", d["objectId"], calendar_key["columnId"]),
             ("source", definition["sourceId"], calendar_key["sourceColumnId"]),
         }:
             raise MetadataError(
@@ -304,8 +307,6 @@ class RangeMeasureAggregator:
 
     @staticmethod
     def mixed_expression(method):
-        from .value_states import mixed_group
-
         return mixed_group(
             method,
             "range_input.__value",
@@ -314,10 +315,8 @@ class RangeMeasureAggregator:
         )
 
     def compile_calendar(self, config):
-        from .measure_compiler import VALUE
-
         h, d = self.h, self.measure["definition"]
-        keys = h.keys(d["nativePlanningLevelId"])
+        keys = h.keys(d["nativeGrainId"])
         date_id = next(
             c["columnId"]
             for c in self.resolved.columns
@@ -394,13 +393,12 @@ class RangeMeasureAggregator:
             return None
         if calendar:
             return self.compile_calendar(config)
-        dim = h.objects[axis["dateRange"]["dimensionId"]]["definition"]
+        dim = h.objects[axis["dateRange"]["memberCatalogId"]]["definition"]
         calendar_key = axis["dateRange"]["calendarKeyColumnId"]
         if calendar_key == dim["time"]["dateColumnId"] or set(dim["keyColumnIds"]) <= {
             calendar_key
         }:
             return None  # Native daily identity: retain the normal transaction aggregation.
-        from .measure_compiler import VALUE
 
         date_id = next(
             c["columnId"]
@@ -434,7 +432,7 @@ class RangeMeasureAggregator:
         node = h.cte(f"SELECT {', '.join(selected)} FROM {q(self.resolved.node)}")
         policy = d["aggregation"]
         if policy["time"] in ("first", "last"):
-            group = ", ".join(q(k) for k in h.keys(d["nativePlanningLevelId"]))
+            group = ", ".join(q(k) for k in h.keys(d["nativeGrainId"]))
             h.assertions.append(
                 Check(
                     "ambiguous_resolution_time_order",
@@ -447,7 +445,7 @@ class RangeMeasureAggregator:
             if policy.get("order", "nonTimeThenTime") == "nonTimeThenTime"
             else ["time", "nonTime"]
         )
-        keys = h.keys(d["nativePlanningLevelId"])
+        keys = h.keys(d["nativeGrainId"])
         for stage in stages:
             if not pending[stage]:
                 continue

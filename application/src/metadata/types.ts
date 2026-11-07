@@ -44,7 +44,7 @@ export type ManagedTable = {
 export type EngineRun = {
   runId: string
   sourceId?: string
-  resourceKind: 'managedTable' | 'planningLevel' | 'planningLevelPreview' | 'measureSet'
+  resourceKind: 'managedTable' | 'dimension' | 'dimensionPreview' | 'measureSet' | 'semanticNetwork'
   resourceId: string
   state: string
   error: { message: string; details?: { message: string }[] } | null
@@ -63,8 +63,8 @@ export type DimColumn = {
   displayName: string
   sourceColumnId: string
 }
-export type Dimension = Semantic & {
-  kind: 'dimension'
+export type DimensionMembers = Semantic & {
+  kind: 'dimensionMembers'
   isTimeDim: boolean
   definition: {
     sourceId: string
@@ -108,31 +108,34 @@ export type Population =
       } | null
     }
   | { operation: 'cartesian_product'; factors: Factor[] }
-  | { operation: 'distinct_projection'; sourcePlanningLevelId: string }
+  | { operation: 'distinct_projection'; sourceDimensionId: string }
 export type Binding = {
-  dimensionId: string
+  memberCatalogId: string
   lookupCardinality?: 'many_to_one'
   keyMappings: {
     grainColumnId?: string | null
     populationColumnId?: string | null
-    dimensionColumnId: string
+    memberColumnId: string
   }[]
   selectedAttributeColumnIds: string[]
   unmatchedMemberPolicy?: 'reject'
 }
-export type PlanningLevel = Semantic & {
-  kind: 'planningLevel'
+export type Dimension = Semantic & {
+  kind: 'dimension'
+  memberCatalogId?: string | null
+  memberCatalog?: DimensionMembers['definition'] | null
+  isTimeDim?: boolean
   definition: {
     population: Population
     grain: { keyIds: string[]; columns: GrainColumn[] }
     populationAttributes?: PopulationAttribute[]
-    dimensionBindings: Binding[]
+    memberBindings: Binding[]
     filters?: FilterDefinition | null
     duplicateKeyPolicy?: 'reject'
     nullKeyPolicy?: 'reject'
   }
 }
-export type ResolutionTarget = { dimensionId?: string | null; columnId: string }
+export type ResolutionTarget = { memberCatalogId?: string | null; columnId: string }
 export type ResolutionRule = {
   ruleId: string
   kind: 'column' | 'level_value'
@@ -144,13 +147,13 @@ export type ResolutionRule = {
   selectors: { value: string; target: ResolutionTarget }[]
 }
 export type ResolutionDateRange = {
-  dimensionId: string
+  memberCatalogId: string
   calendarKeyColumnId: string
   startColumnId: string
   endColumnId: string
 }
 export type CalendarResolution = {
-  dimensionId: string
+  memberCatalogId: string
   startColumnId: string
   endColumnId: string
   selectedColumnIds: string[]
@@ -170,10 +173,13 @@ export type GrainResolution = {
 }
 export type Transaction = Semantic & {
   kind: 'transaction'
+  effectiveGrainId?: string
   definition: {
     filters?: FilterDefinition | null
     sourceId: string
-    planningLevelId: string
+    dimensionId: string | null
+    grainColumnIds?: string[]
+    timeColumnId?: string | null
     mappingMode: 'direct' | 'resolve_multi_grain'
     resolution?: GrainResolution | null
     calendarResolution?: CalendarResolution | null
@@ -191,7 +197,13 @@ export type Expression =
     }
   | { type: 'measureRef'; measureId: string }
   | { type: 'grainRef'; grainColumnId: string }
-  | { type: 'attributeRef'; dimensionId?: string; planningLevelId?: string; columnId: string }
+  | {
+      type: 'attributeRef'
+      memberCatalogId?: string
+      dimensionId?: string
+      transactionId?: string
+      columnId: string
+    }
   | { type: 'literal'; value: number | string | boolean }
   | {
       type: 'binary'
@@ -250,7 +262,7 @@ export type Aggregation = {
   allNullResult: 'null' | 'zero'
 }
 export type MeasureCommon = {
-  nativePlanningLevelId: string
+  nativeGrainId: string
   resultType: {
     type: 'number' | 'integer' | 'decimal' | 'string' | 'date' | 'boolean'
     precision?: number | null
@@ -272,7 +284,13 @@ export type RefDefinition = MeasureCommon & {
     basisMeasureId?: string | null
   } | null
 }
+export type GrainReference = { kind: 'transaction' | 'dimension'; objectId: string }
+export type GrainOption = Omit<Dimension, 'kind'> & {
+  kind: 'dimension' | 'transactionGrain'
+  owner: GrainReference
+}
 export type CalcDefinition = MeasureCommon & {
+  outputGrain?: GrainReference
   measureType: 'calculated'
   calculationType: 'AggregateFirst' | 'CalculateFirst'
   formula: {
@@ -290,7 +308,7 @@ export type Measure = Semantic & {
   business: { unit: string | null; aliases: string[] }
   definition: RefDefinition | CalcDefinition
 }
-export type ObjectInput = Source | Dimension | PlanningLevel | Transaction | Measure
+export type ObjectInput = Source | DimensionMembers | Dimension | Transaction | Measure
 export type Kind = ObjectInput['kind']
 export type Envelope = {
   modelId: string
@@ -317,7 +335,7 @@ export type Revision = {
   revisionNumber: number
   approvalStatus: 'draft' | 'published'
   metadataContractVersion?: number
-  basePlanningLevelId: string | null
+  baseDimensionId: string | null
   changeReason: string
   parentRevisionId: string | null
 }
@@ -327,22 +345,22 @@ export type Report = {
 }
 export type Snapshot = {
   sources: (Source & Envelope)[]
+  dimensionMembers: (DimensionMembers & Envelope)[]
   dimensions: (Dimension & Envelope)[]
-  planningLevels: (PlanningLevel & Envelope)[]
   transactions: (Transaction & Envelope)[]
   measures: (Measure & Envelope)[]
 }
 export const emptySnapshot = (): Snapshot => ({
   sources: [],
+  dimensionMembers: [],
   dimensions: [],
-  planningLevels: [],
   transactions: [],
   measures: [],
 })
 export const resources: Record<Kind, string> = {
   source: 'sources',
+  dimensionMembers: 'dimension-members',
   dimension: 'dimensions',
-  planningLevel: 'planning-levels',
   transaction: 'transactions',
   measure: 'measures',
 }
@@ -361,6 +379,21 @@ export function inputOf<T extends ObjectInput>(document: T): T {
     managed: _managed,
     ...input
   } = document as T & Partial<Envelope> & { managed?: ManagedTable }
+  if (input.kind === 'transaction') delete (input as unknown as Transaction).effectiveGrainId
+  if (input.kind === 'measure') {
+    const measure = input as unknown as Measure
+    const definition = { ...measure.definition } as Measure['definition'] & {
+      nativeGrainId?: string
+    }
+    if (
+      definition.measureType === 'calculated' &&
+      !definition.outputGrain &&
+      definition.nativeGrainId
+    )
+      definition.outputGrain = { kind: 'dimension', objectId: definition.nativeGrainId }
+    const { nativeGrainId: _resolvedGrain, ...canonical } = definition
+    return { ...measure, definition: canonical } as unknown as T
+  }
   return input as T
 }
 

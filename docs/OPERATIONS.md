@@ -32,18 +32,9 @@ Metadata contract 2 is explicit for new/UI revisions; generic revision-create de
 
 Generalized engine target/index migration and stored-metadata adapters remain necessary compatibility code. Removing old applications does not authorize dropping these adapters. API/worker releases must agree on queue contracts. See [engine migration/storage](ENGINE_AND_STORAGE.md) and [managed lifecycle](SOURCES_AND_MANAGED_TABLES.md#managed-apis-discovery-and-compatibility).
 
-## One-time planning-table name migration
+## Historical table-name migration
 
-`backend/scripts/rename_planning_tables.py` is an operator script, never service/API/build startup logic:
-
-```bash
-backend/.venv/bin/python backend/scripts/rename_planning_tables.py
-backend/.venv/bin/python backend/scripts/rename_planning_tables.py --apply
-```
-
-The first command previews. Apply acquires maintenance, drains work, journals the exact plan, verifies ownership/counts and RENAMEs existing tables without copying rows/creating tables. It updates physical addresses in artifacts, stable registry, runs and captured inputs; historical SQL remains an audit of the original execution. Semantic IDs, definitions, values, generations and ownership markers stay intact. New resources use the same readable naming convention described in [storage](ENGINE_AND_STORAGE.md#strict-two-table-storage).
-
-Default journal: `/tmp/semantic-grain-rename-{configuration-hash}.json`; override with `--journal /path/file.json`. Retain it through verification. Interrupted migration stays in maintenance; retry the same --apply/--journal invocation to complete partial renames/references. Completed journals replay idempotently; a live maintenance owner blocks another invocation. Resume migration to recover—workspace reset is not migration recovery.
+The earlier population/value layout used an operator-only name migration (`rename_planning_tables.py`), never startup/service renaming. Current installations use the current-storage consolidation below instead; the historical rename procedure is superseded for the new one-table/view layout.
 
 ## Workspace reset
 
@@ -80,9 +71,19 @@ Operational extensions still needed at sustained scale include metadata/audit/to
 
 ## Semantic Network build performance
 
-A local six-measure build (576-row ProdLocWeek and 144-row BrandZoneWeek) took 26.7 seconds. Query logs showed four full-DAG `LIMIT 0` schema queries consuming 13.8 seconds, plus two value INSERTs consuming 7.0 seconds. Versioned storage had already discovered authoritative ClickHouse types in `TableStorage.prepare`; the executor now reuses those columns instead of repeating schema discovery. Legacy builds still discover their header normally. This removes one expensive schema query per level without changing aggregation, checks, generation isolation or the two-table invariant. Expected saving on that observed build is roughly seven seconds; a new full build was deliberately not triggered because it would replace manual edits.
+Measured on the saved nine-measure example on 2026-11-07 (ProdLocWeek: 576 rows; product: 9; BrandZoneWeek: 144). The original incremental build failed with a memory error after 12.52 seconds. Dependency-ordered writes removed that failure. Profiling then exposed repeated compilation of unreachable CTEs and validation plans while preparing final SQL; pruning dependencies before parsing and omitting duplicate display-only checks cut equivalent full builds from about 43 seconds to about 20 seconds. Actual pre/post validation remains unchanged.
 
-The measured host has 18 GiB RAM/12 logical CPUs; Docker currently has 5 CPUs/7.26 GiB shared memory. Containers have no additional CPU/memory caps. API queries use 4 threads and a 2 GiB memory cap; the slowest query used about 700 MiB. A read-only replay of the slow schema query took 4.24s/4.04s/4.01s with 1/4/5 threads; DESCRIBE of the same subquery was also about 4 seconds. Extra memory or threads does not address this query-analysis bottleneck, so resource limits were not increased. Root `.env` may override METADATA_CLICKHOUSE_MAX_THREADS and METADATA_PLANNING_MAX_BYTES; these are query limits, not Docker Desktop VM resources.
+Final controlled Full Refresh comparison (two runs per query-memory cap, in order 512 MiB → 1 GiB → 2 GiB → 2 GiB → 1 GiB → 512 MiB):
+
+- **512 MiB:** 19.605 s, 20.722 s; mean **20.16 s**.
+- **1 GiB:** 18.620 s, 19.952 s; mean **19.29 s**.
+- **2 GiB:** 20.020 s, 22.198 s; mean **21.11 s**.
+
+All six runs recomputed the network rather than using the no-change shortcut. Every population/value child used its captured budget, and checksums of all three active values outputs matched across runs. The small average difference at 1 GiB overlaps run-to-run variation; 2 GiB provided no gain. These two-run samples do not predict larger datasets. Default query memory remains **512 MiB**; authored definitions and raw sources were unchanged.
+
+An unchanged incremental build separately reused its existing values in 2.25 seconds. Query ceilings are captured on durable jobs and inherited by children using task-local context; benchmarking never mutates shared service settings. Source-backed Dimensions stay virtual. New/changed populations and Full Refresh initialise keys/attributes, then populate columns in dependency order. Ordinary incremental builds update affected columns only. See [build barrier and recovery](ENGINE_AND_STORAGE.md#schema-reuse-and-incremental-materialisation-direction).
+
+The memory ceiling is a query safety limit, distinct from Docker/host resources. The measured improvement came from reducing SQL planning work and bounding execution stages. Full Refresh replaces edits as usual.
 
 Completed engine steps retain startedAt/durationMs per fenced attempt. Measure-level step `timingsMs` separates compile, preChecks, tableBuild (prepareSchema/tableSetup/insert/verifyStoredTable/total), postChecks and total. These diagnostics are stored in MongoDB `engine_run_steps`; they are not a new UI progress contract. Retries start fresh timing. The measured query limits and all semantic validation remain in force.
 
@@ -91,3 +92,58 @@ Incremental network builds are now available. Use UI **Build Semantic Network** 
 ## Persistence implementation refactor
 
 Database clients remain owned by the Mongo store and ClickHouse repository. Typed repositories reuse the active transaction session; read repositories and stateless warehouse adapters are app-scoped. Services do not execute SQL or build MongoDB selectors. Engine executor/storage/collector imports remain compatible while physical I/O implementations live under `warehouse/`. No data migration, table rename, forced rebuild or policy-version change is required. See [persistence boundaries and component lifetimes](ENGINE_AND_STORAGE.md#persistence-boundaries-and-component-lifetimes).
+
+## One-time current-storage consolidation
+
+Run `backend/.venv/bin/python backend/scripts/migrate_current_storage.py` to inspect, then add `--apply` to migrate the default model/revision. Maintenance drains requests/workers; wait for queued/running builds first. The script preserves current materialised values (including manual edits), selects grain sorting from initial data, creates stable views and checks count/content fingerprints before updating bindings. Source-backed lookup dimensions become view/query references. After all active outputs migrate, it deletes only obsolete engine-owned tables, never registered raw sources. It is an operator action, not service startup code. Failure leaves maintenance active for inspection/retry; original tables are retained until all copying/metadata steps succeed.
+
+Current storage requires Atomic database support for EXCHANGE TABLES and CLONE AS support (integration-tested on ClickHouse 25.3). One permanent table per materialised dimension is the steady-state constraint; allow temporary candidates and disk headroom during rebuilds. Constant-time publication refers to metadata exchange, not the full build or synchronous old-table cleanup.
+
+## Current-table benchmark and production sizing (7 November 2026)
+
+The new storage path was measured on an **isolated MongoDB/ClickHouse copy of the current example**, not by migrating/deleting live tables. Nine measures cover three materialised dimensions: ProdLocWeek (576 rows), product (9), BrandZoneWeek (144). ClickHouse 25.3, four query threads; host has 12 logical CPUs / 18 GiB RAM and Docker exposes about 7.26 GiB. Query-memory ceilings are distinct from server/container RAM. No container resource allocation was changed.
+
+After one warm-up Full Refresh, two measured runs per ceiling produced:
+
+- **512 MiB:** 18.847 / 19.601 seconds; mean **19.22 seconds**.
+- **1 GiB:** 19.501 / 19.583 seconds; mean **19.54 seconds**.
+- **2 GiB:** 19.668 / 19.473 seconds; mean **19.57 seconds**.
+- **Unchanged incremental:** **2.14 seconds**, reused existing values.
+
+Every measured refresh produced identical refreshed output checksums. The differences between memory settings are smaller than run-to-run variation: there is no evidence that raising this example's query limit above 512 MiB speeds it up. These are small-data end-to-end timings, not million-row throughput or concurrency guarantees; they include orchestration, compilation, validation, writes and exchanges.
+
+The existing stored example has discount_pct=10 across all 576 Base rows. A fresh calculation against its captured definitions/current promotion source instead yields 26 populated cells (15/20/50) and 550 NULLs. Migration preserved the stored result exactly. An isolated **migration → unchanged incremental** test completed in **2.28 seconds**, reported reuse and retained the original checksum. Full Refresh intentionally uses the fresh-source result; its warm-up establishes the baseline for the six timed runs. No claim is made about why the earlier stored result differs, or about a like-for-like speedup over that older output.
+
+### Millions of rows: architecture before hardware
+
+Current source uploads retain the intentional 5,000-row CSV limit; larger ingestion should use bulk warehouse loading/registration. Planning population defaults to one million rows; date/multi-grain expansion has its own bounds. Size the **expanded intersections**, not just source row counts or number of tables. Fifty source tables should not imply fifty duplicated populations: lookup dimensions use views, and stored measure targets remain Native/Base/compatible native dimensions.
+
+The current bounded column writer fetches one measure's results into Python and applies synchronous mutations in batches of 1,000 cells. This preserves existing validation/edit semantics and works for the current example, but it is **not an efficient bulk writer for millions of cells**. More RAM alone will not fix repeated mutation scans or Python result buffering. Before a million-row production rollout:
+
+1. Add a server-side bulk materialisation operator: aggregate each transaction once at its native grain; evaluate dependent formulas in stages; construct the build candidate using narrow, set-based joins/projections. Avoid transferring entire measure columns through the API process. Keep the clone/exchange publication boundary and use a separately bounded path for small interactive edits.
+2. Give build workers separate processes/resources from API reads. Retain durable jobs, admission limits, cancellation/fences and network-level publication protection; a replica alone does not solve coherent multi-table activation.
+3. Bound concurrent builds and query memory together. Use version-tested spill-capable grouping/sorting/joins and NVMe spill space; do not raise every query's limit to the entire server RAM. Validate policy-aware AVG, Time ordering, NULL/Mixed and AggregateFirst behaviour on each bulk operator.
+4. Record actual peak memory, read rows/bytes, elapsed CPU, spill volume, mutation/merge backlog and part counts from query/system logs. Benchmark 1M/10M expanded intersections with realistic attribute widths, sparse measures, skew and concurrent pivots before claiming a capacity target.
+5. Keep disk headroom for live plus all candidate outputs retained until network activation, and for merges/spill. Clone creation shares unchanged immutable parts, but full rebuilds/new parts still consume space. Base this on the full materialised working set; one permanent table does not mean zero temporary disk demand.
+
+### Starting resource budgets—not capacity guarantees
+
+For a first production load test of 1–10 million intersections and modest concurrency, start ClickHouse at **8 vCPU / 32 GiB RAM / local NVMe SSD**. For wider models, expensive joins, many active measure targets or concurrent pivots, use **16 vCPU / 64 GiB** as a more comfortable starting point. These are engineering estimates, consistent with ClickHouse's general-purpose 4 GiB-per-vCPU guidance, not measured requirements for this application. [Official sizing guidance](https://github.com/ClickHouse/ClickHouse/blob/master/docs/guides/oss/best-practices/sizing-and-hardware-recommendations.mdx)
+
+On a 64-GiB node, an initial test budget could be 2–4 GiB per interactive query, 8–16 GiB per build, 4–8 threads per build, and one active build until concurrency tests establish headroom. Reserve memory for ClickHouse merges, caches, OS and competing queries; account for the sum of admitted workloads. Lower budgets and/or spilling may be appropriate on 32 GiB. Join algorithm/spill settings must be checked against the deployed release; do not assume options introduced after 25.3 are available. [Official join guidance](https://github.com/ClickHouse/clickhouse-docs/blob/main/docs/guides/joining-tables.md)
+
+Budget API separately at roughly **2–4 vCPU / 4–8 GiB**, and a compilation/build worker at **4–8 vCPU / 8–16 GiB** initially. With bulk work kept in ClickHouse, worker RAM should be bounded rather than proportional to all measure cells. Production metadata should use a MongoDB replica set; **2–4 vCPU / 8–16 GiB per member** is a starting estimate for this metadata-only workload, to refine from metadata/trace retention and concurrency. Scale CPU for sustained compute saturation, memory for proven working-set/spill pressure, and storage for measured I/O demand; scale out/replicate for capacity and availability after single-node profiling.
+
+Live consolidation was subsequently approved and applied. Verification found exactly **three permanent generated tables**, all with views, no temporary build objects and no `__semantic_generation` columns. Every registered raw source retained its name, and active output checksums were unchanged. The first live unchanged incremental build completed in **2.65 seconds** with `reused=true`; no live Full Refresh was performed. Recorded historical Build SQL is unavailable for pre-capture builds; their next actual rebuild will capture execution statements.
+
+These sizing estimates assume dedicated resources and realistic load testing. The current executor targets owned MergeTree tables in an Atomic database; replicated/distributed/cloud-specific engines need an explicit publication/ownership adapter and multi-node consistency design. Production replication and external backups are separate work from the temporary clone safety mechanism.
+
+### What Python buffering and 1,000-cell mutations mean
+
+Measure computation already runs in ClickHouse. In `warehouse/in_place_values.py`, Python fetches an entire measure result with `.result_rows`: grain-key JSON, value and associated flags. It checks row count/uniqueness/NULL contracts, sends updates in batches of 1,000 native cells using parameter arrays, waits synchronously (`mutations_sync=2`) for each `ALTER TABLE ... UPDATE`, then reads the stored measure back and compares dictionaries. This operates on the build candidate, so failure does not change the live table.
+
+Batches bound command payloads and provide cancellation/fencing checkpoints; they do **not** bound total Python result memory. One million Float64 values occupy about 8 MB before keys, flags, Python objects, sets/dictionaries, transport and the verification read. The actual Python footprint depends on key widths/types and can be much larger. Results are processed one measure at a time, rather than holding the complete wide model at once.
+
+For one million native rows and ten updated measures, 1,000-row batches mean roughly **10,000 mutation commands**, plus calculation and verification queries. ClickHouse update mutations process affected parts and rewrite updated data; repeated small batches can revisit the same parts. The current predicate uses JSON-encoded grain keys, so adding grain sorting does not automatically make those mutations efficient primary-key range updates. [ClickHouse mutation semantics](https://github.com/ClickHouse/docs-reference/blob/master/docs/en/sql-reference/statements/alter/update.md)
+
+Bulk materialisation should keep the row stream inside ClickHouse: aggregate transaction sources at native grain using configured policies, merge by keys, calculate formulas in dependency order and populate the candidate through a bounded number of set-based SQL stages. Python should coordinate plans, validation summaries, leases and activation. Retain incremental dependency selection, unchanged edits, one permanent table, temporary build candidates, and exchange publication. This is a separate engine-write-path change, not a bigger batch-size setting or a return to one giant recursive query. Its exact incremental SQL strategy must respect the deployed ClickHouse 25.3 capabilities.

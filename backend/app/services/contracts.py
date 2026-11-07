@@ -1,6 +1,6 @@
+from ..core.errors import Conflict, MetadataError
 from ..repositories.metadata import metadata_repositories
 from ..repositories.metadata.criteria import ContractLookup
-from ..core.errors import Conflict, MetadataError
 from .base import Service, now
 
 

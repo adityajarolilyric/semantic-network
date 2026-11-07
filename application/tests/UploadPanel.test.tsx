@@ -137,3 +137,26 @@ it('uses unique suggested names for collisions and permits removing a file befor
   await user.click(screen.getByRole('button', { name: 'Upload & create table' }))
   await waitFor(() => expect(upload).toHaveBeenCalledTimes(1))
 })
+
+it('retries incomplete semantic setup using the same physical import key', async () => {
+  const { upload, imported, user } = setup()
+  upload.mockResolvedValueOnce({
+    ...result('sales'),
+    semanticSetupComplete: false,
+    warnings: ['Automatic semantic setup incomplete.'],
+  })
+  await user.upload(screen.getByLabelText('CSV files'), csv('sales.csv'))
+  await user.click(screen.getByRole('button', { name: 'Upload & create table' }))
+  await screen.findByText(
+    'CSV stored. Retry to complete semantic setup without importing it again.',
+  )
+  expect(imported).toHaveBeenCalledTimes(1)
+  const originalKey = upload.mock.calls[0][2]
+  upload.mockResolvedValueOnce({ ...result('sales'), replayed: true, semanticSetupComplete: true })
+  await user.click(screen.getByRole('button', { name: 'Retry 1 file' }))
+  await waitFor(() => expect(upload).toHaveBeenCalledTimes(2))
+  expect(upload.mock.calls[1][2]).toBe(originalKey)
+  await waitFor(() =>
+    expect(screen.queryByRole('button', { name: /Retry/ })).not.toBeInTheDocument(),
+  )
+})

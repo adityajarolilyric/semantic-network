@@ -190,7 +190,7 @@ export function formatFormula(
   if (e.type === 'grainRef')
     return `GRAIN([${grainColumns.find((c) => c.grainColumnId === e.grainColumnId)?.name ?? e.grainColumnId}])`
   if (e.type === 'attributeRef') {
-    const key = (e.dimensionId ?? e.planningLevelId) + '.' + e.columnId
+    const key = (e.memberCatalogId ?? e.dimensionId ?? e.transactionId) + '.' + e.columnId
     return `[${attributes.find((attribute) => attribute.key === key)?.label ?? key}]`
   }
   if (e.type === 'literal')

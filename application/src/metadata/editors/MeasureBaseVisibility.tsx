@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { metadataApi } from '../api'
 import { Select } from './Fields'
-import type { Measure, PlanningLevel } from '../types'
+import type { Measure, GrainOption } from '../types'
 
 type BasePath = {
   baseLevelId: string | null
@@ -16,17 +16,15 @@ export function MeasureBaseVisibility({
   baseLevelId,
 }: {
   definition: Measure['definition']
-  levels: PlanningLevel[]
+  levels: Pick<GrainOption, 'objectId' | 'name'>[]
   base?: string
   baseLevelId?: string | null
 }) {
-  const native = definition.nativePlanningLevelId
+  const native = definition.nativeGrainId
   const visible = !!baseLevelId && !!native && native !== baseLevelId
   const path =
     visible && base
-      ? base +
-        '/measures/execution/base-visibility?nativePlanningLevelId=' +
-        encodeURIComponent(native)
+      ? base + '/measures/execution/base-visibility?nativeGrainId=' + encodeURIComponent(native)
       : null
   const [result, setResult] = useState<{ path: string; value: BasePath } | null>(null)
   const [error, setError] = useState('')
@@ -58,7 +56,7 @@ export function MeasureBaseVisibility({
     <section className="meta-subsection" aria-label="Base Level Visibility policy">
       <h3>Base Level Visibility policy</h3>
       <p className="meta-hint">
-        Base planning level: <strong>{name}</strong>. This describes source materialisation; the
+        Base dimension: <strong>{name}</strong>. This describes source materialisation; the
         Dis-aggregation policy above controls edits.
       </p>
       {error ? (
@@ -68,15 +66,15 @@ export function MeasureBaseVisibility({
       ) : !info ? (
         <p className="meta-hint">
           {result?.path === path && result.value.baseLevelId !== baseLevelId
-            ? 'Base planning level changed. Reload metadata to see the current policy.'
+            ? 'Base dimension changed. Reload metadata to see the current policy.'
             : base
               ? 'Checking the path to Base…'
-              : 'A proven planning-level path is required to make this measure visible at Base.'}
+              : 'A proven dimension path is required to make this measure visible at Base.'}
         </p>
       ) : info.relationship === 'incompatible' ? (
         <p className="meta-hint">
-          This measure cannot reach Base. It stays at its output planning level and compatible
-          coarser levels. {info.reason}
+          This measure cannot reach Base. It stays at its output dimension and compatible coarser
+          levels. {info.reason}
         </p>
       ) : definition.measureType === 'calculated' &&
         definition.calculationType === 'AggregateFirst' ? (

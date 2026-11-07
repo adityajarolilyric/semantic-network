@@ -1,9 +1,12 @@
-from ..repositories.metadata import metadata_repositories
-from ..repositories.metadata.criteria import ObjectLookup, RevisionLookup
 from ..core.errors import Conflict, ImmutableRevision, MetadataError
 from ..core.metadata import revision_scope as scope
 from ..core.metadata import utc_now as now
+from ..domain.grains import canonical_measure
+from ..domain.measure_policies import normalize_measure
+from ..engine.resolver import EffectiveSchemaResolver
 from ..repositories.base import MetadataStore
+from ..repositories.metadata import metadata_repositories
+from ..repositories.metadata.criteria import ObjectLookup, RevisionLookup
 from ..validation.graph import SemanticGraphValidator
 
 __all__ = ["Service", "now", "scope"]
@@ -42,7 +45,7 @@ class Service:
             raise Conflict()
         return updated
 
-    async def objects(self, repo, model_id, revision_id):
+    async def definitions(self, repo, model_id, revision_id):
         docs = await metadata_repositories(repo).objects.list(
             ObjectLookup(model_id=model_id, revision_id=revision_id),
             order_by="objectId",
@@ -53,13 +56,18 @@ class Service:
                 "object_limit",
                 "This revision exceeds the configured metadata object limit.",
             )
-        from ..domain.measure_policies import normalize_measure
 
-        return [normalize_measure(document) for document in docs]
+        return [canonical_measure(normalize_measure(document)) for document in docs]
+
+    async def graph_objects(self, repo, model_id, revision_id):
+        return await self.effective(
+            repo,
+            model_id,
+            revision_id,
+            await self.definitions(repo, model_id, revision_id),
+        )
 
     async def effective(self, repo, model_id, revision_id, objects):
-        from ..engine.resolver import EffectiveSchemaResolver
-
         return await EffectiveSchemaResolver.load(
             repo, model_id, revision_id, objects, self.max_objects
         )

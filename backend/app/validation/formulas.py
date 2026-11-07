@@ -1,13 +1,16 @@
 """Focused semantic rules; diagnostics and graph state are owned by the shared context."""
 
+from ..domain.formula_types import FUNCTIONS
+from ..domain.grains import transaction_column_reference
+from ..engine.relationships import Coordinate, LevelRelationshipAnalyzer
+from ..formula_language.expressions import contains_counts
+
 
 class FormulaRules:
     def __init__(self, context):
         self.context = context
 
     def validate_counting(self, owner):
-        from ..formula_language.expressions import contains_counts
-
         definition = owner["definition"]
         if (
             contains_counts(definition["formula"]["expression"])
@@ -16,7 +19,7 @@ class FormulaRules:
             self.context.error(
                 owner,
                 "counting_calculation",
-                "Count formulas require AggregateFirst and recalculate at Output Planning Level or coarser.",
+                "Count formulas require AggregateFirst and recalculate at Output Dimension or coarser.",
             )
 
     def validate_expression(
@@ -33,31 +36,16 @@ class FormulaRules:
                 owner, node["measureId"], "measure", "definition.formula.expression"
             )
             if target:
-                if not self.context.available(
-                    target,
-                    level["objectId"]
-                    if level
-                    else owner["definition"]["nativePlanningLevelId"],
-                ):
-                    level_name = level.get("name") if level else None
-                    at_level = (
-                        f'Output Planning Level "{level_name}"'
-                        if level_name
-                        else "this formula's Output Planning Level"
-                    )
+                output = (
+                    level["objectId"] if level else owner["definition"]["nativeGrainId"]
+                )
+                availability = self.context.measures_rules.availability(target, output)
+                if not availability.available:
                     self.context.error(
                         owner,
                         "measure_unavailable",
-                        f'"{target["name"]}" is unavailable at {at_level}.',
-                    )
-                if (
-                    owner["definition"]["calculationType"] == "CalculateFirst"
-                    and target["definition"].get("calculationType") == "AggregateFirst"
-                ):
-                    self.context.error(
-                        owner,
-                        "runtime_dependency",
-                        "CalculateFirst cannot depend on an AggregateFirst result.",
+                        f'"{owner["name"]}" requires {availability.reason}',
+                        "definition.formula.expression",
                     )
         elif kind == "grainRef":
             if level:
@@ -71,36 +59,49 @@ class FormulaRules:
                     "definition.formula.expression",
                 )
         elif kind == "attributeRef":
-            from ..engine.relationships import Coordinate, LevelRelationshipAnalyzer
-
-            owner_id = node.get("dimensionId") or node.get("planningLevelId")
-            owner_kind = "dimension" if node.get("dimensionId") else "planningLevel"
+            owner_id = (
+                node.get("memberCatalogId")
+                or node.get("dimensionId")
+                or node.get("transactionId")
+            )
+            owner_kind = (
+                "dimensionMembers"
+                if node.get("memberCatalogId")
+                else "transaction"
+                if node.get("transactionId")
+                else "dimension"
+            )
             self.context.reference(
                 owner, owner_id, owner_kind, "definition.formula.expression"
             )
             analyzer = LevelRelationshipAnalyzer(list(self.context.objects.values()))
             coordinate = (
-                Coordinate(frozenset({("dimension", owner_id, node["columnId"])}))
-                if node.get("dimensionId")
+                Coordinate(
+                    frozenset({("dimensionMembers", owner_id, node["columnId"])})
+                )
+                if node.get("memberCatalogId")
                 else analyzer.outputs(owner_id).get(node["columnId"])
             )
+            if node.get("transactionId"):
+                grain_id, column_id = transaction_column_reference(
+                    node["transactionId"],
+                    node["columnId"],
+                    list(self.context.objects.values()),
+                )
+                coordinate = analyzer.outputs(grain_id).get(column_id)
             if level and (
                 not coordinate or not analyzer.resolve(level["objectId"], coordinate)
             ):
                 self.context.error(
                     owner,
                     "formula_attribute_unavailable",
-                    "This attribute is not determined by the formula output planning level.",
+                    "This attribute is not determined by the formula output dimension.",
                 )
         elif kind == "binary":
             self.context.validate_expression(owner, node["left"], level, depth + 1)
             self.context.validate_expression(owner, node["right"], level, depth + 1)
         elif kind == "count":
-            from ..formula_language.expressions import contains_counts
-
-            counting = self.context.objects.get(
-                owner["definition"]["nativePlanningLevelId"]
-            )
+            counting = self.context.objects.get(owner["definition"]["nativeGrainId"])
             for child in node["arguments"]:
                 if contains_counts(child):
                     self.context.error(
@@ -109,7 +110,6 @@ class FormulaRules:
                 self.context.validate_expression(owner, child, counting, depth + 1)
         elif kind == "call":
             n = len(node["arguments"])
-            from ..domain.formula_types import FUNCTIONS
 
             low, high = FUNCTIONS[node["function"]]
             valid = low <= n <= high

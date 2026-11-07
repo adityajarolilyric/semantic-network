@@ -179,6 +179,16 @@ class MongoMetadataStore(MetadataStore):
             "engine_artifact_pins": ["runId", "artifactId"],
         }.items():
             definitions[collection] = [IndexModel([(k, 1) for k in keys], unique=True)]
+        definitions["engine_artifacts"].append(
+            IndexModel(
+                [
+                    ("cleanupPending", 1),
+                    ("modelId", 1),
+                    ("revisionId", 1),
+                    ("artifactId", 1),
+                ]
+            )
+        )
         # Online compatibility migration: retain legacy source lookup fields while
         # making target identity generic. Partial indexes permit planning bindings.
         bindings = self.database["engine_artifact_bindings"]
@@ -224,6 +234,16 @@ class MongoMetadataStore(MetadataStore):
             IndexModel([("state", 1), ("createdAt", 1), ("artifactId", 1)])
         ]
         definitions["engine_artifact_bindings"] += [IndexModel([("artifactId", 1)])]
+        definitions["semantic_objects"] += [
+            IndexModel(
+                [("modelId", 1), ("revisionId", 1), ("memberCatalogId", 1)],
+                unique=True,
+                partialFilterExpression={
+                    "kind": "dimension",
+                    "memberCatalogId": {"$type": "string"},
+                },
+            ),
+        ]
         definitions["engine_runs"] += [
             IndexModel(
                 [("modelId", 1), ("revisionId", 1), ("idempotencyKey", 1)], unique=True
