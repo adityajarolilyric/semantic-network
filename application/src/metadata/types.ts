@@ -102,6 +102,7 @@ export type Population =
       operation: 'source'
       sourceId: string
       inputTransform?: {
+        filters?: FilterDefinition | null
         objectId: string
         pivot?: PivotStage | null
         calendarResolution?: CalendarResolution | null

@@ -76,6 +76,7 @@ export function TransactionResolutionEditor({
   level,
   base,
   calendarResolved = false,
+  population,
 }: {
   value: GrainResolution
   onChange: (value: GrainResolution) => void
@@ -83,6 +84,7 @@ export function TransactionResolutionEditor({
   level: Dimension
   base?: string
   sourceId: string
+  population?: Dimension
   calendarResolved?: boolean
 }) {
   const [targets, setTargets] = useState<TargetOption[]>([])
@@ -90,6 +92,7 @@ export function TransactionResolutionEditor({
   const [targetsLoading, setTargetsLoading] = useState(false)
   const [calendars, setCalendars] = useState<ResolutionCalendar[]>([])
   const [timeGrainIds, setTimeGrainIds] = useState<string[]>([])
+  const populationSignature = JSON.stringify(population ?? null)
   useEffect(() => {
     if (!base) return
     const controller = new AbortController()
@@ -102,9 +105,13 @@ export function TransactionResolutionEditor({
         calendars?: ResolutionCalendar[]
         timeGrainIds?: string[]
       }>(
-        base + '/transactions/resolution/options?dimensionId=' + encodeURIComponent(level.objectId),
-        'GET',
-        undefined,
+        population
+          ? base + '/transactions/population/options'
+          : base +
+              '/transactions/resolution/options?dimensionId=' +
+              encodeURIComponent(level.objectId),
+        population ? 'POST' : 'GET',
+        population ? JSON.parse(populationSignature) : undefined,
         undefined,
         controller.signal,
       )
@@ -122,7 +129,7 @@ export function TransactionResolutionEditor({
         if (!controller.signal.aborted) setTargetsLoading(false)
       })
     return () => controller.abort()
-  }, [base, level.objectId])
+  }, [base, level.objectId, populationSignature])
   const update = (patch: Partial<GrainResolution>) => onChange({ ...value, ...patch })
   const sourceOptions = columns.map((c) => ({ value: c.columnId, label: c.name }))
   const targetOptions = targets.map((t) => ({ value: targetKey(t.target), label: t.label }))

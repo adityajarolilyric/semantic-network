@@ -25,6 +25,7 @@ from .services.semantic_network import SemanticNetworkService
 from .services.source_registration import SourceRegistrationService
 from .services.sources import SourceService
 from .services.transaction_grains import TransactionGrainService
+from .services.transaction_populations import TransactionPopulationService
 from .services.transaction_measures import TransactionMeasureFactory
 from .services.transaction_resolution import TransactionResolutionService
 from .services.transactions import TransactionService
@@ -121,6 +122,9 @@ class ServiceContainer:
             self.store, self.settings, self.dimension_builds, self.managed_tables
         )
         self.transaction_grains = TransactionGrainService(
+            self.transactions, self.transaction_resolution
+        )
+        self.transaction_populations = TransactionPopulationService(
             self.transactions, self.transaction_resolution
         )
         self.decision_view = DecisionViewService(

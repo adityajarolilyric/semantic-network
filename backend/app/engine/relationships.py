@@ -25,6 +25,17 @@ class LevelRelationshipAnalyzer:
         self.dimension_members = {
             k: o for k, o in self.objects.items() if o["kind"] == "dimensionMembers"
         }
+        # An explicit Transaction Time key retains its role when that Transaction
+        # is connected to a reusable population. IDs alone never imply Time.
+        self.declared_time_tokens = {
+            ("level", definition["dimensionId"], mapping["grainColumnId"])
+            for obj in self.objects.values()
+            if obj["kind"] == "transaction"
+            for definition in [obj["definition"]]
+            if definition.get("dimensionId") and definition.get("timeColumnId")
+            for mapping in definition.get("keyMappings", [])
+            if mapping["sourceColumnId"] == definition["timeColumnId"]
+        }
         self._cache = {}
 
     def outputs(self, level_id, seen=None):
@@ -118,14 +129,18 @@ class LevelRelationshipAnalyzer:
                     )
         # Time semantics also follow explicit source identity when Time is a population factor.
         for cid, coordinate in list(result.items()):
-            time = coordinate.is_time or any(
-                dim["isTimeDim"]
-                and any(
-                    ("source", dim["definition"]["sourceId"], c["sourceColumnId"])
-                    in coordinate.tokens
-                    for c in dim["definition"]["columns"]
+            time = (
+                coordinate.is_time
+                or bool(coordinate.tokens & self.declared_time_tokens)
+                or any(
+                    dim["isTimeDim"]
+                    and any(
+                        ("source", dim["definition"]["sourceId"], c["sourceColumnId"])
+                        in coordinate.tokens
+                        for c in dim["definition"]["columns"]
+                    )
+                    for dim in self.dimension_members.values()
                 )
-                for dim in self.dimension_members.values()
             )
             if time != coordinate.is_time:
                 result[cid] = Coordinate(coordinate.tokens, column_id=cid, is_time=time)

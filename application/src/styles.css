@@ -3708,3 +3708,25 @@ fieldset:disabled textarea {
   color: #ffd166;
   font-size: 0.8em;
 }
+
+/* Reusable populations are authored alongside their owning Transaction. */
+.population-summary,
+.population-base-choice {
+  padding: 14px 16px;
+  margin-block: 14px;
+  border: 1px solid var(--border-color, #dde3ef);
+  border-radius: 10px;
+  background: var(--surface-color, #f8f9fd);
+}
+.population-summary > div { display: flex; align-items: center; gap: 10px; }
+.population-summary p, .population-base-choice p { margin-bottom: 0; }
+.population-details {
+  padding: 12px 0;
+  border-top: 1px solid var(--border-color, #dde3ef);
+}
+.population-details > summary {
+  cursor: pointer;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+.population-details > summary .meta-hint { margin-left: 8px; font-weight: 400; }

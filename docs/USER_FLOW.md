@@ -1,5 +1,7 @@
 # User flow
 
+Current authoring entry point: create/reuse valid populations within Transactions. Individual member Dimensions remain optional catalogs; the worked steps below use them for enrichment and proven cross-grain paths. [Transactions](TRANSACTIONS.md) defines the authoritative population, Base and atomic-save behavior.
+
 Current simplified flow: **Sources → Dimensions → Transactions → Measures → Decision View**. A Transaction can create its Dimension from selected keys, so defining Dimensions separately is optional. Select one Base Dimension. Source-backed Dimension Save stores metadata; derived Dimension Save also builds its table and any required ancestors. Preview up to 50 rows with a total count. Build Semantic prepares Dimension populations and then LEFT JOINs policy-aggregated measures. Context Graph explains which selections can be plotted together. See [Dimensions](DIMENSIONS.md) for the current lifecycle; older dated notes below describe prior editor details.
 
 
@@ -70,17 +72,17 @@ When the user has Forecast with Product ID, Location ID, Time ID and Quantity bu
 
 The Transaction editor groups optional steps in a collapsed **Transformations** panel with **Filters**, **Pivot Data** and **Date Resolution** tabs. **Grain Selection** stays visible because every Transaction needs a grain; visual tab order does not change engine execution order.
 
-1. Create Forecast and select its Managed Table. For every new Transaction, the mapping defaults to Create Dimension. Configure Pivot and Date resolution if needed; then choose grain keys from the transformed columns.
+1. Create Forecast and select its Managed Table. For every new Transaction, the population defaults to Rows from this transaction. Configure Pivot and Date resolution if needed; then choose grain keys from the transformed columns.
 2. Select Product ID, Location ID and Time ID as grain columns; review the suggested level name.
 3. Preview the proposed distinct planning population. No metadata is saved by this preview.
-4. Save metadata. The system creates a normal source-populated level and directly mapped Transaction, without building physical tables. Build Semantic prepares it later. The first transaction-created Dimension becomes Base when unset and no independent compound Dimension exists.
-5. Optionally select Quantity in the Transaction’s Measures grid before saving, choosing Editable, both aggregation policies and Dis-Aggregation. Otherwise define the referenced measure later in Measures. Build the Semantic Network and plot dimension columns in Decision View. Dimensions are optional; none are generated.
-6. When Sales arrives, choose Use Existing Dimension for that existing level and map every key. The user owns any missing-intersection correction; registration does not union the inputs automatically.
-7. To replace the population with an authoritative intersection input later, edit Dimensions, choose the new source and explicitly map the existing fields. Stable key identities preserve Transaction mappings, even when source column order differs.
+4. Save metadata. The system creates a normal source-populated level and directly mapped Transaction, without building physical tables. Build Semantic prepares it later. The Base checkbox starts selected when Base is unset; users can deselect it.
+5. Optionally select Quantity in the Transaction’s Measures grid before saving, choosing Editable, both aggregation policies and Dis-Aggregation. Otherwise define the referenced measure later in Measures. Build the Semantic Network and plot dimension columns in Decision View. Member catalogs are optional; none are generated.
+6. When Sales arrives, choose Use existing population for that population and map every key. The user owns any missing-intersection correction; registration does not union the inputs automatically.
+7. To replace the population with an authoritative intersection input later, open Edit shared population in its Transaction, choose the new source and explicitly map the existing fields. Stable key identities preserve Transaction mappings, even when source column order differs.
 
 **Checkpoint:** repeated Forecast facts remain available for aggregation, while its observed key combinations appear once in the population. This population does not establish every possible valid business intersection. If a build fails after creation, the saved objects remain; correct/build them rather than recreating them. Time-like column names do not infer a Time Dimension.
 
-This shortcut uses saved Managed Table columns and no new persistent metadata shape. For Transaction-owned Pivot/date-resolution transformations, use the existing target-level workflow. See X10 and V01 in the [PRD](PRD.md).
+This flow uses effective Managed Table columns, including Transaction-owned Pivot/date resolution, and retains the existing persistent metadata shape. See X10 and V01 in the [PRD](PRD.md).
 
 ## 4. Define Product and filter active members
 
@@ -127,26 +129,11 @@ The Dimension key, pivot record keys and optional managed-output key are differe
 
 **Why:** calendar grain and a measure's planning grain are different. A daily calendar can support weekly planning. Calendar values establish fiscal period membership; the engine must not infer weeks from names. Quarter/year analysis requires suitable calendar attributes and paths; the flag does not invent them. Only one Time Dimension is allowed in a revision. See D05–D06.
 
-## 7. Build the Product Location Week planning population
+## 7. Choose the planning population inside Forecast
 
-1. Create a Dimension, named Product Location Week for this walkthrough.
-2. Choose Cartesian population and add the valid Product/Location intersection input and Time input as factors.
-3. Select Product ID and Location ID as grain columns from the intersection. Select Week ID from Time.
-4. Inspect period identity. In the demo calendar, Week ID alone does not identify the intended period: promote Month into the grain too. Add Year or a globally unique period key instead if that is what the actual calendar requires.
-5. Select Week Start/Week End and other useful non-key population attributes.
-6. Add Product and Location bindings through the dimension tabs. Map Product ID and Location ID to compatible Dimension attributes. Select the descriptive attributes needed for analysis, such as Brand, Category, City and Zone.
-7. Add a Time binding when its lineage is needed; map the complete period tuple, such as Week ID plus Month.
-8. Add any final population filters, then Preview.
-9. Inspect the complete grain, row count, enrichment and diagnostics. Save to commit the definition and its built population.
-10. Select this level as the revision's Base dimension.
+Open **Transactions → Create transaction**, select Forecast and configure any input transformations. In **Grain Selection**, choose **Define population → Combine tables**, name it ProdLocWeek, add Sourcing and Time, and select Product–Location from Sourcing and Week (plus Month if part of the declared grain) from Time. Add optional Product/Location/Time relationships under **Connect dimensions**. Select **Use this population as Base**, then map Forecast fields to every population key. Preview queries the draft; Save commits population, Transaction and selected measures together. There is no separate compound-Dimension creation step.
 
-**Checkpoint:** the example has a valid Product/Location/Week/Month population with descriptive attributes. Its recorded 576 combinations depend on the actual input membership and selected filters.
-
-This is still three business axes—Product, Location and Time—even though Time uses two key columns in this fixture. The native mappings must cover all four columns.
-
-**Why:** transaction absence does not mean an intersection is invalid. A valid intersection input establishes business coverage independently of Forecast/Sales sparsity. Crossing entire Product and Location domains would create combinations not necessarily authorised by the sourcing matrix. Final DISTINCT removes identical public output rows, including daily repetitions of selected weekly fields; it cannot repair genuinely different attributes at the same declared grain. See L01–L09.
-
-**Failure branches:** fix missing grain keys, ambiguous lookup attributes or missing dimension members. If the same Week ID has different Month values and Month is an ordinary attribute, add the missing identity field or remove the attribute only when business meaning permits. Never select an arbitrary Month to force success.
+For a simpler case, **Rows from this transaction** uses DISTINCT selected keys from Forecast. When Sales arrives at the same grain, choose **Use existing population → ProdLocWeek** if its combinations are suitable. Matching key names are suggestions; a different coverage can use a separate population. Editing a shared population lists its connected Transactions. Rebuild the network after changing metadata; Base and connectivity mathematics are unchanged.
 
 ## 8. Register Forecast and normalise same-record pairs
 
@@ -161,16 +148,16 @@ This is still three business axes—Product, Location and Time—even though Tim
 
 **Why:** same-record pairs and separate Location attribute records require different explicit grouping. The final transaction will later be aggregated independently by all native keys and LEFT JOINed to the native population. Multiple direct detail rows are allowed. See T01–T05 and X01–X03.
 
-## 9. Create a coarser level and register Sales History
+## 9. Define or reuse the Sales population
 
 Sales History is uniformly at Brand/Zone/Week/Month rather than Product/Location detail.
 
-1. Return to Dimensions and create Brand Zone Week using Distinct projection of an existing level.
+1. Create Sales from Sales History. Choose Define population → From an existing population and name it Brand Zone Week.
 2. Choose Product Location Week as parent.
 3. Retain Week ID and Month. Promote Brand and Zone from parent attributes into grain keys. Retain Week Start/End as ordinary attributes if they are determined by that grain.
 4. Optionally bind Brand to Product.Brand, Zone to Location.Zone and the complete Time tuple to Time. These mappings establish reusable semantic paths or membership; selecting no additional attributes does not expand the grain.
-5. Preview and Save.
-6. Create Sales from Sales History at Brand Zone Week and directly map Brand, Zone, Week ID and Month. Save metadata.
+5. Directly map Brand, Zone, Week ID and Month from Sales History.
+6. Preview, then Save metadata to commit Sales and its population together.
 
 **Checkpoint:** Forecast and Sales have different explicitly declared native grains, with a proven route between their related dimensions.
 

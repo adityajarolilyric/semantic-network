@@ -194,14 +194,11 @@ def test_resolution_split_copy_and_measure_loading(
     assert [r[cols["QTY"]] for r in data["rows"]] == ["30.0", expected, None]
     count = int(
         admin.command(
-            "SELECT count() FROM system.tables WHERE database={db:String} AND engine='MergeTree' AND startsWith(comment,'semanticTable:')",
+            "SELECT count() FROM system.tables WHERE database={db:String} AND engine='MergeTree' AND startsWith(comment,'semanticCurrent:')",
             parameters={"db": database},
         )
     )
     bindings = client.app.state.container.store.documents["engine_artifact_bindings"]
-    populations = [
-        binding for binding in bindings if binding.get("resourceKind") == "dimension"
-    ]
     value_bindings = [
         binding
         for binding in bindings
@@ -209,7 +206,9 @@ def test_resolution_split_copy_and_measure_loading(
     ]
     # Lookup-only Dimensions have populations, not measure representations.
     assert {binding["resourceId"] for binding in value_bindings} == {"native"}
-    assert count == len(populations) + len(value_bindings)
+    # Current storage uses one permanent wide table per materialised population;
+    # lookup populations remain views/queries rather than physical copies.
+    assert count == len(value_bindings)
 
 
 def test_resolution_later_coarse_wins_regardless_of_input_storage_order(

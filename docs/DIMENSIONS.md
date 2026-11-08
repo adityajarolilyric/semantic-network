@@ -1,5 +1,7 @@
 # Dimensions
 
+**Authoring boundary:** individual member catalogs remain on Dimensions. Valid planning populations are now created, reused and edited inside Transactions, including Base selection. Their existing `dimension` metadata and engine behavior remain unchanged; legacy compound populations are selectable by name there. See [Transaction population authoring](TRANSACTIONS.md). The population methods and lower-level APIs below describe the retained engine contract, not a required separate setup step.
+
 A Dimension defines valid intersections: its unique grain keys, descriptive attributes, population and optional relationships. Product (Product ID) and ProductLocationTime (Product ID, Location ID, Week ID) use the same concept. There is no separate user classification for single-key and compound Dimensions.
 
 ## Metadata and ownership

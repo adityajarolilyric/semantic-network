@@ -242,7 +242,17 @@ export function MetadataWorkspace({
   const kind = tabKind[tab]
   const objects =
     tab === 'dimensions' || tab === 'levels'
-      ? dimensionCatalog(meta.data)
+      ? dimensionCatalog(meta.data).filter(
+          (dimension) =>
+            dimension.kind === 'dimensionMembers' &&
+            (() => {
+              const owner = dimensionGrain(meta.data, dimension.objectId)
+              return (
+                owner?.definition.population.operation === 'source' &&
+                owner.definition.population.sourceId === dimension.definition.sourceId
+              )
+            })(),
+        )
       : all.filter(
           (o) => o.kind === kind && (o.kind !== 'source' || showExcluded || o.definition.inScope),
         )
@@ -460,16 +470,16 @@ export function MetadataWorkspace({
             <>
               <div
                 className={
-                  tab === 'dimensions' || tab === 'levels'
+                  tab === 'dimensions' || tab === 'levels' || tab === 'transactions'
                     ? 'meta-list-heading dimension-list-heading'
                     : 'meta-list-heading'
                 }
               >
-                {editable && (tab === 'dimensions' || tab === 'levels') && (
+                {editable && tab === 'transactions' && (
                   <div className="dimension-base">
                     <Select
                       disabled={locked || !!editor}
-                      label="Base Dimension"
+                      label="Base population"
                       value={revision.baseDimensionId ?? ''}
                       items={[
                         { value: '__none', label: 'No base selected' },
@@ -706,55 +716,6 @@ export function MetadataWorkspace({
                     base={metadataApi.scope(model!.modelId, revision!.revisionId)}
                     {...common}
                     initial={editor.input as DimensionMembers}
-                    populationControl={(current) => (
-                      <fieldset className="measure-type-control">
-                        <legend>Population method</legend>
-                        <div className="measure-type-switch">
-                          {(['source', 'cartesian_product', 'distinct_projection'] as const).map(
-                            (operation) => (
-                              <label className="measure-type-option" key={operation}>
-                                <input
-                                  type="radio"
-                                  name="dimension-population"
-                                  checked={operation === 'source'}
-                                  onChange={() => {
-                                    if (operation === 'source') return
-                                    const owner = dimensionGrain(meta.data, current.objectId)
-                                    const input = owner
-                                      ? structuredClone(inputOf(owner))
-                                      : (newObject('dimension') as Dimension)
-                                    input.objectId = owner?.objectId ?? current.objectId
-                                    input.name = current.name
-                                    input.displayName = current.name
-                                    input.description = current.description
-                                    input.definition.population =
-                                      operation === 'cartesian_product'
-                                        ? { operation, factors: [] }
-                                        : { operation, sourceDimensionId: '' }
-                                    if (owner) {
-                                      input.memberCatalog = current.definition
-                                      input.isTimeDim = current.isTimeDim
-                                    }
-                                    input.definition.grain = { keyIds: [], columns: [] }
-                                    input.definition.populationAttributes = []
-                                    input.definition.memberBindings = []
-                                    input.definition.filters = null
-                                    setEditor({ input, version: editor.version })
-                                  }}
-                                />
-                                <span>
-                                  {operation === 'source'
-                                    ? 'From a Table'
-                                    : operation === 'cartesian_product'
-                                      ? 'From Multiple Tables'
-                                      : 'From Existing Dimension'}
-                                </span>
-                              </label>
-                            ),
-                          )}
-                        </div>
-                      </fieldset>
-                    )}
                     onSave={save}
                   />
                 )}
@@ -779,6 +740,22 @@ export function MetadataWorkspace({
                     base={metadataApi.scope(model!.modelId, revision!.revisionId)}
                     {...common}
                     initial={editor.input as Transaction}
+                    baseDimensionId={revision!.baseDimensionId}
+                    revisionVersion={revision!.version}
+                    savedVersion={editor.version}
+                    onSavePopulation={async (command) => {
+                      const ok = await run(
+                        () =>
+                          metadataApi.request(
+                            metadataApi.scope(model!.modelId, revision!.revisionId) +
+                              '/transactions/population/save',
+                            'POST',
+                            command,
+                          ),
+                        'Transaction and population saved. Rebuild the semantic network to apply changes.',
+                      )
+                      if (ok) setEditor(null)
+                    }}
                     onCreated={(transaction, close) => {
                       setEditor((current) =>
                         current?.input.objectId === transaction.objectId

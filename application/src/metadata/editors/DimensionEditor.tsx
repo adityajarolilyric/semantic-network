@@ -6,14 +6,14 @@ import { TransformationsPanel } from './TransformationsPanel'
 import { useFilterColumns } from './useFilterColumns'
 import { projectionAttributes } from '../projectionColumns'
 import { FieldHelp } from '../../components/FieldHelp'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { metadataApi } from '../api'
 import { PlanningResult, type DimensionTableStatus } from '../DimensionTablePanel'
 import { projectionBindings } from '../projectionBindings'
 import { dimensionKeyOptions } from '../dimensionKeyOptions'
 import { PopulationRemapping, type PopulationMappingOption } from './PopulationRemapping'
 import { inputOf, type Binding, type GrainColumn, type Dimension, type Population } from '../types'
-import { Check, Checks, IdentityFields, options, Select, type EditorProps } from './Fields'
+import { Check, Checks, IdentityFields, Text, options, Select, type EditorProps } from './Fields'
 export function DimensionEditor({
   initial,
   data,
@@ -24,15 +24,26 @@ export function DimensionEditor({
   base,
   savedVersion,
   readOnly = false,
+  embedded = false,
+  fixedSource = false,
+  inputColumns,
+  onDraftChange,
 }: EditorProps<Dimension> & {
   base?: string
   savedVersion?: number
   onBuilt?: () => void
   onPersisted?: (input: Dimension, version: number, close: boolean) => void
   readOnly?: boolean
+  fixedSource?: boolean
+  inputColumns?: import('../types').SourceColumn[]
+  embedded?: boolean
+  onDraftChange?: (value: Dimension) => void
 }) {
   const dimensionMembers = useDimensionCatalog(data, base)
   const [value, set] = useState(initial)
+  useEffect(() => {
+    onDraftChange?.(value)
+  }, [value, onDraftChange])
   const form = useRef<HTMLFormElement>(null)
   const [tableStatus, setTableStatus] = useState<DimensionTableStatus | null>(null)
   const actionInFlight = useRef(false)
@@ -98,9 +109,11 @@ export function DimensionEditor({
       : [],
   )
   const sourceCols = (sourceId: string) =>
-    p.operation === 'source' && p.sourceId === sourceId && populationInput.configured
-      ? populationInput.columns
-      : (data.sources.find((s) => s.objectId === sourceId)?.definition.columns ?? [])
+    fixedSource && inputColumns
+      ? inputColumns
+      : p.operation === 'source' && p.sourceId === sourceId && populationInput.configured
+        ? populationInput.columns
+        : (data.sources.find((s) => s.objectId === sourceId)?.definition.columns ?? [])
   const parent =
     p.operation === 'distinct_projection'
       ? dimensionMembers.levels.find((l) => l.objectId === p.sourceDimensionId)
@@ -145,7 +158,7 @@ export function DimensionEditor({
   const parentAttributes = projectionAttributes(parent, parentSchema, data.dimensionMembers)
   function populationAttributes(sourceId: string, factorId?: string) {
     const selected = attrs.filter((a) => (a.populationRef.factorId ?? undefined) === factorId)
-    return (
+    const selection = (
       <Checks
         label={
           'Population attributes from ' +
@@ -197,6 +210,16 @@ export function DimensionEditor({
           })
         }}
       />
+    )
+    return embedded ? (
+      <details className="population-details">
+        <summary>
+          Additional attributes <span className="meta-hint">{selected.length} selected</span>
+        </summary>
+        {selection}
+      </details>
+    ) : (
+      selection
     )
   }
   function setBinding(binding: Binding) {
@@ -292,54 +315,78 @@ export function DimensionEditor({
               reference: { sourceOutputColumnId: column.value },
             })),
           ]
+  const Container = embedded ? 'div' : 'form'
   return (
-    <form
-      ref={form}
+    <Container
+      ref={(node: HTMLDivElement | HTMLFormElement | null) => {
+        if (!embedded) form.current = node as HTMLFormElement | null
+      }}
       onSubmit={(e) => {
+        if (embedded) return
         e.preventDefault()
         void persist(false)
       }}
     >
       <fieldset disabled={readOnly || busy || previewBusy}>
-        <IdentityFields value={value} editing={editing} onChange={(v) => set({ ...value, ...v })} />
-        <fieldset className="measure-type-control">
-          <legend>
-            Population method <FieldHelp label="Population method" />
-          </legend>
-          <div className="measure-type-switch">
-            {(
-              [
-                ['source', 'From a Table'],
-                ['cartesian_product', 'From Multiple Tables'],
-                ['distinct_projection', 'From Existing Dimension'],
-              ] as const
-            ).map(([operation, label]) => (
-              <label className="measure-type-option" key={operation}>
-                <input
-                  type="radio"
-                  name="population-method"
-                  checked={p.operation === operation}
-                  onChange={() =>
-                    changePopulation(
-                      operation === 'source'
-                        ? { operation, sourceId: '' }
-                        : operation === 'cartesian_product'
-                          ? { operation, factors: [] }
-                          : { operation, sourceDimensionId: '' },
-                    )
-                  }
-                />
-                <span>{label}</span>
-              </label>
-            ))}
-          </div>
-        </fieldset>
-        <p className="meta-hint">
-          {p.operation === 'source'
-            ? 'Save stores the Dimension definition. Build Semantic Network in Decision View materialises its table.'
-            : 'Save stores the Dimension definition and builds its table, including required parent tables.'}{' '}
-          Preview reads its population without creating a table.
-        </p>
+        {!embedded && (
+          <IdentityFields
+            value={value}
+            editing={editing}
+            onChange={(v) => set({ ...value, ...v })}
+          />
+        )}
+        {embedded && (
+          <Text
+            label="Population name"
+            value={value.name}
+            onChange={(name) => set({ ...value, name, displayName: name })}
+          />
+        )}
+        {!fixedSource && (
+          <fieldset className="measure-type-control">
+            <legend>
+              Population method <FieldHelp label="Population method" />
+            </legend>
+            <div className="measure-type-switch">
+              {(
+                [
+                  ['source', embedded ? 'From a table' : 'From a Table'],
+                  ['cartesian_product', embedded ? 'Combine tables' : 'From Multiple Tables'],
+                  [
+                    'distinct_projection',
+                    embedded ? 'From an existing population' : 'From Existing Dimension',
+                  ],
+                ] as const
+              ).map(([operation, label]) => (
+                <label className="measure-type-option" key={operation}>
+                  <input
+                    type="radio"
+                    name="population-method"
+                    checked={p.operation === operation}
+                    onChange={() =>
+                      changePopulation(
+                        operation === 'source'
+                          ? { operation, sourceId: '' }
+                          : operation === 'cartesian_product'
+                            ? { operation, factors: [] }
+                            : { operation, sourceDimensionId: '' },
+                      )
+                    }
+                  />
+                  <span>{label}</span>
+                </label>
+              ))}
+            </div>
+          </fieldset>
+        )}
+        {!embedded && (
+          <p className="meta-hint">
+            {p.operation === 'source'
+              ? 'Save stores the Dimension definition. Build Semantic Network in Decision View materialises its table.'
+              : 'Save stores the Dimension definition and builds its table, including required parent tables.'}{' '}
+            Preview reads its population without creating a table.
+          </p>
+        )}
         <p className="meta-hint">
           At least one grain key is required. Together, these keys identify a planning row and must
           be mapped by every transaction at this level.
@@ -358,27 +405,29 @@ export function DimensionEditor({
                 {populationInput.error}
               </p>
             )}
-            <Select
-              label="Population table"
-              value={p.sourceId}
-              items={options(data.sources.filter((s) => s.definition.inScope))}
-              onChange={(sourceId) => {
-                if (editing && !freshPopulation && cols.length) {
-                  setRemapPopulation(true)
-                  update({
-                    population: { operation: 'source', sourceId },
-                    grain: {
-                      ...d.grain,
-                      columns: cols.map((c) => ({ ...c, populationRef: { columnId: '' } })),
-                    },
-                    populationAttributes: attrs.map((a) => ({
-                      ...a,
-                      populationRef: { columnId: '' },
-                    })),
-                  })
-                } else changePopulation({ operation: 'source', sourceId })
-              }}
-            />
+            {!fixedSource && (
+              <Select
+                label="Population table"
+                value={p.sourceId}
+                items={options(data.sources.filter((s) => s.definition.inScope))}
+                onChange={(sourceId) => {
+                  if (editing && !freshPopulation && cols.length) {
+                    setRemapPopulation(true)
+                    update({
+                      population: { operation: 'source', sourceId },
+                      grain: {
+                        ...d.grain,
+                        columns: cols.map((c) => ({ ...c, populationRef: { columnId: '' } })),
+                      },
+                      populationAttributes: attrs.map((a) => ({
+                        ...a,
+                        populationRef: { columnId: '' },
+                      })),
+                    })
+                  } else changePopulation({ operation: 'source', sourceId })
+                }}
+              />
+            )}
             {!remapPopulation && (
               <div className="meta-grid">
                 <Checks
@@ -413,9 +462,43 @@ export function DimensionEditor({
         )}
         {p.operation === 'cartesian_product' && (
           <>
+            {embedded && (
+              <Select
+                label="Add population table"
+                required={false}
+                value=""
+                items={options(
+                  data.sources.filter(
+                    (source) =>
+                      source.definition.inScope &&
+                      !p.factors.some((factor) => factor.sourceId === source.objectId),
+                  ),
+                )}
+                onChange={(sourceId) => {
+                  if (!sourceId) return
+                  update({
+                    population: {
+                      ...p,
+                      factors: [
+                        ...p.factors,
+                        {
+                          factorId: 'f_' + crypto.randomUUID().replaceAll('-', '').slice(0, 12),
+                          sourceId,
+                          selectedColumnIds: [],
+                        },
+                      ],
+                    },
+                  })
+                }}
+              />
+            )}
             <div className="meta-factors">
               {data.sources
-                .filter((s) => s.definition.inScope)
+                .filter(
+                  (s) =>
+                    s.definition.inScope &&
+                    (!embedded || p.factors.some((factor) => factor.sourceId === s.objectId)),
+                )
                 .map((source) => {
                   const factor = p.factors.find((f) => f.sourceId === source.objectId)
                   return (
@@ -663,7 +746,7 @@ export function DimensionEditor({
           />
         )}
         {cols.length > 0 && (
-          <>
+          <PopulationRelationships embedded={embedded} count={d.memberBindings.length}>
             <h3>
               Dimension relationships (optional)
               <FieldHelp label="Dimension bindings (optional)" />
@@ -897,7 +980,7 @@ export function DimensionEditor({
                   </div>
                 )
               })}
-          </>
+          </PopulationRelationships>
         )}
         <TransformationsPanel
           label="Dimension transformations"
@@ -917,7 +1000,7 @@ export function DimensionEditor({
           ]}
         />
       </fieldset>
-      {base && (
+      {!embedded && base && (
         <div className="meta-subsection" aria-label={'Dimension population ' + value.name}>
           <p role="status">
             Table:{' '}
@@ -949,45 +1032,69 @@ export function DimensionEditor({
           />
         </>
       )}
-      <div className="meta-actions" aria-label="Dimension actions">
-        <button
-          type="button"
-          className="secondary-button"
-          disabled={busy || previewBusy}
-          onClick={onCancel}
-        >
-          Cancel
-        </button>
-        <button
-          type="button"
-          className="secondary-button"
-          disabled={busy || previewBusy || !base || !d.grain.keyIds.length}
-          onClick={() => void persist(true)}
-        >
-          Preview
-        </button>
-        <ViewSqlButton
-          disabled={busy || previewBusy || !base || !d.grain.keyIds.length}
-          loadSql={(signal) => {
-            if (!form.current?.reportValidity())
-              throw new Error('Complete the required fields first.')
-            return metadataApi.request(
-              base + '/dimensions/preview/population?sql_only=true',
-              'POST',
-              inputOf(value),
-              undefined,
-              signal,
-            )
-          }}
-        />
-        <button
-          type="submit"
-          className="primary-button"
-          disabled={busy || previewBusy || readOnly || !d.grain.keyIds.length}
-        >
-          Save
-        </button>
-      </div>
-    </form>
+      {!embedded && (
+        <div className="meta-actions" aria-label="Dimension actions">
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={busy || previewBusy}
+            onClick={onCancel}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={busy || previewBusy || !base || !d.grain.keyIds.length}
+            onClick={() => void persist(true)}
+          >
+            Preview
+          </button>
+          <ViewSqlButton
+            disabled={busy || previewBusy || !base || !d.grain.keyIds.length}
+            loadSql={(signal) => {
+              if (!form.current?.reportValidity())
+                throw new Error('Complete the required fields first.')
+              return metadataApi.request(
+                base + '/dimensions/preview/population?sql_only=true',
+                'POST',
+                inputOf(value),
+                undefined,
+                signal,
+              )
+            }}
+          />
+          <button
+            type="submit"
+            className="primary-button"
+            disabled={busy || previewBusy || readOnly || !d.grain.keyIds.length}
+          >
+            Save
+          </button>
+        </div>
+      )}
+    </Container>
+  )
+}
+
+function PopulationRelationships({
+  embedded,
+  count,
+  children,
+}: {
+  embedded: boolean
+  count: number
+  children: ReactNode
+}) {
+  return embedded ? (
+    <details className="population-details">
+      <summary>
+        Connect dimensions{' '}
+        <span className="meta-hint">{count ? `${count} connected` : 'Optional'}</span>
+      </summary>
+      {children}
+    </details>
+  ) : (
+    <>{children}</>
   )
 }

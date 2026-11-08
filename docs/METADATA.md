@@ -1,7 +1,6 @@
 # Metadata model
 
-The current authoring and storage model uses **Dimension** for every grain, including Product and ProductLocationTime. MongoDB persists one Dimension aggregate with optional embedded member metadata; it does not persist separate member lookup objects. The revision selects `baseDimensionId`; Transactions reference `dimensionId`; Measures reference `nativeDimensionId`. See [Dimensions](DIMENSIONS.md) for the authoritative structure, lifecycle and migration. Source-backed Dimension Save is metadata-only; derived Dimension Save also queues a population build. Preview is a query, and Build Semantic prepares populations and measure values.
-
+Population authoring now lives inside **Transactions**, while **Dimensions** manages individual member catalogs. A reusable population still persists as an ordinary `dimension` aggregate (population strategy, grain, attributes and optional member bindings); consuming Transactions reference its `dimensionId`. The revision's `baseDimensionId` selects Base once. UI labels do not introduce duplicate population objects, per-Transaction Base flags or a migration. The atomic authoring command and reuse rules are described in [Transactions](TRANSACTIONS.md). Existing direct CRUD and standalone Transactions remain compatible.
 
 MongoDB is authoritative for semantic meaning, grain, relationships, formulas, policies and evidence. Keep bounded column lists inside their owning object; keep growing object sets, revisions and execution history in separate documents. Metadata CRUD does not alter source tables. Execution and CSV ingestion have explicit, separate APIs.
 

@@ -42,7 +42,7 @@ def test_remapping_transaction_previews_and_rebuilds_owned_measures(clickhouse_a
     assert client.get(BASE).json() == revision_before
     assert client.get(BASE + "/measures").json() == measures_before
     assert (
-        client.get(BASE + "/dimensions/alternate/table").json()["state"] == "not_built"
+        client.get(BASE + "/dimensions/alternate/table").json()["state"] == "ready"
     )
     response = client.put(
         BASE + "/transactions/tx_forecast",
@@ -51,15 +51,13 @@ def test_remapping_transaction_previews_and_rebuilds_owned_measures(clickhouse_a
     )
     assert response.status_code == 200, response.text
     for mid in ("FQTY", "ForecastCopy"):
-        assert (
-            client.get(BASE + "/measures/" + mid).json()["definition"][
-                "nativeDimensionId"
-            ]
-            == "alternate"
-        )
+        definition = client.get(BASE + "/measures/" + mid).json()["definition"]
+        assert definition["transactionId"] == "tx_forecast"
+        assert "nativeDimensionId" not in definition
+    assert response.json()["effectiveGrainId"] == "alternate"
     assert (
-        client.get(BASE + "/measures/Double").json()["definition"]["nativeDimensionId"]
-        == "alternate"
+        client.get(BASE + "/measures/Double").json()["definition"]["outputGrain"]
+        == {"kind": "dimension", "objectId": "alternate"}
     )
     assert (
         client.get(BASE + "/measures/execution/levels/base").json()["state"]
@@ -157,7 +155,7 @@ def test_unbound_sales_grain_price_follows_remapped_inputs(clickhouse_app):
     )
     assert response.status_code == 200, response.text
     current = client.get(BASE + "/measures/price").json()
-    assert current["definition"]["nativeDimensionId"] == "pt"
+    assert current["definition"]["outputGrain"] == {"kind": "dimension", "objectId": "pt"}
     assert current["definition"]["formula"] == before["definition"]["formula"]
     assert current["version"] == before["version"] + 1
     assert run_incremental(client)["state"] == "succeeded"

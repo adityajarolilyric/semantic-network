@@ -11,14 +11,35 @@ from ..schemas.transactions import (
     TransactionInput,
 )
 from ..services.transactions import TransactionService
+from ..schemas.transaction_population import TransactionPopulationCommand
+from ..schemas.dimensions import DimensionInput
 from .base import RevisionResourceAPI
 
 
 class TransactionAPI(RevisionResourceAPI):
-    def __init__(self, service: TransactionService, resolution=None, grains=None):
+    def __init__(
+        self,
+        service: TransactionService,
+        resolution=None,
+        grains=None,
+        populations=None,
+    ):
         super().__init__(service, "transactions", TransactionDocument)
         self.resolution = resolution
         self.grains = grains
+        self.populations = populations
+        self.router.add_api_route(
+            "/population/save", self.save_population, methods=["POST"]
+        )
+        self.router.add_api_route(
+            "/population/preview", self.preview_population, methods=["POST"]
+        )
+        self.router.add_api_route(
+            "/population/options", self.population_options, methods=["POST"]
+        )
+        self.router.add_api_route(
+            "/population/schema", self.population_schema, methods=["POST"]
+        )
         self.router.add_api_route(
             "/from-grain", self.from_grain, methods=["POST"], status_code=201
         )
@@ -41,6 +62,43 @@ class TransactionAPI(RevisionResourceAPI):
             "/resolution/schema", self.output_schema, methods=["POST"]
         )
         self.router.add_api_route("/{resource_id}/schema", self.schema, methods=["GET"])
+
+    async def save_population(
+        self,
+        model_id: Identifier,
+        revision_id: Identifier,
+        payload: TransactionPopulationCommand,
+    ):
+        return await self.populations.save(model_id, revision_id, payload)
+
+    async def preview_population(
+        self,
+        model_id: Identifier,
+        revision_id: Identifier,
+        payload: TransactionPopulationCommand,
+        sql_only: bool = False,
+    ):
+        return await self.populations.preview(
+            model_id, revision_id, payload, sql_only=sql_only
+        )
+
+    async def population_options(
+        self, model_id: Identifier, revision_id: Identifier, payload: DimensionInput
+    ):
+        return await self.resolution.options(model_id, revision_id, population=payload)
+
+    async def population_schema(
+        self,
+        model_id: Identifier,
+        revision_id: Identifier,
+        payload: TransactionPopulationCommand,
+    ):
+        return await self.resolution.schema(
+            model_id,
+            revision_id,
+            payload=payload.transaction,
+            population=payload.population,
+        )
 
     async def from_grain(
         self,

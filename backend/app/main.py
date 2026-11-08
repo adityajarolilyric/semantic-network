@@ -166,6 +166,7 @@ class ApplicationFactory:
                 container.transactions,
                 container.transaction_resolution,
                 container.transaction_grains,
+                container.transaction_populations,
             ),
             MeasureAPI(
                 container.measures, container.measure_builds, container.semantic_network

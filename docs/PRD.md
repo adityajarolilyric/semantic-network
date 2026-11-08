@@ -1,15 +1,13 @@
 # Product requirements
 
-## Unified Dimension workflow
+## Transaction-led population workflow
 
-- One Dimension concept covers single-key and compound grains. **Reason:** users should not author a second semantic object solely to attach Transactions and measures.
-- Persist one Dimension aggregate with optional embedded member metadata; Base, Transaction and Measure references use Dimension IDs. **Reason:** the stored model and code must match the workflow.
-- Each Transaction references one Dimension and maps every grain key. Optional relationships add validation/enrichment and proven cross-grain paths. **Reason:** grain and attribute roles must remain explicit.
-- Save source-backed Dimension metadata without a population build; Save derived Dimensions with a durable population-only build. Preview is a bounded query; Build Semantic prepares dependencies and wide values. **Reason:** one build action should produce a usable network.
-- Aggregate Transactions by keys using measure policies, then LEFT JOIN to Dimension populations. Never expand intersections implicitly. **Reason:** population ownership and configured mathematics must remain stable.
-- Preserve independent Dimensions, typed/count restrictions, AggregateFirst semantics, edit eligibility, current-table storage, incremental reuse and version/fence protections. **Reason:** simplification must not change results.
-- Back up and migrate existing MongoDB metadata in a one-time tool; retain physical data and stable IDs. **Reason:** a vocabulary change must not erase existing work or manual edits.
-
+- Author valid populations inside Transactions, either from its distinct input rows, from selected population tables/Cartesian factors/projections, or by reusing a saved population. **Reason:** remove a separate compound-Dimension setup step while preserving valid intersections.
+- Keep member catalogs under Dimensions and reusable population definitions in existing `dimension` metadata. **Reason:** simplify authoring without changing identities or execution contracts.
+- Suggest matching key names, allow independent populations, and never infer equal coverage from equal grain. **Reason:** Forecast and Sales can share keys but cover different combinations.
+- Select Base on the population or centrally on the Transactions list; persist the selection once per revision. **Reason:** Base is a shared valid population, not a per-table flag or an implied join path.
+- Save population, Transaction, selected/rebound Measures and Base atomically with optimistic versions. Preview unsaved drafts without metadata writes. **Reason:** incomplete saves must not leave orphan populations or inconsistent measure context.
+- Retain configured aggregation, optional relationships, multi-grain/date/pivot/filter semantics, incremental builds, edit policies and current-table storage. **Reason:** reducing setup effort must preserve business results.
 
 Status: product baseline for review, 4 November 2026. The current contract is derived from the supplied Semantic demo, the accepted design decisions and the repository implementation. Future items and unresolved decisions are labelled separately; this document does not claim that the prototype is already a fully operated production service.
 

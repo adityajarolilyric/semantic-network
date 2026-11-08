@@ -1,3 +1,10 @@
+import { DimensionEditor } from './DimensionEditor'
+import {
+  newTransactionPopulation,
+  suggestPopulationMappings,
+  type TransactionPopulationSave,
+} from '../transactionPopulation'
+import { inputOf } from '../types'
 import { ViewSqlButton } from '../../components/ViewSqlButton'
 import { useDimensionCatalog } from '../useDimensionCatalog'
 import {
@@ -24,7 +31,7 @@ import { FieldHelp } from '../../components/FieldHelp'
 import { useState } from 'react'
 import { TransactionCalendarEditor } from './TransactionCalendarEditor'
 import { type Dimension, type SourceColumn, type Transaction } from '../types'
-import { Actions, IdentityFields, options, Select, Check, Checks, type EditorProps } from './Fields'
+import { Actions, IdentityFields, options, Select, Check, type EditorProps } from './Fields'
 export function TransactionEditor({
   initial,
   data,
@@ -33,8 +40,16 @@ export function TransactionEditor({
   onCancel,
   busy,
   base,
+  baseDimensionId,
+  revisionVersion,
+  savedVersion,
+  onSavePopulation,
 }: EditorProps<Transaction> & {
   base?: string
+  baseDimensionId?: string | null
+  revisionVersion?: number
+  savedVersion?: number
+  onSavePopulation?: (command: TransactionPopulationSave) => Promise<void>
   onCreated?: (transaction: Transaction & { version: number }, close: boolean) => void
 }) {
   const [value, set] = useState(() =>
@@ -54,11 +69,29 @@ export function TransactionEditor({
   )
   const dimensionMembers = useDimensionCatalog(data, base)
   const [measureDrafts, setMeasureDrafts] = useState<TransactionMeasureDraft[]>([])
-  const [createGrain, setCreateGrain] = useState(!editing || !initial.definition.dimensionId)
-  const [grainKeys, setGrainKeys] = useState<string[]>(
-    initial.definition.grainColumnIds ??
-      initial.definition.keyMappings.map((mapping) => mapping.sourceColumnId),
+  const [populationMode, setPopulationMode] = useState<'rows' | 'reuse' | 'custom'>(
+    initial.definition.dimensionId ? 'reuse' : 'rows',
   )
+  const [populationDraft, setPopulationDraft] = useState<Dimension>(() => {
+    const draft = newTransactionPopulation(initial)
+    const keys = initial.definition.grainColumnIds ?? []
+    draft.definition.grain = {
+      keyIds: keys,
+      columns: keys.map((id) => ({
+        grainColumnId: id,
+        name:
+          data.sources
+            .find((source) => source.objectId === initial.definition.sourceId)
+            ?.definition.columns.find((column) => column.columnId === id)?.name ?? id,
+        populationRef: { columnId: id },
+      })),
+    }
+    return draft
+  })
+  const [populationVersion, setPopulationVersion] = useState<number | null>(null)
+  const [useAsBase, setUseAsBase] = useState(!baseDimensionId)
+  const createGrain = populationMode === 'rows'
+  const creatingPopulation = populationMode !== 'reuse'
   const [onboardingBusy, setOnboardingBusy] = useState(false)
   const [createdLevel, setCreatedLevel] = useState<Dimension | null>(null)
   const [calendarColumns, setCalendarColumns] = useState<SourceColumn[]>([])
@@ -72,11 +105,13 @@ export function TransactionEditor({
   useEffect(() => {
     setPreview(null)
     setError('')
-  }, [value])
+  }, [value, populationDraft, populationMode, useAsBase])
   const d = value.definition
   const update = (patch: Partial<typeof d>) =>
     set((current) => ({ ...current, definition: { ...current.definition, ...patch } }))
-  const level = dimensionMembers.levels.find((l) => l.objectId === d.dimensionId) ?? createdLevel
+  const level = creatingPopulation
+    ? populationDraft
+    : (dimensionMembers.levels.find((l) => l.objectId === d.dimensionId) ?? createdLevel)
   const source = data.sources.find((s) => s.objectId === d.sourceId)
   const pivotReady = !d.pivot?.enabled || pivotColumns !== null
   const inputColumns = d.pivot?.enabled ? (pivotColumns ?? []) : (source?.definition.columns ?? [])
@@ -100,53 +135,129 @@ export function TransactionEditor({
       : grainColumns,
   )
   const measuresReady = editing || transactionMeasuresComplete(measureDrafts, measureColumns)
-  const grainColumnSignature = JSON.stringify(grainColumns.map((c) => c.columnId))
+  const mappingSignature = JSON.stringify(level?.definition.grain.columns ?? [])
+  const inputSignature = JSON.stringify(
+    grainColumns.map((column) => [column.columnId, column.name]),
+  )
   useEffect(() => {
-    if (!pivotReady || (d.calendarResolution && !calendarColumns.length)) return
-    const ids = new Set<string>(JSON.parse(grainColumnSignature))
-    setGrainKeys((keys) => keys.filter((key) => ids.has(key)))
-  }, [grainColumnSignature, pivotReady, !!d.calendarResolution, calendarColumns.length])
+    if (
+      createGrain ||
+      d.mappingMode !== 'direct' ||
+      !level ||
+      !pivotReady ||
+      (d.calendarResolution && !calendarColumns.length)
+    )
+      return
+    const mappings = suggestPopulationMappings(level, grainColumns, d.keyMappings)
+    if (JSON.stringify(mappings) !== JSON.stringify(d.keyMappings))
+      update({ keyMappings: mappings })
+  }, [
+    mappingSignature,
+    inputSignature,
+    pivotReady,
+    calendarColumns.length,
+    populationMode,
+    level?.objectId,
+    createGrain,
+    d.mappingMode,
+    d.dimensionId,
+  ])
+
   const filterColumns = useFilterColumns(
-    base ? base + '/transactions/resolution/schema' : undefined,
-    { ...value, definition: { ...d, filters: null } },
+    base ? base + '/transactions/population/schema' : undefined,
+    {
+      ...populationCommand(),
+      transaction: {
+        ...populationCommand().transaction,
+        definition: { ...transactionDefinition(), filters: null },
+      },
+    },
     !createGrain && !!d.filters,
   )
-  const grainPayload = (includeMeasures = false) => ({
-    ...(includeMeasures ? { measures: transactionMeasureSelections(measureDrafts) } : {}),
-    objectId: value.objectId,
-    kind: 'transaction',
-    name: value.name,
-    displayName: value.displayName,
-    description: value.description,
-    sourceId: d.sourceId,
-    pivot: d.pivot ?? null,
-    calendarResolution: d.calendarResolution ?? null,
-    filters: d.filters ?? null,
-    grainColumnIds: grainKeys,
-  })
+  function transactionDefinition() {
+    const target = level
+    const keyMappings = createGrain
+      ? populationDraft.definition.grain.keyIds.map((grainColumnId) => ({
+          grainColumnId,
+          sourceColumnId: populationDraft.definition.grain.columns.find(
+            (column) => column.grainColumnId === grainColumnId,
+          )!.populationRef.columnId!,
+        }))
+      : d.keyMappings
+    return {
+      ...d,
+      timeColumnId:
+        createGrain &&
+        d.timeColumnId &&
+        !keyMappings.some((mapping) => mapping.sourceColumnId === d.timeColumnId)
+          ? null
+          : d.timeColumnId,
+      dimensionId: target?.objectId ?? null,
+      grainColumnIds:
+        d.mappingMode === 'direct' || createGrain
+          ? keyMappings.map((mapping) => mapping.sourceColumnId)
+          : [],
+      keyMappings: createGrain || d.mappingMode === 'direct' ? keyMappings : [],
+      mappingMode: createGrain ? ('direct' as const) : d.mappingMode,
+      resolution: createGrain ? null : d.resolution,
+    }
+  }
+  function populationCommand(includeMeasures = false): TransactionPopulationSave {
+    const population = creatingPopulation ? inputOf(populationDraft) : null
+    if (population && createGrain) {
+      population.definition = {
+        ...population.definition,
+        population: {
+          operation: 'source',
+          sourceId: d.sourceId,
+          inputTransform: {
+            objectId: value.objectId,
+            pivot: d.pivot ?? null,
+            calendarResolution: d.calendarResolution ?? null,
+            filters: d.filters ?? null,
+          },
+        },
+      }
+    }
+    return {
+      transaction: {
+        ...inputOf(value),
+        definition: transactionDefinition(),
+        ...(includeMeasures && !editing
+          ? { measures: transactionMeasureSelections(measureDrafts) }
+          : {}),
+      },
+      population,
+      expectedVersion: savedVersion ?? null,
+      expectedPopulationVersion: creatingPopulation ? populationVersion : null,
+      expectedRevisionVersion: revisionVersion ?? 1,
+      useAsBase: useAsBase || !!(level && level.objectId === baseDimensionId),
+    }
+  }
+  const populationReady =
+    !!level?.definition.grain.keyIds.length &&
+    (!creatingPopulation || !!populationDraft.name.trim())
+  const keyNames = populationDraft.definition.grain.columns
+    .filter((column) => populationDraft.definition.grain.keyIds.includes(column.grainColumnId))
+    .map((column) => column.name.toLowerCase())
+    .sort()
+    .join('|')
+  const similarPopulations =
+    creatingPopulation && keyNames
+      ? data.dimensions.filter(
+          (dimension) =>
+            dimension.objectId !== populationDraft.objectId &&
+            dimension.definition.grain.columns
+              .filter((column) => dimension.definition.grain.keyIds.includes(column.grainColumnId))
+              .map((column) => column.name.toLowerCase())
+              .sort()
+              .join('|') === keyNames,
+        )
+      : []
   async function saveTransaction() {
-    if (!measuresReady || (createGrain && !grainKeys.length)) return
-    const definition = createGrain
-      ? {
-          ...d,
-          dimensionId: null,
-          grainColumnIds: grainKeys,
-          keyMappings: [],
-          mappingMode: 'direct' as const,
-          resolution: null,
-        }
-      : {
-          ...d,
-          grainColumnIds:
-            d.mappingMode === 'direct'
-              ? d.keyMappings.map((mapping) => mapping.sourceColumnId)
-              : [],
-        }
-    await onSave({
-      ...value,
-      definition,
-      ...(!editing ? { measures: transactionMeasureSelections(measureDrafts) } : {}),
-    })
+    if (!measuresReady || !populationReady) return
+    if (onSavePopulation) await onSavePopulation(populationCommand(true))
+    else await onSave(populationCommand(true).transaction)
   }
   return (
     <form
@@ -165,7 +276,11 @@ export function TransactionEditor({
             items={options(data.sources.filter((s) => s.definition.inScope))}
             onChange={(sourceId) => {
               setMeasureDrafts([])
-              setGrainKeys([])
+              if (creatingPopulation) {
+                const next = newTransactionPopulation({ ...value, definition: { ...d, sourceId } })
+                setPopulationDraft(next)
+                setPopulationVersion(null)
+              }
               update({
                 sourceId,
                 pivot: null,
@@ -295,35 +410,30 @@ export function TransactionEditor({
             <h3>Grain Selection</h3>
             <span className="badge">Required</span>
           </div>
+          <p className="meta-hint">Choose which valid combinations your measures will use.</p>
           <fieldset className="measure-type-control" disabled={!source || !pivotReady}>
-            <legend>
-              Transaction mapping <FieldHelp label="Transaction mapping" />
-            </legend>
+            <legend>Population</legend>
             <div className="measure-type-switch">
               {(
                 [
-                  ['create_grain', 'Grain keys only'],
-                  ['direct', 'Bind to a Dimension'],
+                  ['rows', 'Rows from this transaction'],
+                  ['reuse', 'Use existing population'],
+                  ['custom', 'Define population'],
                 ] as const
               ).map(([mode, label]) => (
                 <label className="measure-type-option" key={mode}>
                   <input
                     type="radio"
-                    name="transaction-mapping"
-                    value={mode}
-                    checked={createGrain ? mode === 'create_grain' : mode === 'direct'}
+                    name="transaction-population"
+                    checked={populationMode === mode}
                     onChange={() => {
-                      setCreateGrain(mode === 'create_grain')
-                      update({
-                        mappingMode: 'direct',
-                        resolution: null,
-                        keyMappings: (level?.definition.grain.keyIds ?? []).map(
-                          (grainColumnId) => ({
-                            grainColumnId,
-                            sourceColumnId: '',
-                          }),
-                        ),
-                      })
+                      if (mode === populationMode) return
+                      setPopulationMode(mode)
+                      if (mode !== 'reuse') {
+                        setPopulationDraft(newTransactionPopulation(value))
+                        setPopulationVersion(null)
+                      }
+                      update({ mappingMode: 'direct', resolution: null, keyMappings: [] })
                     }}
                   />
                   <span>{label}</span>
@@ -331,9 +441,25 @@ export function TransactionEditor({
               ))}
             </div>
           </fieldset>
-          {!createGrain && (
+          {creatingPopulation && (
+            <DimensionEditor
+              key={populationDraft.objectId + populationMode}
+              embedded
+              fixedSource={createGrain}
+              inputColumns={grainColumns}
+              initial={populationDraft}
+              data={data}
+              editing={populationVersion !== null}
+              onDraftChange={setPopulationDraft}
+              busy={busy}
+              base={base}
+              onSave={async () => {}}
+              onCancel={() => {}}
+            />
+          )}
+          {populationMode === 'reuse' && (
             <Select
-              label="Dimension"
+              label="Existing population"
               value={dimensionMembers.selection(d.dimensionId ?? '')}
               items={dimensionMembers.items}
               onChange={async (memberCatalogId) => {
@@ -349,10 +475,7 @@ export function TransactionEditor({
                     keyMappings:
                       d.mappingMode === 'resolve_multi_grain'
                         ? []
-                        : (l?.definition.grain.keyIds ?? []).map((grainColumnId) => ({
-                            grainColumnId,
-                            sourceColumnId: '',
-                          })),
+                        : suggestPopulationMappings(l, grainColumns),
                   })
                 } catch (error) {
                   setError(error instanceof Error ? error.message : 'Could not select Dimension.')
@@ -362,11 +485,112 @@ export function TransactionEditor({
               }}
             />
           )}
+          {similarPopulations.length > 0 && (
+            <div className="population-summary" role="status">
+              <strong>Existing populations with these key names</strong>
+              <p className="meta-hint">Reuse one if its valid combinations fit this transaction.</p>
+              {similarPopulations.map((population) => (
+                <button
+                  key={population.objectId}
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => {
+                    setPopulationMode('reuse')
+                    setCreatedLevel(population)
+                    update({
+                      dimensionId: population.objectId,
+                      mappingMode: 'direct',
+                      resolution: null,
+                      keyMappings: [],
+                    })
+                  }}
+                >
+                  Use {population.name}
+                </button>
+              ))}
+            </div>
+          )}
+          {createGrain && (
+            <Select
+              label="Time key (optional)"
+              required={false}
+              value={d.timeColumnId ?? ''}
+              items={populationDraft.definition.grain.columns.map((column) => ({
+                value: column.populationRef.columnId!,
+                label: column.name,
+              }))}
+              onChange={(timeColumnId) => update({ timeColumnId: timeColumnId || null })}
+            />
+          )}
+          {populationMode === 'reuse' && level && (
+            <div className="population-summary">
+              <div>
+                <strong>{level.name}</strong>
+                {level.objectId === baseDimensionId && <span className="meta-badge">Base</span>}
+              </div>
+              <p className="meta-hint">
+                {level.definition.grain.columns
+                  .filter((column) => level.definition.grain.keyIds.includes(column.grainColumnId))
+                  .map((column) => column.name)
+                  .join(' × ')}
+              </p>
+              {
+                <button
+                  type="button"
+                  className="text-button"
+                  onClick={() => {
+                    setPopulationDraft(structuredClone(inputOf(level)))
+                    setPopulationVersion(
+                      data.dimensions.find((dimension) => dimension.objectId === level.objectId)
+                        ?.version ?? null,
+                    )
+                    setPopulationMode('custom')
+                  }}
+                >
+                  Edit shared population
+                </button>
+              }
+            </div>
+          )}
+          {populationVersion !== null && (
+            <p className="meta-hint" role="status">
+              Shared with:{' '}
+              {data.transactions
+                .filter(
+                  (transaction) => transaction.definition.dimensionId === populationDraft.objectId,
+                )
+                .map((transaction) => transaction.name)
+                .join(', ') || 'this transaction'}
+              . Saving changes affects all connected measures and requires a network rebuild.
+            </p>
+          )}
+          {populationReady && (
+            <div className="population-base-choice">
+              <Check
+                label="Use this population as Base"
+                value={useAsBase || level?.objectId === baseDimensionId}
+                disabled={level?.objectId === baseDimensionId}
+                onChange={setUseAsBase}
+              />
+              {useAsBase && baseDimensionId && level?.objectId !== baseDimensionId && (
+                <p className="meta-hint">
+                  Replaces{' '}
+                  {data.dimensions.find((dimension) => dimension.objectId === baseDimensionId)
+                    ?.name ?? 'the current Base'}
+                  . Rebuild the semantic network after saving.
+                </p>
+              )}
+              <p className="meta-hint">
+                Base defines the finest shared planning combinations. Measures reach it only through
+                supported dimension mappings and visibility policies.
+              </p>
+            </div>
+          )}
           {!createGrain && (
             <Check
               label="Resolve multi-grain data"
               value={d.mappingMode === 'resolve_multi_grain'}
-              disabled={!source || !pivotReady || !level}
+              disabled={!source || !pivotReady || !populationReady}
               onChange={(resolve) =>
                 update({
                   mappingMode: resolve ? 'resolve_multi_grain' : 'direct',
@@ -381,33 +605,10 @@ export function TransactionEditor({
               }
             />
           )}
-          {createGrain ? (
-            <>
-              <p className="meta-hint">
-                Select the grain keys used to group measure values. Multiple source records at the
-                same grain are allowed.
-              </p>
-              <Checks
-                label="Transaction grain columns"
-                selected={grainKeys}
-                items={(d.calendarResolution ? calendarColumns : inputColumns).map((c) => ({
-                  value: c.columnId,
-                  label: c.name,
-                }))}
-                onChange={setGrainKeys}
-              />
-              <Select
-                label="Time key (optional)"
-                required={false}
-                value={d.timeColumnId ?? ''}
-                items={grainKeys.map((key) => ({
-                  value: key,
-                  label: grainColumns.find((column) => column.columnId === key)?.name ?? key,
-                }))}
-                onChange={(timeColumnId) => update({ timeColumnId: timeColumnId || null })}
-              />
-            </>
-          ) : d.mappingMode === 'resolve_multi_grain' && d.resolution && level && source ? (
+          {createGrain ? null : d.mappingMode === 'resolve_multi_grain' &&
+            d.resolution &&
+            level &&
+            source ? (
             <>
               <TransactionResolutionEditor
                 value={d.resolution}
@@ -415,6 +616,7 @@ export function TransactionEditor({
                 columns={d.calendarResolution ? calendarColumns : inputColumns}
                 calendarResolved={!!d.calendarResolution}
                 level={level}
+                population={creatingPopulation ? populationDraft : undefined}
                 base={base}
                 sourceId={source.objectId}
               />
@@ -501,8 +703,9 @@ export function TransactionEditor({
             busy={busy || previewBusy || onboardingBusy}
             canSave={
               measuresReady &&
+              populationReady &&
               (createGrain
-                ? grainKeys.length > 0 &&
+                ? populationDraft.definition.grain.keyIds.length > 0 &&
                   pivotReady &&
                   (!d.calendarResolution || calendarColumns.length > 0)
                 : pivotReady &&
@@ -520,7 +723,7 @@ export function TransactionEditor({
                 busy ||
                 previewBusy ||
                 onboardingBusy ||
-                (createGrain && !grainKeys.length) ||
+                !populationReady ||
                 !pivotReady ||
                 (d.mappingMode === 'resolve_multi_grain' && !resolutionComplete(d.resolution)) ||
                 (!!d.calendarResolution && !calendarColumns.length)
@@ -532,12 +735,9 @@ export function TransactionEditor({
                 try {
                   setPreview(
                     await metadataApi.request(
-                      base +
-                        (createGrain
-                          ? '/transactions/from-grain/preview'
-                          : '/transactions/resolution/preview'),
+                      base + '/transactions/population/preview',
                       'POST',
-                      createGrain ? grainPayload() : value,
+                      populationCommand(),
                     ),
                   )
                 } catch (error) {
@@ -555,7 +755,7 @@ export function TransactionEditor({
                 busy ||
                 previewBusy ||
                 onboardingBusy ||
-                (createGrain && !grainKeys.length) ||
+                !populationReady ||
                 !pivotReady ||
                 (d.mappingMode === 'resolve_multi_grain' && !resolutionComplete(d.resolution)) ||
                 (!!d.calendarResolution && !calendarColumns.length)
@@ -564,13 +764,9 @@ export function TransactionEditor({
                 if (!form.current?.reportValidity())
                   throw new Error('Complete the required fields first.')
                 return metadataApi.request(
-                  base +
-                    (createGrain
-                      ? '/transactions/from-grain/preview'
-                      : '/transactions/resolution/preview') +
-                    '?sql_only=true',
+                  base + '/transactions/population/preview?sql_only=true',
                   'POST',
-                  createGrain ? grainPayload() : value,
+                  populationCommand(),
                   undefined,
                   signal,
                 )

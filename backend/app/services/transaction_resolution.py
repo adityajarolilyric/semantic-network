@@ -36,21 +36,34 @@ class TransactionResolutionService(Service):
             populations.executor.warehouse,
         )
 
-    async def options(self, model, revision, level_id=None):
+    async def options(self, model, revision, level_id=None, *, population=None):
         repo = self.store.repository
         objects = await self.graph_objects(repo, model, revision)
-        level = (
-            await metadata_repositories(repo).objects.require(
-                ObjectLookup(
-                    model_id=model,
-                    revision_id=revision,
-                    object_id=level_id,
-                    kind="dimension",
-                ),
-                "Native dimension",
+        if population is not None:
+            level_id = population.objectId
+            objects = await self.effective(
+                repo,
+                model,
+                revision,
+                [obj for obj in objects if obj["objectId"] != level_id]
+                + [population.model_dump()],
             )
-            if level_id
-            else {"definition": {"grain": {"keyIds": [], "columns": []}}}
+        level = (
+            population.model_dump()
+            if population is not None
+            else (
+                await metadata_repositories(repo).objects.require(
+                    ObjectLookup(
+                        model_id=model,
+                        revision_id=revision,
+                        object_id=level_id,
+                        kind="dimension",
+                    ),
+                    "Native dimension",
+                )
+                if level_id
+                else {"definition": {"grain": {"keyIds": [], "columns": []}}}
+            )
         )
         rel = LevelRelationshipAnalyzer(objects)
         names = {
@@ -142,11 +155,21 @@ class TransactionResolutionService(Service):
             ],
         }
 
-    async def schema(self, model, revision, transaction_id=None, payload=None):
+    async def schema(
+        self, model, revision, transaction_id=None, payload=None, *, population=None
+    ):
         repo = self.store.repository
         objects = await self.effective(
             repo, model, revision, await self.graph_objects(repo, model, revision)
         )
+        if population is not None:
+            objects = await self.effective(
+                repo,
+                model,
+                revision,
+                [obj for obj in objects if obj["objectId"] != population.objectId]
+                + [population.model_dump()],
+            )
         tx = next(
             (
                 o
@@ -156,7 +179,7 @@ class TransactionResolutionService(Service):
             None,
         )
         if payload is not None:
-            tx = payload.model_dump()
+            tx = payload.model_dump(exclude={"measures"})
             objects = [o for o in objects if o["objectId"] != tx["objectId"]] + [tx]
         if not tx:
             raise MetadataError("not_found", "Transaction was not found.", 404)
@@ -278,16 +301,28 @@ class TransactionResolutionService(Service):
             model, revision, payload, PreviewTarget.DIMENSION_OUTPUT, sql_only=sql_only
         )
 
-    async def preview(self, model, revision, payload, *, sql_only=False):
+    async def preview(
+        self, model, revision, payload, *, sql_only=False, population=None
+    ):
         return await self._preview(
             model,
             revision,
             payload,
             PreviewTarget.TRANSACTION_OUTPUT,
             sql_only=sql_only,
+            population_definition=population,
         )
 
-    async def _preview(self, model, revision, payload, target, *, sql_only=False):
+    async def _preview(
+        self,
+        model,
+        revision,
+        payload,
+        target,
+        *,
+        sql_only=False,
+        population_definition=None,
+    ):
         unbound = (
             target == PreviewTarget.TRANSACTION_OUTPUT
             and payload.definition.dimensionId is None
@@ -301,7 +336,23 @@ class TransactionResolutionService(Service):
                 RevisionLookup(model_id=model, revision_id=revision), "Revision"
             )
             objects = await self.graph_objects(repo, model, revision)
-            candidate = {**payload.model_dump(), **scope(model, revision), "version": 0}
+            if population_definition is not None:
+                objects = [
+                    obj
+                    for obj in objects
+                    if obj["objectId"] != population_definition.objectId
+                ] + [
+                    {
+                        **population_definition.model_dump(),
+                        **scope(model, revision),
+                        "version": 0,
+                    }
+                ]
+            candidate = {
+                **payload.model_dump(exclude={"measures"}),
+                **scope(model, revision),
+                "version": 0,
+            }
             if target == PreviewTarget.CALENDAR_INPUT:
                 candidate = {
                     "objectId": payload.transactionId,
