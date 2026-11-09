@@ -2,9 +2,13 @@
 
 from ..core.errors import Conflict, MetadataError
 from ..domain.measure_policies import MEASURE_TYPE_POLICY
-from ..engine.captured_inputs import CapturedRunInputs
-from ..engine.incremental import INCREMENTAL_POLICY, MaterialisationManifest, reusable
-from ..engine.measure_compiler import (
+from ..engine.execution.inputs.captured import CapturedRunInputs
+from ..engine.execution.builds.incremental import (
+    INCREMENTAL_POLICY,
+    MaterialisationManifest,
+    reusable,
+)
+from ..engine.measures.contracts import (
     LEGACY_MEASURE_COMPILER_VERSION,
     MEASURE_COMPILER_VERSION,
     TYPED_MEASURE_COMPILER_VERSION,
@@ -111,6 +115,10 @@ class IncrementalBuildCoordinator:
             and set(snapshots) == set(manifests)
             and all(
                 snapshots[lid]["materialisationManifest"] == manifests[lid]
+                and (
+                    manifests[lid].get("storageMode") != "source"
+                    or snapshots[lid].get("storageMode") == "source"
+                )
                 and snapshots[lid]["populationArtifactId"]
                 == populations[lid]["artifactId"]
                 for lid in manifests

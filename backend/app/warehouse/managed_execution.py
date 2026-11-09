@@ -1,9 +1,10 @@
 from sqlglot import exp, parse_one
 
 from ..core.errors import MetadataError
-from ..engine.checks import CheckDiagnostics, WarehouseCheckRunner
-from ..engine.contracts import digest
-from ..warehouse.sql import quote_identifier, quote_literal
+from ..engine.sql.diagnostics import CheckDiagnostics
+from .query_execution import WarehouseCheckRunner
+from ..engine.sql.contracts import digest
+from .sql import quote_identifier, quote_literal
 
 
 class ClickHouseExecutor:

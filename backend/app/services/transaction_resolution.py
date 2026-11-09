@@ -3,26 +3,24 @@ from uuid import uuid4
 from ..core.errors import Conflict, MetadataError
 from ..domain.dimensions import dimension_columns
 from ..domain.transaction_measures import rebind_transaction_measures
-from ..engine.calendar_resolution import CalendarResolutionPlanner
-from ..engine.compilation_context import CompilationContext
-from ..engine.date_range_resolution import calendar_source_ids
-from ..engine.input_pipeline import InputPipelineCompiler, PreviewTarget
-from ..engine.measure_compiler import MeasureCompiler
-from ..engine.object_inputs import input_columns
-from ..engine.preview_plans import compile_resolution_preview
-from ..engine.read_leases import ArtifactReadLeases
-from ..engine.relationships import Coordinate, LevelRelationshipAnalyzer
-from ..engine.transaction_resolution import (
-    TransactionResolutionPlanner,
-    prepare_resolution_profiles,
-)
+from ..engine.transformations.dates.calendar import CalendarResolutionPlanner
+from ..engine.sql.compilation_context import CompilationContext
+from ..engine.transformations.dates.inputs import calendar_source_ids
+from ..engine.transformations.pipeline import InputPipelineCompiler, PreviewTarget
+from ..engine.measures.compiler import MeasureCompiler
+from ..engine.transformations.inputs import input_columns
+from ..engine.decision.previews import compile_resolution_preview
+from ..engine.execution.read_leases import ArtifactReadLeases
+from ..engine.graph.relationships import Coordinate, LevelRelationshipAnalyzer
+from ..engine.transformations.multigrain.planner import TransactionResolutionPlanner
+from ..engine.execution.inputs.resolution_profiles import prepare_resolution_profiles
 from ..repositories.metadata import metadata_repositories
 from ..repositories.metadata.criteria import (
     ObjectLookup,
     RevisionLookup,
 )
 from ..validation.graph import SemanticGraphValidator
-from ..engine.virtual_populations import logical_population_query
+from ..engine.populations.virtual import logical_population_query
 from .base import Service, scope
 
 

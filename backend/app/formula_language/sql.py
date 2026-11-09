@@ -7,13 +7,12 @@ names come exclusively from the registry, never from user-provided SQL.
 from sqlglot import exp
 
 from ..core.errors import MetadataError
-from ..engine.measure_contracts import COMPLETE, VALUE
-from ..engine.typed_formulas import attribute_alias
-from .expressions import count_key
-
-
-def function(name, *arguments):
-    return exp.Anonymous(this=name, expressions=list(arguments))
+from ..engine.measures.contracts import COMPLETE, VALUE
+from ..engine.sql.typed_formulas import attribute_alias
+from .expressions import count_key, temporal_key
+from .temporal import is_temporal
+from .arithmetic import compile_arithmetic
+from .sql_nodes import function
 
 
 class FormulaSqlCompiler:
@@ -29,6 +28,8 @@ class FormulaSqlCompiler:
         return exp.column(name, table=table, quoted=True)
 
     def compile(self, node):
+        if is_temporal(node):
+            return self.column(VALUE, self.references[temporal_key(node)])
         kind = node["type"]
         if kind == "literal":
             return exp.convert(node["value"])
@@ -149,7 +150,11 @@ class FormulaSqlCompiler:
                 function("addDays", args[0], function("toInt64", days.copy())),
                 null,
             )
+        if fn in {"sqrt", "root", "power"}:
+            return compile_arithmetic(fn, args)
         names = {
+            "ceil": "ceil",
+            "floor": "floor",
             "abs": "abs",
             "round": "roundBankers",
             "coalesce": "coalesce",

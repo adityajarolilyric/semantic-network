@@ -2,7 +2,7 @@
 
 from copy import deepcopy
 
-from ..engine.contracts import digest
+from ..engine.sql.contracts import digest
 from ..schemas.dimensions import DimensionInput
 
 

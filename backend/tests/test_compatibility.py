@@ -1,5 +1,5 @@
 from copy import deepcopy
-from backend.app.engine.compatibility import MeasureCompatibilityAnalyzer
+from backend.app.engine.graph.compatibility import MeasureCompatibilityAnalyzer
 from .conftest import ROOT, EXAMPLE
 
 

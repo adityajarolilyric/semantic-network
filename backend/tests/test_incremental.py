@@ -1,6 +1,6 @@
 from copy import deepcopy
 
-from backend.app.engine.incremental import MaterialisationManifest
+from backend.app.engine.execution.builds.incremental import MaterialisationManifest
 
 
 def model():
@@ -154,8 +154,8 @@ def test_incremental_jobs_reject_runtime_policy_changes_without_falling_back_to_
     import pytest
     from backend.app.core.errors import Conflict
     from backend.app.services.incremental_builds import IncrementalBuildCoordinator
-    from backend.app.engine.incremental import INCREMENTAL_POLICY
-    from backend.app.engine.measure_compiler import MEASURE_COMPILER_VERSION
+    from backend.app.engine.execution.builds.incremental import INCREMENTAL_POLICY
+    from backend.app.engine.measures.contracts import MEASURE_COMPILER_VERSION
 
     job = {
         "buildMode": "incremental",

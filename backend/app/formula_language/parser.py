@@ -2,10 +2,12 @@
 
 import json
 import math
+import unicodedata
+from dataclasses import dataclass
 from functools import lru_cache
 from importlib.resources import files
 
-from lark import Lark, Transformer_NonRecursive, UnexpectedInput
+from lark import Lark, Transformer_NonRecursive, UnexpectedInput, v_args
 from lark.exceptions import VisitError
 
 from ..core.errors import MetadataError
@@ -17,7 +19,9 @@ class SyntaxTree(Transformer_NonRecursive):
         text = str(token)
         return {
             "type": "symbol",
-            "name": text[1:-1] if token.type == "BRACKET_NAME" else text,
+            "name": text[1:-1].replace("]]", "]")
+            if token.type == "BRACKET_NAME"
+            else text,
             "line": token.line,
             "column": token.column,
         }
@@ -97,23 +101,72 @@ class SyntaxTree(Transformer_NonRecursive):
         return self.fold(children, {"*": "multiply", "/": "divide"})
 
 
+@dataclass(frozen=True)
+class ParsedFormulaDefinition:
+    name: str
+    expression_text: str
+    expression: dict
+
+
+class DefinitionSyntaxTree(SyntaxTree):
+    def __init__(self, source):
+        super().__init__()
+        self.source = source
+
+    def definition_name(self, children):
+        token = children[0]
+        raw = str(token)
+        name = (
+            json.loads(raw)
+            if token.type == "ESCAPED_STRING"
+            else raw[1:-1].replace("]]", "]")
+            if token.type == "BRACKET_NAME"
+            else raw
+        )
+        if any(unicodedata.category(char) in {"Cc", "Cs"} for char in name):
+            raise MetadataError(
+                "formula_name", "Measure names cannot contain control characters."
+            )
+        name = name.strip()
+        if not name or len(name) > 200:
+            raise MetadataError(
+                "formula_name", "Use a measure name of 1–200 characters before =."
+            )
+        return name
+
+    @v_args(meta=True)
+    def definition_expression(self, meta, children):
+        return self.source[meta.start_pos : meta.end_pos].strip(), children[0]
+
+    def definition(self, children):
+        name, (text, expression) = children
+        return ParsedFormulaDefinition(name, text, expression)
+
+
 class FormulaParser:
     def __init__(self):
         self.parser = Lark(
             files(__package__).joinpath("grammar.lark").read_text(),
             parser="lalr",
+            start=["start", "definition"],
             lexer="contextual",
             propagate_positions=True,
             maybe_placeholders=False,
         )
 
     def parse(self, text):
+        return self._parse(text, "start", SyntaxTree())
+
+    def parse_definition(self, text):
+        return self._parse(text, "definition", DefinitionSyntaxTree(text))
+
+    def _parse(self, text, start, transformer):
         if not text.strip() or len(text) > 4000:
             raise MetadataError(
                 "formula_syntax", "Enter a formula of 1–4,000 characters."
             )
         try:
-            return SyntaxTree().transform(self.parser.parse(text))
+            return transformer.transform(self.parser.parse(text, start=start))
         except VisitError as error:
             if isinstance(error.orig_exc, MetadataError):
                 raise error.orig_exc from error

@@ -3,9 +3,10 @@
 from collections import OrderedDict
 
 from ..core.errors import MetadataError
-from ..engine.compatibility import MeasureCompatibilityAnalyzer
-from ..engine.contracts import digest
-from ..engine.decision_view import TARGET, DecisionViewPlanner, ViewRelationships
+from ..engine.graph.compatibility import MeasureCompatibilityAnalyzer
+from ..engine.sql.contracts import digest
+from ..engine.decision.relationships import TARGET, ViewRelationships
+from ..engine.decision.planner import DecisionViewPlanner
 from ..repositories.metadata import metadata_repositories
 from ..repositories.metadata.criteria import BindingLookup, RevisionLookup
 from ..schemas.decision_view import DecisionViewRequest

@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from backend.app.core.errors import MetadataError
-from backend.app.engine.calendar_resolution import CalendarResolutionPlanner
+from backend.app.engine.transformations.dates.calendar import CalendarResolutionPlanner
 from backend.app.schemas.transactions import CalendarResolution, TransactionDefinition
 
 
@@ -84,9 +84,7 @@ def test_calendar_schema_preserves_sources_and_ids_when_selection_changes():
     tx["definition"]["calendarResolution"]["selectedColumnIds"] = ["week"]
     other = CalendarResolutionPlanner(objects, tx, cols)
     assert (
-        next(c for c in other.schema() if c.get("memberColumnId") == "week")[
-            "columnId"
-        ]
+        next(c for c in other.schema() if c.get("memberColumnId") == "week")["columnId"]
         == week["columnId"]
     )
 

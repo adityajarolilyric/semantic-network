@@ -2,8 +2,11 @@ from typing import Annotated, Literal, Union
 
 from pydantic import AliasChoices, Field, field_validator, model_validator
 
+from ..formula_language.parser import formula_parser
+
 from .common import DocumentMetadata, Identifier, Name, Schema, SemanticInput
 from .formulas import Formula
+from .temporal import TemporalContext
 from .grains import GrainReference
 
 
@@ -80,7 +83,16 @@ class Allocation(Schema):
         return self
 
 
+class MeasureConversion(Schema):
+    factorMeasureId: Identifier
+    operation: Literal["multiply", "divide"] = "multiply"
+    targetUnit: Name
+
+
 class ReferencedMeasureDefinition(Schema):
+    isConversionFactor: bool = False
+    conversion: MeasureConversion | None = None
+
     measureType: Literal["referenced"]
     transactionId: Identifier
     valueColumnId: Identifier
@@ -110,8 +122,25 @@ class ReferencedMeasureDefinition(Schema):
 
     editable: bool = False
 
+    @model_validator(mode="after")
+    def factor_contract(self):
+        if self.isConversionFactor:
+            if self.conversion or self.resultType.type not in {
+                "number",
+                "decimal",
+                "integer",
+            }:
+                raise ValueError(
+                    "Conversion factors must be numeric and cannot themselves apply a conversion"
+                )
+            self.editable = False
+            self.allocation = Allocation(mode="none")
+            self.aggregation = Aggregation(nonTime="single_value", time="single_value")
+        return self
+
 
 class CalculatedMeasureDefinition(Schema):
+    temporal: TemporalContext | None = None
     measureType: Literal["calculated"]
     outputGrain: GrainReference | None = None
     legacyNativeGrainId: Identifier | None = Field(
@@ -168,6 +197,41 @@ class MeasureBusiness(Schema):
 
 
 class MeasureInput(SemanticInput):
+    # Authoring command only: persist the canonical name and expression separately.
+    formulaDefinition: str | None = Field(default=None, max_length=4000, exclude=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def derive_formula_identity(cls, value):
+        if not isinstance(value, dict) or value.get("formulaDefinition") is None:
+            return value
+        if not isinstance(value["formulaDefinition"], str):
+            raise ValueError("formulaDefinition must be a string")
+        definition = value.get("definition", {})
+        if not isinstance(definition, dict):
+            raise ValueError("definition must be an object")
+        if definition.get("measureType") != "calculated":
+            raise ValueError(
+                "Named formulas are only supported for calculated measures"
+            )
+        formula = definition.get("formula", {})
+        if not isinstance(formula, dict):
+            raise ValueError("formula must be an object")
+        parsed = formula_parser().parse_definition(value["formulaDefinition"])
+        return {
+            **value,
+            "name": parsed.name,
+            "displayName": parsed.name,
+            "definition": {
+                **definition,
+                "formula": {
+                    **formula,
+                    "displayText": parsed.expression_text,
+                    "languageVersion": "planning-v1",
+                },
+            },
+        }
+
     kind: Literal["measure"] = "measure"
     business: MeasureBusiness
     definition: Annotated[

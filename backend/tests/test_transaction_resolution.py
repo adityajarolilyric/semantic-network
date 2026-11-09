@@ -4,7 +4,9 @@ import pytest
 from pydantic import ValidationError
 
 from backend.app.core.errors import MetadataError
-from backend.app.engine.transaction_resolution import TransactionResolutionPlanner
+from backend.app.engine.transformations.multigrain.planner import (
+    TransactionResolutionPlanner,
+)
 from backend.app.schemas.transactions import TransactionDefinition
 
 

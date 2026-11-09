@@ -5,8 +5,8 @@ from copy import deepcopy
 from ..core.errors import MetadataError
 from ..domain.transaction_measures import rebind_transaction_measures
 from ..domain.typed_values import result_type as referenced_result_type
-from ..engine.calendar_resolution import CalendarResolutionPlanner
-from ..engine.contracts import digest
+from ..engine.transformations.dates.calendar import CalendarResolutionPlanner
+from ..engine.sql.contracts import digest
 from ..schemas.measures import MeasureInput
 
 

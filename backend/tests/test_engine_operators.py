@@ -5,11 +5,11 @@ from hypothesis import given, strategies as st
 from sqlglot import exp, parse_one
 
 from backend.app.core.errors import Conflict
-from backend.app.engine.aggregation import AggregationOperator, AggregationPlan
-from backend.app.engine.dependencies import ordered_dimensions
-from backend.app.engine.measure_compiler import MeasureCompiler
-from backend.app.engine.snapshot_reads import snapshot_read
-from backend.app.engine.table_storage import GENERATION
+from backend.app.engine.measures.aggregation import AggregationOperator, AggregationPlan
+from backend.app.engine.graph.dependencies import ordered_dimensions
+from backend.app.engine.measures.compiler import MeasureCompiler
+from backend.app.engine.sql.snapshot_reads import snapshot_read
+from backend.app.engine.sql.storage import GENERATION
 
 
 @given(st.lists(st.integers(min_value=-1, max_value=20), max_size=25))
@@ -167,7 +167,7 @@ def test_two_axis_order_preserves_intermediate_grain_and_first_last_ordering():
 
 
 def test_failed_branch_rollback_keeps_context_aliases_and_clears_input_cache():
-    from backend.app.engine.compilation_checkpoint import CompilationCheckpoint
+    from backend.app.engine.sql.compilation_checkpoint import CompilationCheckpoint
     from .test_incremental import model
 
     objects, populations, managed = model()

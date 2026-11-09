@@ -11,11 +11,72 @@ class Function:
     category: str
     description: str
 
+    @property
+    def group(self):
+        if self.category == "temporal":
+            return "Time series"
+        if self.category == "aggregate":
+            return "Counting"
+        if self.name in {"if", "coalesce", "is_null"}:
+            return "Conditional"
+        if self.name in {"and", "or", "not"}:
+            return "Logical"
+        if self.name in {"concat", "upper", "lower", "trim"}:
+            return "Text"
+        if self.name in {"date", "add_days", "days_between"}:
+            return "Date"
+        return "Arithmetic"
+
 
 FUNCTION_CATALOG = tuple(
     Function(*row)
     for row in [
         ("abs", 1, 1, "scalar", "Absolute numeric value."),
+        ("sqrt", 1, 1, "scalar", "Square root; negative inputs return NULL."),
+        (
+            "root",
+            2,
+            2,
+            "scalar",
+            "Nth root; degree must be a positive whole number. Invalid domains return NULL.",
+        ),
+        (
+            "power",
+            2,
+            2,
+            "scalar",
+            "Raise a number to a power; non-finite results return NULL.",
+        ),
+        ("ceil", 1, 1, "scalar", "Round up to the nearest whole number."),
+        ("floor", 1, 1, "scalar", "Round down to the nearest whole number."),
+        (
+            "rolling",
+            4,
+            4,
+            "temporal",
+            'ROLLING(value, "SUM", start_offset, end_offset). Inclusive calendar-period offsets; CalculateFirst only.',
+        ),
+        (
+            "cumulative",
+            2,
+            2,
+            "temporal",
+            'CUMULATIVE(value, "SUM"). From the start of each series/reset group; CalculateFirst only.',
+        ),
+        (
+            "lag",
+            2,
+            2,
+            "temporal",
+            "Value a positive number of calendar periods earlier; CalculateFirst only.",
+        ),
+        (
+            "lead",
+            2,
+            2,
+            "temporal",
+            "Value a positive number of calendar periods later; CalculateFirst only.",
+        ),
         ("round", 1, 2, "scalar", "Round a number; optionally specify decimal places."),
         ("coalesce", 2, 16, "scalar", "First non-NULL value of matching types."),
         ("min", 2, 16, "scalar", "Smallest of the supplied scalar values."),
@@ -85,6 +146,6 @@ FUNCTION_CATALOG = tuple(
 FUNCTIONS = {
     item.name: (item.minimum, item.maximum)
     for item in FUNCTION_CATALOG
-    if item.category == "scalar"
+    if item.category in {"scalar", "temporal"}
 }
 BY_NAME = {item.name: item for item in FUNCTION_CATALOG}

@@ -4,7 +4,7 @@ import pytest
 
 from backend.app.core.config import Settings
 from backend.app.core.errors import Conflict
-from backend.app.engine.worker import EngineWorker
+from backend.app.engine.execution.worker import EngineWorker
 from backend.app.schemas.dimensions import DimensionInput
 from backend.app.services.base import now
 from backend.app.services.dimension_builds import DimensionBuildService
@@ -142,7 +142,7 @@ async def test_changed_definition_or_dependency_keeps_previous_table():
 
 
 def test_readable_table_names_are_bounded_and_revision_scoped():
-    from backend.app.engine.table_storage import TableStorage
+    from backend.app.warehouse.current_storage import TableStorage
 
     identity = {
         "modelId": "model_1",

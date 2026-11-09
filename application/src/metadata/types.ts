@@ -216,6 +216,15 @@ export type Expression =
       type: 'call'
       function:
         | 'abs'
+        | 'sqrt'
+        | 'root'
+        | 'power'
+        | 'ceil'
+        | 'floor'
+        | 'rolling'
+        | 'cumulative'
+        | 'lag'
+        | 'lead'
         | 'round'
         | 'coalesce'
         | 'min'
@@ -274,6 +283,12 @@ export type MeasureCommon = {
 }
 export type RefDefinition = MeasureCommon & {
   measureType: 'referenced'
+  isConversionFactor?: boolean
+  conversion?: {
+    factorMeasureId: string
+    operation: 'multiply' | 'divide'
+    targetUnit: string
+  } | null
   transactionId: string
   valueColumnId: string
   aggregation: Aggregation
@@ -292,6 +307,14 @@ export type GrainOption = Omit<Dimension, 'kind'> & {
 export type CalcDefinition = MeasureCommon & {
   outputGrain?: GrainReference
   measureType: 'calculated'
+  temporal?: {
+    timeKeyId: string
+    orderColumnId: string
+    periodUnit: 'day' | 'week' | 'month' | 'index'
+    partitionColumnIds: string[]
+    resetColumnId?: string | null
+    minimumPeriods?: number
+  } | null
   calculationType: 'AggregateFirst' | 'CalculateFirst'
   formula: {
     displayText: string
@@ -304,6 +327,7 @@ export type CalcDefinition = MeasureCommon & {
   nullInputPolicy?: 'propagate'
 }
 export type Measure = Semantic & {
+  formulaDefinition?: string
   kind: 'measure'
   business: { unit: string | null; aliases: string[] }
   definition: RefDefinition | CalcDefinition

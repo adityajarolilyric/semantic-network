@@ -1,11 +1,12 @@
 from uuid import uuid4
 
 from ..core.errors import Conflict, MetadataError
-from ..engine.decision_attributes import DecisionAttributeCatalog
-from ..engine.decision_view import DecisionViewCompiler, DecisionViewPlanner
-from ..engine.measure_edits import MeasureEditPlanner
-from ..engine.read_leases import ArtifactReadLeases
-from ..engine.representations import RepresentationPolicy
+from ..engine.decision.attributes import DecisionAttributeCatalog
+from ..engine.decision.compiler import DecisionViewCompiler
+from ..engine.decision.planner import DecisionViewPlanner
+from ..engine.decision.edit_planner import MeasureEditPlanner
+from ..engine.execution.read_leases import ArtifactReadLeases
+from ..engine.graph.representations import RepresentationPolicy
 from ..repositories.metadata import metadata_repositories
 from ..repositories.metadata.criteria import (
     ArtifactLookup,
@@ -243,7 +244,9 @@ class DecisionViewService(Service):
             rows = [row[:width] for row in rows]
             by_id = {o["objectId"]: o for o in objects}
             return {
-                "sql": self.warehouse.queries.decision_view_sql(compiled, self.settings.decision_view_max_groups),
+                "sql": self.warehouse.queries.decision_view_sql(
+                    compiled, self.settings.decision_view_max_groups
+                ),
                 "dialect": "clickhouse",
                 "fields": [
                     {k: v for k, v in field.items() if k != "coordinate"}

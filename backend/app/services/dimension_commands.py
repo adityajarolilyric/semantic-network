@@ -1,7 +1,7 @@
 """Dimension authoring commands that also request durable population builds."""
 
 from ..core.errors import Conflict, MetadataError
-from ..engine.contracts import digest
+from ..engine.sql.contracts import digest
 from ..repositories.metadata import metadata_repositories
 from ..repositories.metadata.criteria import ObjectLookup, RevisionLookup, RunLookup
 from .base import Service

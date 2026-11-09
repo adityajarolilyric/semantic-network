@@ -1,9 +1,8 @@
 import { materialisationCatalog } from './grainCatalog'
 import { dimensionCatalog, dimensionGrain } from './dimensionCatalog'
-import { CompatibilityGraphPanel } from './CompatibilityGraphPanel'
 import { QuickCalculatedMeasure } from './QuickCalculatedMeasure'
 import { DecisionViewNetwork } from './DecisionViewNetwork'
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from 'react'
 import type { TableManagement } from '../components/TableCatalog'
 import { ApiError } from '../lib/api'
 import { metadataApi } from './api'
@@ -28,6 +27,8 @@ import { DimensionMembersEditor } from './editors/DimensionMembersEditor'
 import { DimensionEditor } from './editors/DimensionEditor'
 import { TransactionEditor } from './editors/TransactionEditor'
 import { MeasureEditor, defaultAggregation } from './editors/MeasureEditor'
+const ContextGraphPanel = lazy(() => import('./contextGraph/ContextGraphPanel'))
+
 export type Tab =
   | 'sources'
   | 'managed'
@@ -447,12 +448,21 @@ export function MetadataWorkspace({
         ) : null
       ) : tab === 'context-graph' ? (
         model && revision ? (
-          <div className="meta-card">
-            <CompatibilityGraphPanel
+          <Suspense
+            fallback={
+              <p className="meta-hint" role="status">
+                Loading context graph…
+              </p>
+            }
+          >
+            <ContextGraphPanel
+              key={model.modelId + ':' + revision.revisionId}
+              data={meta.data}
+              baseDimensionId={revision.baseDimensionId}
               base={metadataApi.scope(model.modelId, revision.revisionId)}
               revisionVersion={revision.version}
             />
-          </div>
+          </Suspense>
         ) : null
       ) : (
         <>

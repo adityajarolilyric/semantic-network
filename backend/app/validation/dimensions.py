@@ -1,9 +1,9 @@
 """Focused semantic rules; diagnostics and graph state are owned by the shared context."""
 
 from ..core.errors import MetadataError
-from ..engine.calendar_resolution import CalendarResolutionPlanner
-from ..engine.contracts import digest
-from ..engine.population_inputs import population_columns
+from ..engine.transformations.dates.calendar import CalendarResolutionPlanner
+from ..engine.sql.contracts import digest
+from ..engine.populations.inputs import population_columns
 
 
 class DimensionRules:

@@ -2,8 +2,10 @@
 
 from ..domain.formula_types import FUNCTIONS
 from ..domain.grains import transaction_column_reference
-from ..engine.relationships import Coordinate, LevelRelationshipAnalyzer
+from ..engine.graph.relationships import Coordinate, LevelRelationshipAnalyzer
 from ..formula_language.expressions import contains_counts
+from .temporal import validate_temporal
+from .conversions import validate_conversion_formula
 
 
 class FormulaRules:
@@ -12,6 +14,10 @@ class FormulaRules:
 
     def validate_counting(self, owner):
         definition = owner["definition"]
+        validate_conversion_formula(self.context, owner)
+        validate_temporal(
+            self.context, owner, self.context.objects.get(definition["nativeGrainId"])
+        )
         if (
             contains_counts(definition["formula"]["expression"])
             and definition.get("calculationType") != "AggregateFirst"

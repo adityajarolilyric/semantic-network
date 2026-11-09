@@ -1,8 +1,8 @@
 """Client access and bounded read execution; callers supply compiled plans."""
 
 from ..core.errors import Conflict, MetadataError
-from ..engine.table_storage import owner, relation_sql
-from .sql import quote_identifier as q
+from ..engine.sql.storage import owner, relation_sql
+from .sql import quote_identifier as q, quote_literal as lit
 
 
 class WarehouseCheckRunner:
@@ -22,6 +22,32 @@ class WarehouseCheckRunner:
 class WarehouseQueryExecutor:
     def __init__(self, warehouse):
         self.warehouse = warehouse
+
+    async def stage_edit_cells(self, artifact, query, columns, settings):
+        """One owned, transient disk checkpoint; no cell values enter Python."""
+
+        def create(connect):
+            client = connect()
+            if self.warehouse.table_info(client, artifact["physicalName"]):
+                raise Conflict("The edit cell stage already exists.")
+            declarations = ", ".join(
+                q(column["name"])
+                + " "
+                + (
+                    "Nullable(" + column["physicalType"] + ")"
+                    if column.get("nullable")
+                    and not column["physicalType"].startswith("Nullable(")
+                    else column["physicalType"]
+                )
+                for column in columns
+            )
+            table = self.warehouse.qualify(artifact["physicalName"])
+            client.command(
+                f"CREATE TABLE {table} ({declarations}) ENGINE=MergeTree ORDER BY tuple() COMMENT {lit(artifact['buildOwner'])}"
+            )
+            client.command(f"INSERT INTO {table} {query}", settings=settings)
+
+        await self.warehouse.run(create)
 
     async def pivot_profile(self, artifact, settings, limit):
         def read(connect):
@@ -52,7 +78,10 @@ class WarehouseQueryExecutor:
             client = connect()
             if ownership_message:
                 info = self.warehouse.table_info(client, artifact["physicalName"])
-                if not info or info[0] != "MergeTree" or info[1] != owner(artifact):
+                expected_engine = (
+                    "View" if artifact.get("storageMode") == "source" else "MergeTree"
+                )
+                if not info or info[0] != expected_engine or info[1] != owner(artifact):
                     raise Conflict(ownership_message)
             selected = (
                 {**artifact, "columns": columns} if columns is not None else artifact
@@ -70,6 +99,16 @@ class WarehouseQueryExecutor:
             artifact,
             settings,
             ownership_message="The planning table is missing or changed. Build it again in a draft.",
+        )
+
+    async def output_row_count(self, artifact, settings):
+        return await self.warehouse.run(
+            lambda connect: int(
+                connect().command(
+                    f"SELECT count() FROM {self.warehouse.qualify(artifact['physicalName'])}",
+                    settings=settings,
+                )
+            )
         )
 
     async def preview_values(self, artifact, columns, settings):

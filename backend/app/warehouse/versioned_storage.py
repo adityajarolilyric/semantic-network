@@ -5,7 +5,8 @@ import re
 from ..core.errors import Conflict
 from ..core.metadata import revision_scope as scope
 from ..core.metadata import utc_now as now
-from ..engine.contracts import digest
+from ..engine.sql.contracts import digest
+from ..engine.sql.storage import GENERATION, owner, token
 from ..repositories.metadata import metadata_repositories
 from ..repositories.metadata.criteria import (
     ArtifactLookup,
@@ -15,42 +16,10 @@ from ..repositories.metadata.criteria import (
     RunLookup,
     TableResourceLookup,
 )
-from ..warehouse.sql import quote_identifier as q
-from ..warehouse.sql import quote_literal as lit
+from .sql import quote_identifier as q
+from .sql import quote_literal as lit
 
-GENERATION = "__semantic_generation"
 STORAGE_POLICY = "stable-row-generations-v1"
-
-
-def token(artifact):
-    return artifact.get("generationToken", artifact["artifactId"])
-
-
-def owner(artifact):
-    return artifact.get("storageOwner", "semanticArtifact:" + artifact["artifactId"])
-
-
-def column_sql(column):
-    expression = q(column.get("storageName", column["name"]))
-    return f"assumeNotNull({expression})" if not column["nullable"] else expression
-
-
-def relation_sql(warehouse, artifact):
-    if artifact.get("query") or (
-        artifact.get("storageMode") == "current" and artifact.get("viewName")
-    ):
-        artifact = {
-            **artifact,
-            "columns": [{**c, "storageName": c["name"]} for c in artifact["columns"]],
-        }
-    columns = ", ".join(
-        column_sql(c) + " AS " + q(c["name"]) for c in artifact["columns"]
-    )
-    if artifact.get("query"):
-        return f"SELECT {columns} FROM ({artifact['query']})"
-    if artifact.get("storageMode") == "current":
-        return f"SELECT {columns} FROM {warehouse.qualify(artifact.get('viewName', artifact['physicalName']))}"
-    return f"SELECT {columns} FROM {warehouse.qualify(artifact['physicalName'])} WHERE {q(GENERATION)}={lit(token(artifact))}"
 
 
 class TableStorage:

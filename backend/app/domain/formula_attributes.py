@@ -1,7 +1,7 @@
 """Discover typed, grain-safe formula inputs from an effective metadata snapshot."""
 
 from ..core.errors import MetadataError
-from ..engine.relationships import Coordinate, LevelRelationshipAnalyzer
+from ..engine.graph.relationships import Coordinate, LevelRelationshipAnalyzer
 from ..validation.graph import SemanticGraphValidator
 from .grains import transaction_column_reference
 from .typed_values import result_type

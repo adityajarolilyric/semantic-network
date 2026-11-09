@@ -3,7 +3,7 @@
 from copy import deepcopy
 
 from ..core.errors import MetadataError
-from ..engine.contracts import digest
+from ..engine.sql.contracts import digest
 
 
 def expand_member_catalogs(objects):

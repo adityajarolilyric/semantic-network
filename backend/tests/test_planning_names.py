@@ -1,4 +1,4 @@
-from backend.app.engine.dimension_population import DimensionPlanner
+from backend.app.engine.populations.planner import DimensionPlanner
 
 
 def test_collision_alias_cannot_capture_real_source_column_name():
@@ -22,7 +22,11 @@ def test_legacy_dimension_alias_uses_origin_not_prefix_stripping():
     }
     legacy = {
         "name": "PLT__product_name",
-        "lineage": {"kind": "dimensionMembers", "memberCatalogId": "product", "columnId": "name"},
+        "lineage": {
+            "kind": "dimensionMembers",
+            "memberCatalogId": "product",
+            "columnId": "name",
+        },
     }
     assert DimensionPlanner.semantic_name(legacy, objects) == "product_name"
     # A legitimate source name containing '__' must never be modified by guessing.

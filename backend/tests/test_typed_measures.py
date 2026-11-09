@@ -61,9 +61,7 @@ def test_invalid_types_fail_before_execution(expression):
 
 
 def test_typed_creation_policy_validation_and_attribute_catalog(populated):
-    catalog = populated.get(
-        ROOT + "/measures/formula/attributes?dimensionId=pl_plt"
-    )
+    catalog = populated.get(ROOT + "/measures/formula/attributes?dimensionId=pl_plt")
     assert catalog.status_code == 200, catalog.text
     assert any(
         attribute["reference"].get("memberCatalogId") == "dim_product"
@@ -139,8 +137,8 @@ def test_typed_aggregate_first_can_be_recalculated_for_a_finer_formula(populated
 def test_legacy_numeric_baseline_remains_compatible_with_typed_extension():
     import asyncio
     from backend.app.services.incremental_builds import IncrementalBuildCoordinator
-    from backend.app.engine.measure_compiler import LEGACY_MEASURE_COMPILER_VERSION
-    from backend.app.engine.incremental import INCREMENTAL_POLICY
+    from backend.app.engine.measures.contracts import LEGACY_MEASURE_COMPILER_VERSION
+    from backend.app.engine.execution.builds.incremental import INCREMENTAL_POLICY
     from backend.app.domain.measure_policies import MEASURE_TYPE_POLICY
     from backend.app.domain.typed_values import uses_typed_features
 

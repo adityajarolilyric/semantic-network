@@ -4,8 +4,8 @@ from dataclasses import replace
 from time import perf_counter
 
 from ..core.errors import MetadataError
-from ..engine.in_place_values import update_query, write_groups
-from ..engine.snapshot_reads import snapshot_read
+from ..engine.execution.storage.column_updates import update_query, write_groups
+from ..engine.sql.snapshot_reads import snapshot_read
 from .measure_columns import MeasureColumnSql
 from .sql import quote_identifier as q
 
@@ -64,6 +64,9 @@ class InPlaceValuesWriter:
         measure_timings = {}
         group_timings = []
         groups = write_groups(artifact, changed)
+        partial = "rowScopeNodes" in artifact
+        if partial:
+            groups = [[mid] for group in groups for mid in group]
         for group_index, group in enumerate(groups):
             output_columns = [
                 c
@@ -86,7 +89,10 @@ class InPlaceValuesWriter:
                     )
                 ] + output_columns
             narrow = update_query(
-                working, plan.key_ids, [c["columnId"] for c in selected_columns]
+                working,
+                plan.key_ids,
+                [c["columnId"] for c in selected_columns],
+                row_scope=artifact["rowScopeNodes"][group[0]] if partial else None,
             )
 
             def apply(connect):
@@ -108,12 +114,20 @@ class InPlaceValuesWriter:
                         selected_columns,
                         settings,
                     )
-                self.column_sql.write(
-                    client, artifact, narrow, keys, output_columns, settings, count
+                return self.column_sql.write(
+                    client,
+                    artifact,
+                    narrow,
+                    keys,
+                    output_columns,
+                    settings,
+                    count,
+                    partial=partial,
                 )
-                return count
 
-            count = await self.warehouse.run(apply)
+            changed_count = await self.warehouse.run(apply)
+            if not partial:
+                count = changed_count
             if count > self.settings.planning_max_rows:
                 raise MetadataError(
                     "planning_row_limit", "Values exceed the configured row limit."
@@ -123,7 +137,12 @@ class InPlaceValuesWriter:
                 {
                     "measureIds": group,
                     "elapsed": elapsed,
-                    "operation": "insert_select" if initial else "column_update",
+                    "operation": "row_update"
+                    if partial
+                    else "insert_select"
+                    if initial
+                    else "column_update",
+                    **({"updatedRows": changed_count} if partial else {}),
                 }
             )
             clause = working.query.args.get("with")

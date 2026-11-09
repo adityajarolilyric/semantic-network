@@ -2,12 +2,9 @@ from datetime import timedelta
 import pytest
 from pydantic import ValidationError
 
-from backend.app.engine.artifacts import ArtifactCollector
-from backend.app.engine.decision_view import (
-    DecisionViewPlanner,
-    ViewRelationships,
-    TARGET,
-)
+from backend.app.warehouse.retention import ArtifactCollector
+from backend.app.engine.decision.planner import DecisionViewPlanner
+from backend.app.engine.decision.relationships import ViewRelationships, TARGET
 from backend.app.schemas.decision_view import DecisionViewRequest
 from backend.app.services.base import now
 from backend.tests.test_engine import context, submit, SPEC
@@ -46,7 +43,10 @@ def test_virtual_grain_resolves_formula_grain_references():
         },
     }
     request = DecisionViewRequest.model_validate(
-        {"rows": [{"memberCatalogId": "Product", "columnId": "product"}], "measures": ["q"]}
+        {
+            "rows": [{"memberCatalogId": "Product", "columnId": "product"}],
+            "measures": ["q"],
+        }
     )
     fields = DecisionViewPlanner([obj], "base").fields(request)
     relation = ViewRelationships([obj], fields)

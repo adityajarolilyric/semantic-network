@@ -16,11 +16,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from backend.app.core.config import Settings  # noqa: E402
 from backend.app.container import ServiceContainer  # noqa: E402
-from backend.app.engine.incremental import MaterialisationManifest  # noqa: E402
-from backend.app.engine.captured_inputs import CapturedRunInputs  # noqa: E402
+from backend.app.engine.execution.builds.incremental import MaterialisationManifest  # noqa: E402
+from backend.app.engine.execution.inputs.captured import CapturedRunInputs  # noqa: E402
 from backend.app.core.metadata import utc_now  # noqa: E402
-from backend.app.engine.grain_contexts import resolve_grain_contexts  # noqa: E402
-from backend.app.engine.storage_layout import time_key_ids  # noqa: E402
+from backend.app.engine.graph.grain_contexts import resolve_grain_contexts  # noqa: E402
+from backend.app.engine.execution.storage.layout import time_key_ids  # noqa: E402
 from backend.app.repositories.metadata import metadata_repositories  # noqa: E402
 from backend.app.repositories.metadata.criteria import (
     ArtifactLookup,
@@ -35,7 +35,7 @@ from backend.app.services.workspace_gate import WorkspaceGate  # noqa: E402
 from backend.app.warehouse.current_storage import STORAGE_POLICY, TableStorage  # noqa: E402
 from backend.app.warehouse.repository import ClickHouseWarehouseRepository  # noqa: E402
 from backend.app.warehouse.sql import quote_identifier as q, quote_literal as lit  # noqa: E402
-from backend.app.warehouse.versioned_storage import relation_sql  # noqa: E402
+from backend.app.engine.sql.storage import relation_sql
 
 
 async def migrate(store, warehouse, *, apply=False):

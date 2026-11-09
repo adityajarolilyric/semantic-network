@@ -83,12 +83,11 @@ test('create typed references, attribute formulas and a mixed pivot through the 
     ['Positive Cells', 'COUNT_IF([qty] > 0)'],
   ]) {
     await page.getByRole('button', { name: 'Create measure', exact: true }).click()
-    await page.getByLabel('Name', { exact: true }).fill(name)
     await page.getByRole('radio', { name: 'Calculated', exact: true }).check()
     await page
       .getByLabel('Output grain', { exact: true })
       .selectOption({ label: 'Typed Facts grain' })
-    await page.getByLabel('Formula', { exact: true }).fill(formula)
+    await page.getByLabel('Formula', { exact: true }).fill(`${name} = ${formula}`)
     await expect(page.getByLabel('Counting Level', { exact: true })).toHaveCount(0)
     await expect(
       page.getByRole('heading', { name: 'Dis-Aggregation policies', exact: true }),
@@ -127,6 +126,7 @@ test('create typed references, attribute formulas and a mixed pivot through the 
       .getByRole('button', { name: 'Build Semantic Network', exact: true }),
   ).toBeEnabled()
   await page.getByRole('button', { name: 'Context Graph', exact: true }).click()
+  await page.getByText('Check plotting compatibility', { exact: true }).click()
   await page.getByRole('button', { name: 'Select qty for compatibility', exact: true }).click()
   await page
     .getByRole('button', { name: 'Select Positive Cells for compatibility', exact: true })

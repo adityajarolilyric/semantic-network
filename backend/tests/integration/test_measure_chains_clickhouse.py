@@ -12,7 +12,7 @@ from .test_incremental_clickhouse import run_incremental
 from .test_measures_clickhouse import BASE, assert_post, update_measure
 from .test_measure_edits_clickhouse import editable, edit
 from .test_managed_clickhouse import await_run
-from backend.app.engine.measure_compiler import MeasureCompiler
+from backend.app.engine.measures.compiler import MeasureCompiler
 
 pytestmark = pytest.mark.integration
 

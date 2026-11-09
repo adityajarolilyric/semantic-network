@@ -5,10 +5,10 @@ from ..domain.grains import canonical_measure, resolve_grain
 from ..domain.measure_policies import normalize_measure
 from ..domain.typed_values import NUMERIC
 from ..domain.typed_values import result_type as referenced_result_type
-from ..engine.calendar_resolution import CalendarResolutionPlanner
-from ..engine.compatibility import MeasureCompatibilityAnalyzer
-from ..engine.measure_dependencies import MeasureDependencies
-from ..engine.grain_contexts import resolve_grain_contexts
+from ..engine.transformations.dates.calendar import CalendarResolutionPlanner
+from ..engine.graph.compatibility import MeasureCompatibilityAnalyzer
+from ..engine.measures.dependencies import MeasureDependencies
+from ..engine.graph.grain_contexts import resolve_grain_contexts
 from ..formula_language.service import FormulaLanguage
 from ..repositories.metadata import metadata_repositories
 from ..repositories.metadata.criteria import RevisionLookup
@@ -182,6 +182,8 @@ class MeasureService(ObjectService):
                     },
                 }
             return canonical_measure(normalize_measure(document))
+        if definition.get("conversion"):
+            document = {**document, "business": {**document["business"], "unit": definition["conversion"]["targetUnit"]}}
         transaction = next(
             (
                 o

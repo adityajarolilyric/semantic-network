@@ -3,8 +3,8 @@
 from uuid import uuid4
 
 from ..core.errors import Conflict, ImmutableRevision, MetadataError
-from ..engine.contracts import digest
-from ..engine.dependencies import ordered_dimensions
+from ..engine.sql.contracts import digest
+from ..engine.graph.dependencies import ordered_dimensions
 from ..repositories.metadata import metadata_repositories
 from ..repositories.metadata.criteria import RevisionLookup, RunLookup
 from .base import Service, now, scope

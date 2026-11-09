@@ -12,6 +12,8 @@ beforeEach(() => {
       return [] as never
     const text = (body as { displayText: string }).displayText
     return {
+      name: text.startsWith('Invalid') ? 'Invalid' : 'Double',
+      expressionText: text.includes('[FQTY]') ? '[FQTY]*2' : '1+2',
       valid: !text.endsWith('('),
       containsCounts: false,
       expression: { type: 'literal', value: 1 },
@@ -95,11 +97,12 @@ function setup() {
 }
 it('creates a Base AggregateFirst measure with a compact formula editor', async () => {
   const { user, save } = setup()
-  expect(screen.getByLabelText('Name')).toHaveFocus()
+  expect(screen.queryByLabelText('Name')).not.toBeInTheDocument()
+  expect(screen.getByLabelText('Formula')).toHaveFocus()
   expect(screen.getByLabelText('Formula')).toHaveValue('')
   expect(screen.queryByLabelText('Calculation type')).not.toBeInTheDocument()
   expect(screen.queryByLabelText('Description')).not.toBeInTheDocument()
-  await user.type(screen.getByLabelText('Name'), 'Double')
+  await user.type(screen.getByLabelText('Formula'), 'Double = ')
   await user.click(screen.getByRole('button', { name: /^FQTY$/ }))
   expect(screen.getByLabelText('Formula')).toHaveFocus()
   await user.keyboard('*2')
@@ -107,6 +110,7 @@ it('creates a Base AggregateFirst measure with a compact formula editor', async 
   expect(save).toHaveBeenCalledWith(
     expect.objectContaining({
       name: 'Double',
+      formulaDefinition: 'Double = [FQTY]*2',
       definition: expect.objectContaining({
         nativeGrainId: 'base',
         calculationType: 'AggregateFirst',
@@ -118,7 +122,7 @@ it('creates a Base AggregateFirst measure with a compact formula editor', async 
 it('retains advanced settings when collapsed and reports save errors', async () => {
   const { user, save } = setup()
   save.mockRejectedValue(new Error('Name already exists.'))
-  await user.type(screen.getByLabelText('Name'), 'Double')
+  await user.type(screen.getByLabelText('Formula'), 'Double = ')
   await user.type(screen.getByLabelText('Formula'), '1+2')
   await user.click(screen.getByRole('button', { name: 'Advanced settings' }))
   await user.selectOptions(screen.getByLabelText('Output grain'), 'dimension:week')
@@ -138,11 +142,40 @@ it('retains advanced settings when collapsed and reports save errors', async () 
 })
 it('validates formulas before saving and allows cancellation', async () => {
   const { user, save, close } = setup()
-  await user.type(screen.getByLabelText('Name'), 'Invalid')
-  await user.type(screen.getByLabelText('Formula'), 'ABS(')
+  await user.type(screen.getByLabelText('Formula'), 'Invalid = ABS(')
   await user.click(screen.getByRole('button', { name: 'Save metadata' }))
   expect(screen.getByRole('alert')).toBeVisible()
   expect(save).not.toHaveBeenCalled()
   await user.click(screen.getByRole('button', { name: 'Cancel' }))
   expect(close).toHaveBeenCalledOnce()
+})
+
+it('uses CalculateFirst for conversion formulas and disables AggregateFirst', async () => {
+  vi.mocked(metadataApi.request).mockImplementation(async (path, _method, body) => {
+    if (path.endsWith('/formula/language')) return { functions: [] } as never
+    if (path.includes('/formula/attributes') || path.includes('/formula/measures'))
+      return [] as never
+    const payload = body as { calculationType: string }
+    return {
+      name: 'Converted',
+      expressionText: '[FQTY]*2',
+      expression: { type: 'literal', value: 1 },
+      valid: payload.calculationType === 'CalculateFirst',
+      containsCounts: false,
+      containsConversionFactors: true,
+      resultType: { type: 'number', nullable: true },
+      diagnostics: [],
+    } as never
+  })
+  const { user, save } = setup()
+  await user.type(screen.getByLabelText('Formula'), 'Converted = 1*2')
+  await user.click(screen.getByRole('button', { name: 'Advanced settings' }))
+  await waitFor(() => expect(screen.getByRole('radio', { name: 'Calculate first' })).toBeChecked())
+  expect(screen.getByRole('radio', { name: 'Aggregate first' })).toBeDisabled()
+  await user.click(screen.getByRole('button', { name: 'Save metadata' }))
+  expect(save).toHaveBeenCalledWith(
+    expect.objectContaining({
+      definition: expect.objectContaining({ calculationType: 'CalculateFirst' }),
+    }),
+  )
 })

@@ -192,9 +192,7 @@ def test_reject_invalid_grain(clickhouse_app, rows, expected):
     create(client, level(source))
     run = build(client, "pl_main")
     assert run["state"] == "failed" and run["error"]["code"] == expected, run
-    assert (
-        client.get(BASE + "/dimensions/pl_main/table").json()["rowCount"] is None
-    )
+    assert client.get(BASE + "/dimensions/pl_main/table").json()["rowCount"] is None
 
 
 @pytest.mark.parametrize(
@@ -432,8 +430,8 @@ def test_composite_dimension_lookup_and_scoped_filters(clickhouse_app):
 def test_attribute_grain_projection_membership_and_functional_enrichment(
     clickhouse_app,
 ):
-    from backend.app.engine.contracts import digest
-    from backend.app.engine.relationships import LevelRelationshipAnalyzer
+    from backend.app.engine.sql.contracts import digest
+    from backend.app.engine.graph.relationships import LevelRelationshipAnalyzer
 
     client, admin, database, _ = clickhouse_app
     population = managed(
@@ -604,9 +602,7 @@ def test_attribute_grain_projection_membership_and_functional_enrichment(
     assert response.status_code == 200, response.text
     assert build(client, "bzs", 3)["state"] == "succeeded"
     # A value which does not occur in the mapped dimension column must still fail membership.
-    child["definition"]["memberBindings"][0]["keyMappings"][0][
-        "memberColumnId"
-    ] = "d3"
+    child["definition"]["memberBindings"][0]["keyMappings"][0]["memberColumnId"] = "d3"
     response = client.put(
         BASE + "/dimensions/bzs", json=child, headers={"If-Match": "3"}
     )
@@ -622,7 +618,7 @@ def test_deleted_planning_resource_is_collected_and_recreated_with_fresh_name(
     clickhouse_app,
 ):
     from datetime import timedelta
-    from backend.app.engine.artifacts import ArtifactCollector
+    from backend.app.warehouse.retention import ArtifactCollector
     from backend.app.services.base import now
 
     client, admin, database, _ = clickhouse_app

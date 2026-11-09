@@ -60,7 +60,18 @@ class MeasureColumnSql:
             )
         return count
 
-    def write(self, client, artifact, relation, keys, columns, settings, expected):
+    def write(
+        self,
+        client,
+        artifact,
+        relation,
+        keys,
+        columns,
+        settings,
+        expected,
+        *,
+        partial=False,
+    ):
         """One lookup-backed mutation for a compatible group of changed measures."""
         columns = [
             {**column, "lookupName": f"__value_{index}"}
@@ -92,11 +103,26 @@ class MeasureColumnSql:
                 q(c["lookupName"]) + " Nullable(" + c["physicalType"] + ")"
                 for c in columns
             )
-            client.command(
-                f"CREATE TABLE {staged} (__update_key String, __valid_key UInt8, {declarations}) ENGINE=MergeTree ORDER BY tuple() COMMENT {lit(marker + ':values')}"
+            typed_keys = [f"__grain_{index}" for index in range(len(keys))]
+            key_declarations = (
+                ", ".join(
+                    q(name) + " " + column["physicalType"]
+                    for name, column in zip(typed_keys, keys)
+                )
+                + ", "
+                if partial
+                else ""
+            )
+            key_values = (
+                ", ".join(q(column["name"]) for column in keys) + ", "
+                if partial
+                else ""
             )
             client.command(
-                f"INSERT INTO {staged} SELECT {key_expression(keys, 'name')}, toUInt8(NOT ({null_keys})), {selected} FROM ({relation}) LIMIT {self.warehouse.settings.planning_max_rows + 1}",
+                f"CREATE TABLE {staged} (__update_key String, __valid_key UInt8, {key_declarations}{declarations}) ENGINE=MergeTree ORDER BY tuple() COMMENT {lit(marker + ':values')}"
+            )
+            client.command(
+                f"INSERT INTO {staged} SELECT {key_expression(keys, 'name')}, toUInt8(NOT ({null_keys})), {key_values}{selected} FROM ({relation}) LIMIT {self.warehouse.settings.planning_max_rows + 1}",
                 settings=settings,
             )
             nulls = [
@@ -110,7 +136,10 @@ class MeasureColumnSql:
                 + f" FROM {staged}",
                 settings=settings,
             ).first_row
-            if summary[0] != expected or summary[1] != expected:
+            update_count = int(summary[0])
+            if summary[1] != update_count or (
+                update_count > expected if partial else update_count != expected
+            ):
                 raise MetadataError(
                     "measure_cardinality",
                     "Column updates must cover each native intersection exactly once.",
@@ -138,17 +167,34 @@ class MeasureColumnSql:
                 settings=settings,
             )
             # Join(ANY) collapses duplicate keys. Compare with the validated input
-            # count, then prove full target coverage before changing any values.
+            # count, then prove full coverage of the requested target keys before writing.
+            # Partial edits keep typed keys, allowing native sorting-key pruning.
             stored_key = key_expression(keys, "storageName")
             lookup_literal = lit(
                 self.warehouse.settings.clickhouse_database + "." + name
             )
             present = f"joinGet({lookup_literal}, {lit('__present')}, {stored_key})"
+            predicate = (
+                "tuple("
+                + ", ".join(q(column["storageName"]) for column in keys)
+                + ") IN (SELECT tuple("
+                + ", ".join(q(name) for name in typed_keys)
+                + ") FROM "
+                + staged
+                + ")"
+                if partial
+                else "1"
+            )
             rows, covered, unique = client.query(
-                f"SELECT count(), countIf({present}=1), uniqExact({stored_key}) FROM {table}",
+                f"SELECT count(), countIf({present}=1), uniqExact({stored_key}) FROM {table} WHERE {predicate}",
                 settings=settings,
             ).first_row
-            if rows != expected or covered != expected or unique != expected:
+            expected_coverage = update_count if partial else expected
+            if (
+                rows != expected_coverage
+                or covered != update_count
+                or unique != expected_coverage
+            ):
                 raise MetadataError(
                     "measure_cardinality",
                     "Column updates must cover each native intersection exactly once.",
@@ -164,12 +210,13 @@ class MeasureColumnSql:
                 + ")"
                 for c in columns
             )
-            mutation_started = True
-            client.command(
-                f"ALTER TABLE {table} UPDATE {assignments} WHERE 1",
-                settings={**settings, "mutations_sync": 2},
-            )
-            mutation_completed = True
+            if update_count:
+                mutation_started = True
+                client.command(
+                    f"ALTER TABLE {table} UPDATE {assignments} WHERE {predicate}",
+                    settings={**settings, "mutations_sync": 2},
+                )
+                mutation_completed = True
             # All equality checks happen in ClickHouse; Python receives one count.
             differences = []
             for c in columns:
@@ -182,7 +229,7 @@ class MeasureColumnSql:
                 )
             mismatches = int(
                 client.command(
-                    f"SELECT countIf({' OR '.join(differences)}) FROM {table}",
+                    f"SELECT countIf({' OR '.join(differences)}) FROM {table} WHERE {predicate}",
                     settings=settings,
                 )
             )
@@ -191,6 +238,7 @@ class MeasureColumnSql:
                     "measure_update_mismatch",
                     "Persisted measure values do not match the completed update.",
                 )
+            return update_count
         finally:
             # A timeout can leave a mutation running. Cancel it before releasing
             # its lookup. Recovery also cleans up this owned deterministic name.

@@ -169,7 +169,7 @@ export function DecisionViewNetwork({
     if (
       nextMode === 'full' &&
       !window.confirm(
-        'Full Semantic Refresh reloads all measures from sources and replaces manual edits. Continue?',
+        'Full Semantic Refresh rebuilds from current sources. Edits in materialised outputs are replaced; source-backed edits remain in the source. Continue?',
       )
     )
       return

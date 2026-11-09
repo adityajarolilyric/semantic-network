@@ -1,7 +1,7 @@
 from sqlglot import exp, parse_one
 
-from backend.app.engine.shared_reads import combine_shared_reads
-from backend.app.engine.compilation_context import CompilationContext
+from backend.app.engine.sql.shared_reads import combine_shared_reads
+from backend.app.engine.sql.compilation_context import CompilationContext
 
 
 def snapshot(column, generation="g"):

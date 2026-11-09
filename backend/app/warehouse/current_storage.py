@@ -5,9 +5,9 @@ from uuid import uuid4
 
 from ..core.errors import Conflict, MetadataError
 from ..core.metadata import utc_now
-from ..engine.contracts import digest
-from ..engine.artifact_recovery import ArtifactRecoveryLease
-from ..engine.storage_layout import sorting_key
+from ..engine.sql.contracts import digest
+from ..engine.execution.artifacts.recovery import ArtifactRecoveryLease
+from ..engine.execution.storage.layout import sorting_key
 from ..repositories.metadata import metadata_repositories
 from ..repositories.metadata.criteria import (
     BindingLookup,
@@ -16,9 +16,11 @@ from ..repositories.metadata.criteria import (
     TableResourceLookup,
 )
 from .measure_columns import lookup_name, result_name
+from .source_values import SourceValueStorage
 from .sql import quote_identifier as q, quote_literal as lit
-from .versioned_storage import TableStorage as LegacyTableStorage, owner
-from ..engine.network_gate import NetworkBuildGate
+from .versioned_storage import TableStorage as LegacyTableStorage
+from ..engine.sql.storage import owner
+from ..engine.execution.network_gate import NetworkBuildGate
 
 STORAGE_POLICY = "single-current-table-exchange-v1"
 
@@ -30,6 +32,7 @@ class TableStorage(LegacyTableStorage):
         super().__init__(store, warehouse)
         self.gate = NetworkBuildGate(store)
         self.recovery_lease = ArtifactRecoveryLease(store)
+        self.source_values = SourceValueStorage(self)
 
     @staticmethod
     def lookup(artifact):
@@ -426,6 +429,7 @@ class TableStorage(LegacyTableStorage):
 
     async def recover(self, model, revision):
         """Undo interrupted exchanges or clean successful ones by recorded UUID."""
+        await self.source_values.recover(model, revision)
         repositories = metadata_repositories(self.store.repository)
         after = None
         while True:
@@ -450,13 +454,20 @@ class TableStorage(LegacyTableStorage):
                 run = await repositories.runs.require(
                     RunLookup(run_id=artifact["runId"]), "Build"
                 )
-                if run["state"] == "succeeded" and not artifact.get("publication"):
+                if (
+                    run["state"] == "succeeded"
+                    and not artifact.get("publication")
+                    and artifact.get("resourceKind") != "editCells"
+                ):
                     continue
                 if (
                     run["state"] in ("queued", "running", "waiting")
                     and artifact.get("attempt", 0) >= run["fence"]
                     and run.get("leaseUntil", utc_now()) > utc_now()
                 ):
+                    continue
+                if artifact.get("resourceKind") == "editCells":
+                    await self.rollback(artifact)
                     continue
                 if run["state"] == "succeeded":
                     await self.finish([artifact])
@@ -467,6 +478,11 @@ class TableStorage(LegacyTableStorage):
             after = rows[-1]["artifactId"]
 
     async def rollback(self, artifact):
+        if artifact.get("storageMode") == "source":
+            async with self.recovery_lease.hold(artifact["artifactId"]) as current:
+                if current:
+                    await self.source_values.cleanup(current, rollback=True)
+            return
         async with self.recovery_lease.hold(artifact["artifactId"]) as current:
             if current:
                 await self._rollback(current)
@@ -574,15 +590,20 @@ class TableStorage(LegacyTableStorage):
             for a in artifacts
             if a.get("storageMode") == "current" and "_build_" in a["physicalName"]
         ]
-        if candidates:
+        source_artifacts = [a for a in artifacts if a.get("storageMode") == "source"]
+        if candidates or source_artifacts:
             await self.gate.drain()
         try:
+            for artifact in source_artifacts:
+                await self.source_values.publish(artifact)
             for artifact in candidates:
                 if not artifact.get("previewCommit"):
                     await self.require_running(artifact)
                 await self._publish_one(artifact)
             await commit()
         except BaseException:
+            for artifact in reversed(source_artifacts):
+                await self.rollback(artifact)
             for artifact in reversed(candidates):
                 if artifact.get("publication"):
                     await self.rollback(artifact)
@@ -591,5 +612,7 @@ class TableStorage(LegacyTableStorage):
         # idempotent and retried from the durable journal after a process restart.
         try:
             await self.finish(candidates)
+            for artifact in source_artifacts:
+                await self.source_values.cleanup(artifact)
         except Exception:
             logging.getLogger(__name__).exception("published_clone_cleanup_deferred")

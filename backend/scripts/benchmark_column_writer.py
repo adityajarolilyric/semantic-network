@@ -16,7 +16,7 @@ from uuid import uuid4
 from sqlglot import parse_one
 
 from backend.app.core.config import Settings
-from backend.app.engine.contracts import RelationSchema
+from backend.app.engine.sql.contracts import RelationSchema
 from backend.app.warehouse.in_place_values import InPlaceValuesWriter
 from backend.app.warehouse.repository import ClickHouseWarehouseRepository
 

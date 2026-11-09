@@ -7,7 +7,7 @@ from .test_measures_clickhouse import assert_post, measure, build_values, values
 from .test_transaction_resolution_clickhouse import setup_resolution
 from .test_object_pivots_clickhouse import pivot, schema
 from backend.tests.test_filters import filters, rule
-from backend.app.engine.filters import FilterCompiler
+from backend.app.engine.transformations.filters import FilterCompiler
 
 pytestmark = pytest.mark.integration
 

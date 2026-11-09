@@ -1,7 +1,7 @@
 import pytest
 
 from backend.app.core.errors import MetadataError
-from backend.app.engine.in_place_values import write_groups
+from backend.app.engine.execution.storage.column_updates import write_groups
 
 
 def test_write_groups_checkpoint_dirty_dependencies_and_ignore_preserved_inputs():

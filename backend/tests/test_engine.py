@@ -5,11 +5,11 @@ import pytest
 
 from backend.app.core.config import Settings
 from backend.app.core.errors import Conflict, MetadataError
-from backend.app.engine.compiler import ClickHouseCompiler
-from backend.app.engine.planner import ManagedTablePlanner
-from backend.app.engine.worker import EngineWorker
-from backend.app.engine.artifacts import ArtifactCollector
-from backend.app.engine.managed_builds import ManagedTableBuildHandler
+from backend.app.engine.transformations.pivot.compiler import ClickHouseCompiler
+from backend.app.engine.transformations.pivot.planner import ManagedTablePlanner
+from backend.app.engine.execution.worker import EngineWorker
+from backend.app.warehouse.retention import ArtifactCollector
+from backend.app.engine.execution.builds.managed import ManagedTableBuildHandler
 from backend.app.schemas.managed_tables import ManagedDefinition
 from backend.app.schemas.sources import SourceInput
 from backend.app.services.base import now, scope
@@ -214,7 +214,7 @@ async def test_stale_revision_and_duplicate_failure_preserve_binding():
 
 @pytest.mark.asyncio
 async def test_collection_retains_bound_published_artifact_and_drops_only_owned_unbound():
-    from backend.app.engine.artifacts import ArtifactCollector
+    from backend.app.warehouse.retention import ArtifactCollector
 
     store, service, worker = await context()
     await submit(service)
@@ -255,7 +255,7 @@ async def test_step_durations_use_the_current_attempt_and_restart_on_retry(monke
     await submit(service)
     run = await worker.claim()
     clock = [now()]
-    monkeypatch.setattr("backend.app.engine.worker.now", lambda: clock[0])
+    monkeypatch.setattr("backend.app.engine.execution.worker.now", lambda: clock[0])
     await worker.step(run, "timed", "running")
     clock[0] += timedelta(milliseconds=1250)
     await worker.step(run, "timed", "succeeded")

@@ -1,7 +1,7 @@
 import asyncio
 
 from backend.app.core.config import Settings
-from backend.app.engine.worker import EngineWorker
+from backend.app.engine.execution.worker import EngineWorker
 from backend.app.warehouse.dimension_execution import DimensionTableExecutor
 from backend.tests.memory_store import MemoryStore
 

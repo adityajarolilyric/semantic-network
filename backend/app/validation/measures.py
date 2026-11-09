@@ -1,13 +1,12 @@
 """Focused semantic rules; diagnostics and graph state are owned by the shared context."""
 
 from ..core.errors import MetadataError
+from .conversions import validate_conversion
 from ..domain.formula_types import attribute_physical_type, infer
 from ..domain.typed_values import NUMERIC, methods, result_type
-from ..engine.calendar_resolution import (
-    CalendarResolutionPlanner,
-)
-from ..engine.compatibility import MeasureCompatibilityAnalyzer
-from ..engine.relationships import LevelRelationshipAnalyzer
+from ..engine.transformations.dates.calendar import CalendarResolutionPlanner
+from ..engine.graph.compatibility import MeasureCompatibilityAnalyzer
+from ..engine.graph.relationships import LevelRelationshipAnalyzer
 
 
 class MeasureRules:
@@ -40,6 +39,7 @@ class MeasureRules:
                 obj, reference["objectId"], reference["kind"], "definition.outputGrain"
             )
         if definition["measureType"] == "referenced":
+            validate_conversion(self.context, obj)
             transaction = self.context.reference(
                 obj,
                 definition["transactionId"],
@@ -98,6 +98,7 @@ class MeasureRules:
                         if (
                             definition["resultType"]["type"]
                             in {"number", "decimal", "integer"}
+                            and not definition.get("conversion")
                             and col.get("unit")
                             and col["unit"] != obj["business"]["unit"]
                         ):

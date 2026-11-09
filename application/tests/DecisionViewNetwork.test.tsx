@@ -102,7 +102,7 @@ it('requires confirmation for Full Semantic Refresh', async () => {
     ),
   )
   expect(await screen.findByText('Full Semantic Refresh completed.')).toBeVisible()
-  expect(confirm).toHaveBeenLastCalledWith(expect.stringContaining('replaces manual edits'))
+  expect(confirm).toHaveBeenLastCalledWith(expect.stringContaining('source-backed edits remain in the source'))
 })
 it('lists only materialised tables below the pivot and loads rows on selection', async () => {
   const { user, request } = setup()

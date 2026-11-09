@@ -5,6 +5,7 @@ from datetime import date
 
 from ..core.errors import MetadataError
 from ..formula_language.catalog import FUNCTIONS
+from ..formula_language.temporal import is_temporal, window_spec
 from .grains import transaction_column_reference
 from .typed_values import NUMERIC, result_type
 
@@ -64,6 +65,11 @@ def infer(node, measure_type, attribute_type, depth=0):
             )
         return "number"
     fn = node["function"]
+    if is_temporal(node):
+        window_spec(node)
+        if child(node["arguments"][0]) != "number":
+            error("Time-series functions require numeric inputs.")
+        return "number"
     args = [child(n) for n in node["arguments"]]
     low, high = FUNCTIONS[fn]
     if not low <= len(args) <= high:
@@ -103,8 +109,10 @@ def infer(node, measure_type, attribute_type, depth=0):
         if args != ["date", "date"]:
             error("DAYS_BETWEEN requires two Dates.")
         return "number"
-    if fn in {"abs", "round"} and any(t != "number" for t in args):
-        error("ABS and ROUND require numeric inputs.")
+    if fn in {"abs", "round", "sqrt", "root", "power", "ceil", "floor"} and any(
+        t != "number" for t in args
+    ):
+        error("Arithmetic functions require numeric inputs.")
     if len(set(args)) > 1:
         error("Function arguments must have matching types.")
     return args[0]

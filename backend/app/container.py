@@ -1,10 +1,10 @@
 from dataclasses import dataclass
 
 from .core.config import Settings
-from .engine.semantic_network import SemanticNetworkHandler
-from .engine.managed_builds import ManagedTableBuildHandler
-from .engine.artifacts import ArtifactCollector
-from .engine.worker import EngineWorker
+from .engine.execution.builds.network import SemanticNetworkHandler
+from .engine.execution.builds.managed import ManagedTableBuildHandler
+from .warehouse.retention import ArtifactCollector
+from .engine.execution.worker import EngineWorker
 from .repositories.base import MetadataStore
 from .services.compatibility import CompatibilityService
 from .services.contracts import ContractService

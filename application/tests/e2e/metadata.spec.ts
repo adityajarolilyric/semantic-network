@@ -142,9 +142,7 @@ test('manage from the source grid and capture PLT/PT metadata without visible in
   await save(page)
   await page.getByLabel('Base dimension', { exact: true }).selectOption({ label: 'PLT' })
   await expect(page.getByText('Base dimension saved.', { exact: true })).toBeVisible()
-  await expect(
-    page.getByRole('button', { name: 'Create dimension', exact: true }),
-  ).toBeEnabled()
+  await expect(page.getByRole('button', { name: 'Create dimension', exact: true })).toBeEnabled()
   await page.getByRole('button', { name: 'Create dimension', exact: true }).click()
   await page.getByLabel('Name', { exact: true }).fill('PT')
   await page.getByRole('radio', { name: 'From Existing Dimension', exact: true }).check()
@@ -192,9 +190,7 @@ test('manage from the source grid and capture PLT/PT metadata without visible in
     await expect(page.getByLabel('Expected rows per grain', { exact: true })).toHaveCount(0)
     await page.getByLabel('Managed table', { exact: true }).selectOption({ label: tx.table })
     await page.getByRole('radio', { name: 'Map to Dimension', exact: true }).check()
-    await page
-      .getByLabel('Native dimension', { exact: true })
-      .selectOption({ label: tx.level })
+    await page.getByLabel('Native dimension', { exact: true }).selectOption({ label: tx.level })
     for (const [key, column] of Object.entries(tx.mapping))
       await page.getByLabel(tx.level + '.' + key, { exact: true }).selectOption(column)
     const mappings = page.locator('.transaction-key-mappings > .meta-field')
@@ -245,27 +241,26 @@ test('manage from the source grid and capture PLT/PT metadata without visible in
     await save(page)
   }
   await page.getByRole('button', { name: 'Create measure', exact: true }).click()
-  await page.getByLabel('Name', { exact: true }).fill('Error')
   await page.getByRole('radio', { name: 'Calculated', exact: true }).check()
   await page.getByLabel('Output Dimension', { exact: true }).selectOption({ label: 'PT' })
   const formula = page.getByLabel('Formula', { exact: true })
-  await formula.fill('ABS(')
+  await formula.fill('Error = ABS(')
   await expect(formula).toHaveAttribute('aria-invalid', 'true')
   await expect(page.locator('.formula-feedback.is-error')).toHaveCSS('color', 'rgb(156, 44, 60)')
   await expect(formula).toHaveCSS('border-top-color', 'rgb(156, 44, 60)')
-  await formula.fill('')
+  await formula.fill('Error = ')
 
   await page.getByRole('tab', { name: 'Functions', exact: true }).click()
   await page.getByLabel('Search formula inputs').fill('absolute')
   await page.getByRole('button', { name: 'Insert ABS', exact: true }).click()
-  await expect(formula).toHaveValue('ABS()')
+  await expect(formula).toHaveValue('Error = ABS()')
   await page.getByRole('tab', { name: 'Measures', exact: true }).click()
   await page.getByRole('button', { name: 'FQTY', exact: true }).click()
   await expect(formula).toBeFocused()
   await page.keyboard.type('-')
   await page.getByRole('button', { name: 'SQTY', exact: true }).click()
   await expect(formula).toBeFocused()
-  await expect(formula).toHaveValue('ABS([FQTY]-[SQTY])')
+  await expect(formula).toHaveValue('Error = ABS([FQTY]-[SQTY])')
   const alignment = await page.evaluate(() => {
     const editor = document
       .querySelector<HTMLTextAreaElement>('.formula-workspace textarea')!
@@ -289,11 +284,7 @@ test('manage from the source grid and capture PLT/PT metadata without visible in
   expect(Math.abs(alignment.editorTop - alignment.libraryTop)).toBeLessThan(2)
   expect(Math.abs(alignment.editorBottom - alignment.libraryBottom)).toBeLessThan(2)
   expect(Math.max(...alignment.controlTops) - Math.min(...alignment.controlTops)).toBeLessThan(2)
-  expect(alignment.controlOrder).toEqual([
-    'Measure type',
-    'Calculation type',
-    'Output Dimension',
-  ])
+  expect(alignment.controlOrder).toEqual(['Measure type', 'Calculation type', 'Output Dimension'])
   await page.screenshot({ path: 'test-results/formula-builder.png', fullPage: true })
   await save(page)
   await page.reload()
@@ -378,9 +369,7 @@ test('manage from the source grid and capture PLT/PT metadata without visible in
   await expect(valuesPanel.getByRole('columnheader', { name: 'FQTY', exact: false })).toBeVisible()
   await expect(valuesPanel.getByRole('columnheader', { name: 'SQTY', exact: false })).toBeVisible()
   await page.screenshot({ path: 'test-results/materialise-preview.png', fullPage: true })
-  await valuesPanel
-    .getByLabel('Materialised table', { exact: true })
-    .selectOption({ label: 'PT' })
+  await valuesPanel.getByLabel('Materialised table', { exact: true }).selectOption({ label: 'PT' })
   await expect(valuesPanel.getByRole('columnheader', { name: 'Error', exact: false })).toBeVisible()
   await nav(page, 'Decision View')
   await expect(page.getByLabel('Semantic model', { exact: true })).toHaveCount(0)
@@ -408,9 +397,9 @@ test('manage from the source grid and capture PLT/PT metadata without visible in
   await expect(
     pivot.getByRole('button', { name: 'Edit SQTY · P1 / 2026-10-31', exact: true }),
   ).toContainText('150')
-  await expect(
-    page.getByText('Applying edit and recomputing compatible dimensions…'),
-  ).toHaveCount(0)
+  await expect(page.getByText('Applying edit and recomputing compatible dimensions…')).toHaveCount(
+    0,
+  )
   await page.screenshot({ path: 'test-results/decision-view.png', fullPage: true })
   await page.setViewportSize({ width: 375, height: 900 })
   expect(
@@ -486,9 +475,9 @@ test('manage from the source grid and capture PLT/PT metadata without visible in
   const quick = page.getByRole('dialog', { name: 'Create Measure', exact: true })
   await expect(quick).toBeVisible()
   await page.screenshot({ path: 'test-results/quick-create-measure.png' })
-  await expect(quick.getByLabel('Name', { exact: true })).toBeFocused()
+  await expect(quick.getByLabel('Formula', { exact: true })).toBeFocused()
   await expect(quick.getByLabel('Calculation type', { exact: true })).toHaveCount(0)
-  await quick.getByLabel('Name', { exact: true }).fill('QuickDouble')
+  await quick.getByLabel('Formula', { exact: true }).fill('QuickDouble = ')
   await quick.getByRole('button', { name: 'FQTY', exact: true }).click()
   await expect(quick.getByLabel('Formula', { exact: true })).toBeFocused()
   await page.keyboard.type('*2')

@@ -4,13 +4,13 @@ from hashlib import sha256
 from uuid import uuid4
 
 from ..core.errors import Conflict, ImmutableRevision, MetadataError
-from ..engine.compiler import ClickHouseCompiler
-from ..engine.contracts import digest
-from ..engine.executor import ClickHouseExecutor
-from ..engine.managed_inputs import ManagedInputVerifier
-from ..engine.planner import ManagedTablePlanner
-from ..engine.resolver import EffectiveSchemaResolver
-from ..engine.source_view_names import (
+from ..engine.transformations.pivot.compiler import ClickHouseCompiler
+from ..engine.sql.contracts import digest
+from ..warehouse.managed_execution import ClickHouseExecutor
+from ..engine.execution.inputs.managed import ManagedInputVerifier
+from ..engine.transformations.pivot.planner import ManagedTablePlanner
+from ..engine.execution.inputs.schema import EffectiveSchemaResolver
+from ..engine.execution.storage.view_names import (
     VIEW_NAMING_POLICY,
     source_view_name,
     source_view_role,

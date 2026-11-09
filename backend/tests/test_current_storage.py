@@ -1,10 +1,11 @@
 import asyncio
+from unittest.mock import AsyncMock
 import pytest
-from backend.app.engine.artifact_recovery import ArtifactRecoveryLease
+from backend.app.engine.execution.artifacts.recovery import ArtifactRecoveryLease
 from backend.app.core.errors import MetadataError
 from backend.app.warehouse.current_storage import TableStorage
 from backend.tests.memory_store import MemoryStore
-from backend.app.engine.storage_layout import sorting_key
+from backend.app.engine.execution.storage.layout import sorting_key
 from backend.app.warehouse.sql_trace import (
     SqlTrace,
     bound_statement,
@@ -100,3 +101,30 @@ async def test_concurrent_recovery_only_one_worker_undoes_publication():
 
     await asyncio.gather(recover(), recover())
     assert len(recovered) == 1
+
+
+async def test_successful_edit_recovers_an_unpublished_cell_stage_immediately(
+    monkeypatch,
+):
+    store = MemoryStore()
+    stage = {
+        "artifactId": "stage",
+        "modelId": "m",
+        "revisionId": "r",
+        "runId": "edit",
+        "resourceKind": "editCells",
+        "state": "candidate",
+        "storageMode": "current",
+        "physicalName": "__semantic_edit_build_stage",
+        "cleanupPending": True,
+        "attempt": 1,
+    }
+    await store.repository.insert("engine_artifacts", stage)
+    await store.repository.insert(
+        "engine_runs", {"runId": "edit", "state": "succeeded", "fence": 1}
+    )
+    storage = TableStorage(store, None)
+    rollback = AsyncMock()
+    monkeypatch.setattr(storage, "rollback", rollback)
+    await storage.recover("m", "r")
+    rollback.assert_awaited_once_with(stage)

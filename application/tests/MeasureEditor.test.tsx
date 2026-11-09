@@ -384,3 +384,46 @@ it('keeps standalone transaction grains available for calculated measures', asyn
   await user.click(screen.getByRole('radio', { name: 'Calculated' }))
   expect(screen.getByLabelText('Output grain')).toHaveTextContent('Sales · Transaction grain')
 })
+
+it('removes the separate name field only for calculated measures', async () => {
+  const { user } = setup()
+  expect(screen.getByLabelText('Name')).toBeVisible()
+  await user.click(screen.getByRole('radio', { name: 'Calculated' }))
+  expect(screen.queryByLabelText('Name')).not.toBeInTheDocument()
+  expect(screen.getByLabelText('Formula')).toHaveValue('')
+  expect(screen.getByText(/Name your measure in the formula/)).toBeVisible()
+  await user.click(screen.getByRole('radio', { name: 'Reference' }))
+  expect(screen.getByLabelText('Name')).toHaveValue('SQTY')
+})
+
+it('marks conversion factors read only and preserves unique-value aggregation on save', async () => {
+  const { user, save } = setup()
+  await user.click(screen.getByText('Units and currency'))
+  await user.click(screen.getByLabelText('This measure is a conversion factor'))
+  expect(screen.queryByLabelText('Editable measure')).not.toBeInTheDocument()
+  expect(screen.queryByLabelText('Dis-aggregation policy')).not.toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'Save metadata' }))
+  expect(save).toHaveBeenCalledWith(
+    expect.objectContaining({
+      definition: expect.objectContaining({
+        isConversionFactor: true,
+        editable: false,
+        allocation: { mode: 'none' },
+        aggregation: expect.objectContaining({ nonTime: 'single_value', time: 'single_value' }),
+      }),
+    }),
+  )
+})
+
+it('automatically fixes temporal formulas to CalculateFirst and exposes calendar settings', async () => {
+  const { user } = setup(false, 'pt', true)
+  await user.click(screen.getByRole('radio', { name: 'Calculated' }))
+  await user.type(
+    screen.getByLabelText('Formula'),
+    'Rolling Demand = ROLLING([FQTY], "SUM", -3, 0)',
+  )
+  expect(screen.getByRole('radio', { name: 'Calculate first' })).toBeChecked()
+  expect(screen.getByRole('radio', { name: 'Aggregate first' })).toBeDisabled()
+  expect(screen.getByLabelText('Calendar ordering column')).toBeVisible()
+  expect(screen.getByLabelText('Period unit')).toHaveValue('week')
+})

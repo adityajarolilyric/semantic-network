@@ -3,8 +3,8 @@
 
 import pytest
 
-from backend.app.engine.aggregation import AggregationOperator, AggregationPlan
-from backend.app.engine.measure_compiler import MeasureCompiler
+from backend.app.engine.measures.aggregation import AggregationOperator, AggregationPlan
+from backend.app.engine.measures.compiler import MeasureCompiler
 from .test_csv_clickhouse import clickhouse_app  # noqa: F401
 
 pytestmark = pytest.mark.integration

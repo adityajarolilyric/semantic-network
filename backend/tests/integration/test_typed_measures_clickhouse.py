@@ -194,7 +194,11 @@ def test_typed_native_rollups_formulas_attributes_and_mixed_states(clickhouse_ap
             "type": "call",
             "function": "concat",
             "arguments": [
-                {"type": "attributeRef", "memberCatalogId": "Product", "columnId": "brand"},
+                {
+                    "type": "attributeRef",
+                    "memberCatalogId": "Product",
+                    "columnId": "brand",
+                },
                 {"type": "literal", "value": " / "},
                 {"type": "attributeRef", "dimensionId": lid, "columnId": product},
             ],
@@ -545,7 +549,7 @@ def test_ordered_typed_aggregation_carries_the_selected_cells_state(
 def test_adding_typed_formula_preserves_legacy_numeric_edit(
     clickhouse_app, monkeypatch
 ):
-    import backend.app.engine.measure_compiler as compiler
+    import backend.app.engine.measures.compiler as compiler
     from .test_measures_clickhouse import update_measure
     from .test_managed_clickhouse import await_run
     from uuid import uuid4

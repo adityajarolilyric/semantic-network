@@ -13,9 +13,9 @@ Start with the [User flow](USER_FLOW.md) for the demo-based modeller/planner jou
 - [Sources and Managed Tables](SOURCES_AND_MANAGED_TABLES.md): CSV ingestion, identity views, pivot, discovery and saved-view editing.
 - [Dimensions](DIMENSIONS.md): populations, attribute grains, optional dimension bindings, relationship analysis and Preview/Save.
 - [Transactions](TRANSACTIONS.md): direct mappings, mixed-grain assignments, source-order precedence and daily date-range resolution.
-- [Measures and Materialise](MEASURES.md): native/Base representations, configured aggregation/disaggregation, formulas, numeric and NULL policies.
+- [Measures and Materialise](MEASURES.md): native/Base representations, configured aggregation/disaggregation, grouped formulas, calendar windows, stored conversion factors, numeric and NULL policies.
 - [Decision View](DECISION_VIEW.md): pivot source selection, policy-aware reads, editable cells and coordinated writeback.
-- [Engine and storage](ENGINE_AND_STORAGE.md): typed SQL compilation, durable jobs, activation, leases, one-permanent-table storage and collection.
+- [Engine and storage](ENGINE_AND_STORAGE.md): engine package ownership, pure planners/compilers, durable jobs, activation, leases, physical storage and collection.
 - [Operations](OPERATIONS.md): Compose, configuration, compatibility, one-time maintenance, reset and verification commands.
 - [Transitive relationships and Drill To](RELATIONSHIPS.md): proposed related-row filtering, relationship metadata, paths and contribution boundaries; awaiting review.
 

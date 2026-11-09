@@ -88,7 +88,7 @@ export default function App() {
               {tab === 'sources'
                 ? 'Bring your data in. Explore it before you start modeling.'
                 : tab === 'context-graph'
-                  ? 'Explore shared plotting contexts, measure paths and compatibility.'
+                  ? 'Trace dimension lineage, transaction mappings and measure output grains.'
                   : tab === 'decision-view'
                     ? 'Explore dimension attributes and measures in a planning pivot.'
                     : 'Capture the meaning, grain, and policies behind your data.'}

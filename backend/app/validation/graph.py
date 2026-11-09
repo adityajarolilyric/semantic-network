@@ -2,10 +2,10 @@ import re
 from collections import defaultdict
 
 from ..core.errors import MetadataError
-from ..engine.filters import FilterCompiler
-from ..engine.grain_contexts import resolve_grain_contexts
-from ..engine.object_inputs import input_columns
-from ..engine.relationships import LevelRelationshipAnalyzer
+from ..engine.transformations.filters import FilterCompiler
+from ..engine.graph.grain_contexts import resolve_grain_contexts
+from ..engine.transformations.inputs import input_columns
+from ..engine.graph.relationships import LevelRelationshipAnalyzer
 from ..schemas.common import Diagnostic, ValidationReport
 from .dimension_members import DimensionMembersRules
 from .dimensions import DimensionRules

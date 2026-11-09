@@ -183,7 +183,7 @@ export function formatFormula(
     formatFormula(node, measures, grainColumns, attributes, grainOwner)
   if (e.type === 'measureRef') {
     const name = measures.find((m) => m.objectId === e.measureId)?.name ?? e.measureId
-    return `[${name}]`
+    return formulaReference(name)
   }
   if (e.type === 'grainRef' && grainOwner)
     return `[${grainOwner.name}.${grainColumns.find((c) => c.grainColumnId === e.grainColumnId)?.name ?? e.grainColumnId}]`
@@ -191,7 +191,7 @@ export function formatFormula(
     return `GRAIN([${grainColumns.find((c) => c.grainColumnId === e.grainColumnId)?.name ?? e.grainColumnId}])`
   if (e.type === 'attributeRef') {
     const key = (e.memberCatalogId ?? e.dimensionId ?? e.transactionId) + '.' + e.columnId
-    return `[${attributes.find((attribute) => attribute.key === key)?.label ?? key}]`
+    return formulaReference(attributes.find((attribute) => attribute.key === key)?.label ?? key)
   }
   if (e.type === 'literal')
     return typeof e.value === 'string' ? JSON.stringify(e.value) : String(e.value)
@@ -262,4 +262,16 @@ export function formulaUnit(
       : (left ?? (right ? `1/${right}` : null))
   }
   return unit(expression)
+}
+
+/** Serialize a definition; names are parsed authoritatively by the backend Lark grammar. */
+export function namedFormula(name: string, expression: string) {
+  const trimmed = name.trim()
+  const label = /[=\[\]"\r\n]/.test(trimmed) ? JSON.stringify(trimmed) : trimmed
+  return `${label} = ${expression}`
+}
+
+/** Bracket references escape closing brackets, independently of SQL identifier quoting. */
+export function formulaReference(name: string) {
+  return `[${name.replaceAll(']', ']]')}]`
 }

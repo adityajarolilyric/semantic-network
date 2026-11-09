@@ -21,8 +21,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from backend.app.core.config import Settings  # noqa: E402
 from backend.app.core.errors import Conflict  # noqa: E402
-from backend.app.engine.contracts import digest  # noqa: E402
-from backend.app.engine.table_storage import TableStorage, owner  # noqa: E402
+from backend.app.engine.sql.contracts import digest  # noqa: E402
+from backend.app.warehouse.current_storage import TableStorage
+from backend.app.engine.sql.storage import owner
 from backend.app.repositories.mongo import MongoMetadataStore  # noqa: E402
 from backend.app.services.base import now, scope  # noqa: E402
 from backend.app.services.workspace_gate import WorkspaceGate  # noqa: E402

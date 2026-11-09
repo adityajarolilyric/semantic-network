@@ -1,6 +1,6 @@
 # Decision View: pivot reads and edits
 
-Decision View owns **Build Semantic Network** (incremental), **Full Semantic Refresh** (confirmed source reload, replacing edits), the planning pivot and **Preview Materialised Table**. There is no separate Build Semantic navigation step. Build controls appear above the pivot; the table selector and preview appear below it. Only tables with built values are listed, including empty built tables. Selecting a table loads up to 50 saved rows with the total count through the shared Source preview component; it never starts a build. SQL viewing and placement details remain available for the selected table. Build/refresh and editing are mutually disabled while an operation is running. Layout selections survive a rebuild; results/options and an open table preview refresh afterward. Legacy `?tab=materialise` links open Decision View. Backend endpoints and build policies are unchanged.
+Decision View owns **Build Semantic Network** (incremental), **Full Semantic Refresh** (confirmed source reload, replacing separately materialised edits), the planning pivot and **Preview Materialised Table**. There is no separate Build Semantic navigation step. Build controls appear above the pivot; the table selector and preview appear below it. Only tables with built values are listed, including empty built tables. Selecting a table loads up to 50 saved rows with the total count through the shared Source preview component; it never starts a build. SQL viewing and placement details remain available for the selected table. Build/refresh and editing are mutually disabled while an operation is running. Layout selections survive a rebuild; results/options and an open table preview refresh afterward. Legacy `?tab=materialise` links open Decision View. Backend endpoints and build policies are unchanged.
 
 
 Decision View sits below Build Semantic in the navigation. Internal component and API names remain `decision-view`. Choose exposed Dimension attributes or explicit Dimension grain/population attributes for Rows/Columns and measures under Values. **Measures render as rows** inside each row-dimension group, never as the column axis. Reorder/remove axis fields; Update pivot sends the layout to the backend. The browser arranges returned cells but performs no aggregation/disaggregation/formula evaluation. Layout selections are browser experience preferences; results remain transient and are always read fresh from the server. Neither is a persisted semantic definition.
@@ -66,6 +66,21 @@ Sparse self-weighting is intentional: a promotion may populate only a few dates 
 
 Preserve unaffected cells/measures. Reaggregate **complete** groups, including unchanged members, into every compatible coarser level using saved Time/NonTime/order. Recompute dependent AggregateFirst at each target grain and CalculateFirst at native before propagation. Unsupported dependent recalculation fails activation. Changing a basis measure does not immediately reallocate unrelated referenced measures; it affects subsequent allocations. Repeat+SUM can increase an aggregate; do not impose conservation or substitute AVG.
 
+### Cell-scoped dependency refresh
+
+Edits now carry transient SQL key sets through the dependency graph rather than recalculating each dependent column over its entire population:
+
+1. Resolve the complete eligible write population from the selected row/column member coordinates and the captured, filtered Dimension population. Transaction filters continue to govern source values; an edit does not replay source loading. Pivot pagination is not an edit boundary; there is currently no separate Decision View filter contract.
+2. Apply the edited measure's configured allocation with frozen weights, round to stored precision, and compare with captured values/coverage. Only changed write-grain keys enter the patch. NULL comparisons are explicit, so clearing a value is a real change. A same-value edit has no dependent row writes.
+3. Freeze those changed keys/new values once in an owned, fenced ClickHouse staging table. Python receives no cells. This prevents the patch/weight query from expanding repeatedly inside dependent SQL. The table is transient, removed after success/failure, and recoverable after a crash; it is not an edit history or permanent measure store.
+4. Project each measure's affected keys through proven Dimension lineage. AggregateFirst unions affected input cells at the requested grain. CalculateFirst first maps changed inputs to its native grain, recalculates there, then derives affected finer/coarser representations. A coarser native calculation can therefore affect siblings outside the initially edited cell.
+5. Limit formula evaluation to affected cells. For rollups/counts, read **all** contributors to each affected group, including unchanged members. For allocations, use **all** eligible children of each changed parent. This preserves AVG/MIN/MAX, ordering, NULL/Mixed states, COUNT_DISTINCT, and configured weight denominators; summing only edited deltas would be incorrect.
+6. Clone the existing table, preserve unrelated columns/rows, and mutate only the selected measure/state columns where the staged key lookup contains the row. Measures with different footprints are written separately. Completed private grain candidates checkpoint subsequent grain computations. Validate uniqueness, key coverage and persisted values before normal atomic publication.
+
+Operational `buildTimingsMs.groups` entries identify `row_update`, measure IDs and `updatedRows`, making the actual write footprint inspectable. Fences, stale-generation checks and all-or-nothing multi-table activation remain unchanged. Normal builds retain their existing full/incremental behavior.
+
+Related totals must refresh even when they lie outside the visible pivot slice. This is dependency propagation, not a request to refresh unrelated dimensions or matching column names. Future time-window/recurrence functions will need explicit wider invalidation ranges before they can use this optimisation. ClickHouse can still scan contributing rows and rewrite storage parts containing changed cells; cell-scoped logical updates do not promise cell-sized physical I/O.
+
 Build edited candidates in isolated temporary tables, retaining unaffected content. One Mongo transaction activates all new bindings, succeeds the run, advances revision version and removes transient edit payload. Read admission blocks overlapping builds/edits; activation exchanges validated tables and commits the coherent network. Check displayed generation/revision, input/population hashes, leases/fences; a stale candidate cannot overwrite a newer commit even if candidates computed concurrently. Failure restores exchanged tables when metadata activation has not committed.
 
 ## Edit API and UI
@@ -95,7 +110,7 @@ Active edited values survive restarts. **Build Semantic Network is incremental:*
 
 ## Implementation and tests
 
-`api/decision_view.py` owns HTTP; `schemas/decision_view.py` bounds typed layouts; `services/decision_view.py` captures/leases/executes reads; `engine/decision_view.py` plans/compiles; `engine/measure_edits.py` and `services/measure_builds.py` coordinate writeback. UI lives in DecisionViewPanel/PlanningEditCell.
+`api/decision_view.py` owns HTTP; `schemas/decision_view.py` bounds typed layouts; `services/decision_view.py` captures/leases/executes reads; `engine/decision/compiler.py` plans/compiles; `engine/decision/edits.py` and `services/measure_builds.py` coordinate writeback. UI lives in DecisionViewPanel/PlanningEditCell.
 
 Coverage includes exact/coarser reuse, AVG/NULL fallback, formulas at ad hoc grains, axis order, global groups, stale reads/leases, group/cell bounds, actual displayed-grain permissions, independent native fallback, sparse self-weighting, zero/missing patterns, idempotency, dependent recomputation, atomic rollback and the one-permanent-table limit.
 
@@ -123,14 +138,26 @@ Row-dimension columns (including the global Rows column) and Measure are pinned 
 
 ### Quick calculated measures
 
-Draft revisions with a Base dimension offer **Create Measure** in Decision View. The compact modal asks for Name and a single-line Formula, using the shared formula builder, input insertion, caret handling and backend semantic validation from the Measures editor. Output Dimension defaults to Base and calculation type to AggregateFirst: inputs align and aggregate before evaluation at the requested grain. Advanced settings sit below the searchable input library and reveal the output level, calculation type and applicable policies; collapsing them preserves changes. Measures remain noneditable with nullable Float64 results by default.
+Draft revisions with a Base dimension offer **Create Measure** in Decision View. The compact modal asks for a single-line named Formula (`Name = expression`), using the shared formula builder, input insertion, caret handling and backend semantic validation from the Measures editor. Output Dimension defaults to Base and calculation type to AggregateFirst: inputs align and aggregate before evaluation at the requested grain. Advanced settings sit below the searchable input library and reveal the output level, calculation type and applicable policies; collapsing them preserves changes. Measures remain noneditable with nullable Float64 results by default.
 
 Saving creates an ordinary measure definition and runs incremental materialisation, preserving unaffected values and the current pivot layout. The measure then appears under Values for selection. If saving succeeds but the build fails, the definition is retained and the UI directs the user to retry Build Semantic Network from Materialise. Published revisions cannot create measures. No additional metadata or API is introduced.
 
 
-## Context Graph: which measures can be plotted together
+## Context Graph: saved model lineage
 
-Open Context Graph from the navigation, Explore measure compatibility in the formula editor, or Check compatibility in Decision View. Dimension hubs show usable contexts for measures. Formula checks use the selected Output Dimension; pivot checks use the current row/column fields. Select several measures to evaluate the entire selection. Pairwise compatibility does not imply that three or more measures share a usable source.
+Context Graph is an interactive node-and-edge view of the saved semantic model. React Flow provides pan, zoom, dragging, selection and a minimap; Dagre lays out arbitrary parent/child depth from left to right. The graph and its libraries load only when this navigation item opens. Positions, search and focus are UI state; moving a node never changes metadata or creates a relationship.
+
+- Source tables feed Dimensions and Transactions through their saved managed views. There is one source node, without duplicate internal managed-view/member-catalog nodes.
+- Population edges show a source table, every Cartesian factor, or a distinct projection from a parent Dimension. Explicit Dimension bindings also link lookup Dimensions to the enriched/intersection Dimension. Time-resolution calendars link to their Transactions.
+- Dimension-to-Transaction edges show the Transaction's configured native grain mapping. Standalone Transactions have an explicitly labelled Transaction grain, with no invented Dimension or name-based relationship.
+- Solid **Output grain** edges connect each measure to its resolved native/output Dimension (or standalone Transaction grain). **Dotted Value source** edges additionally connect a referenced measure to its Transaction. The dotted link explains the origin of the value; it does not give the measure a second output grain.
+- Optional dashed **Formula input** edges show calculated-measure dependencies. These express dependency, not a guarantee that two measures can be plotted together.
+
+Select a node or edge for readable names, grain keys, source/value column, formula and relationship explanations. Find an object centres it; Focus on this lineage isolates its ancestors and descendants without including unrelated sibling branches. Source-table and formula-dependency toggles reduce clutter. Reset layout restores automatic placement. Graph construction uses the existing complete metadata snapshot: no extra endpoints, ClickHouse queries, builds or semantic writes are needed. Deleted/missing endpoints are not drawn as dangling edges; the inspector reports unavailable context instead of displaying internal IDs.
+
+### Plotting compatibility
+
+The original whole-selection compatibility checker remains under **Check plotting compatibility**, collapsed until requested. It is also available through Explore measure compatibility in the formula editor and Check compatibility in Decision View. Dimension hubs show usable contexts for measures. Formula checks use the selected Output Dimension; pivot checks use the current row/column fields. Select several measures to evaluate the entire selection. Pairwise compatibility does not imply that three or more measures share a usable source.
 
 - **Ready:** the complete selection has a current, coherent materialised source accepted by the pivot planner.
 - **Needs materialisation:** definitions permit the context, but current build inputs/values are missing or stale.
@@ -147,3 +174,7 @@ The navigation label is **Build Semantic**; the build action remains **Build Sem
 ### Query inspection
 
 Materialised previews offer separate View Output SQL and View Build SQL buttons. The former reads the current view (50 rows); the latter shows the recorded build run, including writes and publication. The pivot offers View Output SQL for the actual displayed result. Changing selections clears the result/SQL; inspecting SQL never reruns the pivot.
+
+### Source-backed independent outputs
+
+For an unbound, untransformed Transaction, the existing source is writable measure storage and the output is an owned aggregation view. Native/coarser edit permissions still apply; physical duplicate records are updated under the measure's allocation/aggregation policies. Referenced aliases over the same source column and view-calculated dependents see the changed source values. COUNT/COUNT_DISTINCT and grain-key columns cannot be edited through this path. Read-only/no-op builds create no data copy; edits publish through an owned temporary source clone with rollback on failure. Successful edits replace source values permanently, so Full Refresh retains them. Source-backed previews count current view rows. [Details and upgrade boundary](ENGINE_AND_STORAGE.md#independent-transactions-source-backed-storage).

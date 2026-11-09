@@ -2,7 +2,7 @@ import pytest
 from pydantic import ValidationError
 
 from backend.app.core.errors import MetadataError
-from backend.app.engine.filters import FilterCompiler
+from backend.app.engine.transformations.filters import FilterCompiler
 from backend.app.schemas.filters import FilterDefinition
 from backend.app.schemas.transactions import TransactionDefinition
 

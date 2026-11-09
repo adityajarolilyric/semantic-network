@@ -2,7 +2,7 @@ from datetime import timedelta
 
 from ..core.errors import MetadataError
 from ..core.metadata import utc_now as now
-from ..engine.table_storage import GENERATION, owner, token
+from ..engine.sql.storage import GENERATION, owner, token
 from ..repositories.metadata import metadata_repositories
 from ..repositories.metadata.criteria import (
     ArtifactLookup,
@@ -13,8 +13,8 @@ from ..repositories.metadata.criteria import (
     RunLookup,
     TableResourceLookup,
 )
-from ..warehouse.sql import quote_identifier as q
-from ..warehouse.sql import quote_literal as lit
+from .sql import quote_identifier as q
+from .sql import quote_literal as lit
 
 
 class ArtifactCollector:

@@ -1,9 +1,9 @@
 from copy import deepcopy
 
-from backend.app.engine.decision_attributes import DecisionAttributeCatalog
-from backend.app.engine.grain_contexts import resolve_grain_contexts
-from backend.app.engine.incremental import MaterialisationManifest
-from backend.app.engine.representations import RepresentationPolicy
+from backend.app.engine.decision.attributes import DecisionAttributeCatalog
+from backend.app.engine.graph.grain_contexts import resolve_grain_contexts
+from backend.app.engine.execution.builds.incremental import MaterialisationManifest
+from backend.app.engine.graph.representations import RepresentationPolicy
 from .test_incremental import model
 
 

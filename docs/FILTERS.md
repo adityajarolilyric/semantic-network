@@ -1,6 +1,6 @@
 # Final-output filters
 
-Dimensions, Dimensions and Transactions optionally store `definition.filters`. This is revision-owned metadata and uses stable output column IDs. The shared engine module is `backend/app/engine/filters.py`; `FilterCompiler` validates typed predicates and generates SQL from allowlisted operators and quoted literals. The reusable UI is `FilterEditor`; schema loading is separate from authoring and never builds or saves data.
+Dimensions, Dimensions and Transactions optionally store `definition.filters`. This is revision-owned metadata and uses stable output column IDs. The shared engine module is `backend/app/engine/transformations/filters.py`; `FilterCompiler` validates typed predicates and generates SQL from allowlisted operators and quoted literals. The reusable UI is `FilterEditor`; schema loading is separate from authoring and never builds or saves data.
 
 ## Placement
 

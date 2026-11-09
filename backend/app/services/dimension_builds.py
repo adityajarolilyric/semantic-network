@@ -2,15 +2,15 @@ from datetime import timedelta
 from uuid import uuid4
 
 from ..core.errors import Conflict, ImmutableRevision, MetadataError
-from ..engine.contracts import Check, ExecutionPlan, digest
-from ..engine.dimension_builds import DimensionBuildHandler
-from ..engine.dimension_compiler import DimensionCompiler
-from ..engine.dimension_executor import DimensionTableExecutor
-from ..engine.dimension_population import DimensionPlanner
-from ..engine.managed_inputs import ManagedInputCapture
-from ..engine.capture_session import PopulationCaptureSession
-from ..engine.table_storage import STORAGE_POLICY, TableStorage
-from ..engine.virtual_populations import is_virtual_dimension, virtual_population
+from ..engine.sql.contracts import Check, ExecutionPlan, digest
+from ..engine.execution.builds.populations import DimensionBuildHandler
+from ..engine.populations.compiler import DimensionCompiler
+from ..warehouse.dimension_execution import DimensionTableExecutor
+from ..engine.populations.planner import DimensionPlanner
+from ..engine.execution.inputs.managed import ManagedInputCapture
+from ..engine.execution.inputs.session import PopulationCaptureSession
+from ..warehouse.current_storage import STORAGE_POLICY, TableStorage
+from ..engine.populations.virtual import is_virtual_dimension, virtual_population
 from ..repositories.metadata import metadata_repositories
 from ..repositories.metadata.criteria import (
     ArtifactLookup,

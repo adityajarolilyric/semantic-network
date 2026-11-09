@@ -4,6 +4,7 @@ from pydantic import AliasChoices, Field, model_validator
 
 from .common import Identifier, Schema
 from .grains import GrainReference as OutputGrainReference
+from .temporal import TemporalContext
 
 
 class MeasureReference(Schema):
@@ -60,6 +61,15 @@ class CallExpression(Schema):
     type: Literal["call"]
     function: Literal[
         "abs",
+        "sqrt",
+        "root",
+        "power",
+        "ceil",
+        "floor",
+        "rolling",
+        "cumulative",
+        "lag",
+        "lead",
         "round",
         "coalesce",
         "min",
@@ -119,6 +129,8 @@ class Formula(Schema):
 
 
 class FormulaValidationInput(Schema):
+    temporal: TemporalContext | None = None
+    requireAssignment: bool = False
     objectId: Identifier
     name: str = Field(default="", max_length=200)
     displayText: str = Field(min_length=1, max_length=4000)

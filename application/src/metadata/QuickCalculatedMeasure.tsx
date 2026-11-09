@@ -56,9 +56,6 @@ export function QuickCalculatedMeasure({
       }}
     >
       <h2 id="quick-measure-title">Create Measure</h2>
-      <p className="meta-hint">
-        {grainCatalog(data).find((l) => l.objectId === baseLevelId)?.name} · AggregateFirst
-      </p>
       {error && (
         <p role="alert" className="meta-error">
           {error}

@@ -3,10 +3,10 @@
 from uuid import uuid4
 
 from ..core.errors import Conflict, MetadataError
-from ..engine.managed_inputs import ManagedInputCapture
-from ..engine.dimension_executor import DimensionTableExecutor
-from ..engine.pivot_suggestions import PivotSuggestionDetector
-from ..engine.read_leases import ArtifactReadLeases
+from ..engine.execution.inputs.managed import ManagedInputCapture
+from ..warehouse.dimension_execution import DimensionTableExecutor
+from ..engine.transformations.pivot.suggestions import PivotSuggestionDetector
+from ..engine.execution.read_leases import ArtifactReadLeases
 from .base import Service
 
 

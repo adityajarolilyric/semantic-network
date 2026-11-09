@@ -3,8 +3,8 @@ from copy import deepcopy
 import pytest
 
 from backend.app.core.errors import MetadataError
-from backend.app.engine.compatibility import MeasureCompatibilityAnalyzer
-from backend.app.engine.measure_dependencies import MeasureDependencies
+from backend.app.engine.graph.compatibility import MeasureCompatibilityAnalyzer
+from backend.app.engine.measures.dependencies import MeasureDependencies
 from .conftest import ROOT
 from .test_incremental import model
 from .test_metadata_api import definition

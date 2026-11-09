@@ -1,16 +1,22 @@
 import { useEffect, useState } from 'react'
 import { metadataApi } from './api'
-import type { Expression, MeasureCommon } from './types'
+import type { CalcDefinition, Expression, MeasureCommon } from './types'
 
 export type FormulaValidation = {
+  name?: string
+  expressionText?: string
   valid: boolean
   expression?: Expression
   containsCounts: boolean
+  containsTemporal?: boolean
+  containsConversionFactors?: boolean
   resultType?: MeasureCommon['resultType']
   unit?: string | null
   diagnostics: { message: string; line?: number; column?: number }[]
 }
 export type FormulaRequest = {
+  temporal?: CalcDefinition['temporal']
+  requireAssignment?: boolean
   objectId: string
   name: string
   displayText: string

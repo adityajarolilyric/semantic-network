@@ -1,4 +1,4 @@
-from backend.app.engine.relationships import LevelRelationshipAnalyzer
+from backend.app.engine.graph.relationships import LevelRelationshipAnalyzer
 from backend.app.schemas.measures import Allocation, ReferencedMeasureDefinition
 
 
@@ -134,7 +134,7 @@ def test_null_disaggregation_is_canonical_repeat():
 
 def test_base_visibility_endpoint_reuses_proven_level_relationships(populated):
     from .conftest import ROOT
-    from backend.app.engine.relationships import LevelRelationshipAnalyzer
+    from backend.app.engine.graph.relationships import LevelRelationshipAnalyzer
     from .conftest import EXAMPLE
 
     levels = [o for o in EXAMPLE["semantic_objects"] if o["kind"] == "dimension"]

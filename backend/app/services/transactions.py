@@ -1,5 +1,5 @@
 from ..core.errors import MetadataError
-from ..engine.contracts import digest
+from ..engine.sql.contracts import digest
 from ..schemas.transactions import ResolutionRule
 from .objects import ObjectService
 

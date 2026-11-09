@@ -1,4 +1,7 @@
-from backend.app.engine.source_view_names import source_view_name, source_view_role
+from backend.app.engine.execution.storage.view_names import (
+    source_view_name,
+    source_view_role,
+)
 
 
 def source(kind="String"):

@@ -7,11 +7,12 @@ from types import SimpleNamespace
 import pytest
 
 from backend.app.core.errors import Conflict, MetadataError
-from backend.app.engine.captured_inputs import CapturedRunInputs
-from backend.app.engine.checks import CheckDiagnostics, WarehouseCheckRunner
-from backend.app.engine.compilation_context import CompilationContext
-from backend.app.engine.contracts import Check
-from backend.app.engine.read_leases import ArtifactReadLeases
+from backend.app.engine.execution.inputs.captured import CapturedRunInputs
+from backend.app.engine.sql.diagnostics import CheckDiagnostics
+from backend.app.warehouse.query_execution import WarehouseCheckRunner
+from backend.app.engine.sql.compilation_context import CompilationContext
+from backend.app.engine.sql.contracts import Check
+from backend.app.engine.execution.read_leases import ArtifactReadLeases
 from backend.app.services.base import now
 from backend.tests.memory_store import MemoryStore
 from backend.tests.test_engine import SOURCE, context, submit
@@ -193,7 +194,7 @@ async def test_worker_rejects_unknown_handlers_without_running_a_managed_build()
 
 @pytest.mark.asyncio
 async def test_managed_source_capture_requires_current_ready_view_and_preserves_schema():
-    from backend.app.engine.managed_inputs import ManagedInputCapture
+    from backend.app.engine.execution.inputs.managed import ManagedInputCapture
 
     store = MemoryStore()
     source = {

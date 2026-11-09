@@ -3,7 +3,7 @@ from ..core.metadata import revision_scope as scope
 from ..core.metadata import utc_now as now
 from ..domain.grains import canonical_measure
 from ..domain.measure_policies import normalize_measure
-from ..engine.resolver import EffectiveSchemaResolver
+from ..engine.execution.inputs.schema import EffectiveSchemaResolver
 from ..repositories.base import MetadataStore
 from ..repositories.metadata import metadata_repositories
 from ..repositories.metadata.criteria import ObjectLookup, RevisionLookup

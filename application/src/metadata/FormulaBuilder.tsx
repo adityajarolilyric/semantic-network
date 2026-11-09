@@ -1,5 +1,5 @@
 import { useId, useLayoutEffect, useRef, useState, type MouseEvent } from 'react'
-import type { FormulaAttribute } from './formula'
+import { formulaReference, type FormulaAttribute } from './formula'
 import type { Measure, Snapshot } from './types'
 import type { FormulaValidation } from './useFormulaValidation'
 import { FieldHelp } from '../components/FieldHelp'
@@ -7,6 +7,7 @@ import { FieldHelp } from '../components/FieldHelp'
 export type FormulaFunction = {
   name: string
   description: string
+  group?: string
   minimum?: number
   maximum?: number
 }
@@ -15,6 +16,15 @@ type Tab = 'Measures' | 'Columns' | 'Functions'
 const tabs: Tab[] = ['Measures', 'Columns', 'Functions']
 const guides: Record<string, [string, string]> = {
   abs: ['ABS(number)', 'ABS([Qty])'],
+  sqrt: ['SQRT(number)', 'SQRT([Variance])'],
+  root: ['ROOT(number, degree)', 'ROOT([Volume], 3)'],
+  power: ['POWER(number, exponent)', 'POWER([Qty], 2)'],
+  ceil: ['CEIL(number)', 'CEIL([Qty])'],
+  floor: ['FLOOR(number)', 'FLOOR([Qty])'],
+  rolling: ['ROLLING(value, "operation", start, end)', 'ROLLING([Demand], "SUM", -3, 0)'],
+  cumulative: ['CUMULATIVE(value, "operation")', 'CUMULATIVE([Demand], "SUM")'],
+  lag: ['LAG(value, periods)', 'LAG([Demand], 1)'],
+  lead: ['LEAD(value, periods)', 'LEAD([Demand], 1)'],
   round: ['ROUND(number, decimal_places)', 'ROUND([Qty], 2)'],
   if: ['IF(condition, when_true, when_false)', 'IF([Qty] < 0, "At Risk", "Healthy")'],
   coalesce: ['COALESCE(value, fallback, …)', 'COALESCE([Qty], 0)'],
@@ -322,7 +332,7 @@ export function FormulaBuilder({
                     }
                     title={measureAvailability?.[measure.objectId]?.reason}
                     onMouseDown={preserveSelection}
-                    onClick={() => insert(`[${measure.name}]`)}
+                    onClick={() => insert(formulaReference(measure.name))}
                   >
                     <span>{measure.name}</span>
                     <small>
@@ -387,28 +397,37 @@ export function FormulaBuilder({
               ))}
             {tab === 'Functions' &&
               (filteredFunctions.length ? (
-                filteredFunctions.map((fn) => (
-                  <button
-                    type="button"
-                    key={fn.name}
-                    data-formula-input
-                    disabled={disabled}
-                    aria-label={'Insert ' + fn.name.toUpperCase()}
-                    onMouseDown={preserveSelection}
-                    onMouseEnter={() => setActiveFunction(fn)}
-                    onFocus={() => setActiveFunction(fn)}
-                    onClick={() => {
-                      setActiveFunction(fn)
-                      insert(
-                        fn.name.toUpperCase() + '()',
-                        fn.minimum !== 0 && fn.name !== 'count_rows',
-                      )
-                    }}
-                  >
-                    <span>{fn.name.toUpperCase()}</span>
-                    <small>{fn.name.startsWith('count') ? 'Count' : 'Function'}</small>
-                  </button>
-                ))
+                [...new Set(filteredFunctions.map((fn) => fn.group ?? 'Functions'))].map(
+                  (group) => (
+                    <div className="formula-column-group" key={group}>
+                      <div className="formula-column-heading">{group}</div>
+                      {filteredFunctions
+                        .filter((fn) => (fn.group ?? 'Functions') === group)
+                        .map((fn) => (
+                          <button
+                            type="button"
+                            key={fn.name}
+                            data-formula-input
+                            disabled={disabled}
+                            aria-label={'Insert ' + fn.name.toUpperCase()}
+                            onMouseDown={preserveSelection}
+                            onMouseEnter={() => setActiveFunction(fn)}
+                            onFocus={() => setActiveFunction(fn)}
+                            onClick={() => {
+                              setActiveFunction(fn)
+                              insert(
+                                fn.name.toUpperCase() + '()',
+                                fn.minimum !== 0 && fn.name !== 'count_rows',
+                              )
+                            }}
+                          >
+                            <span>{fn.name.toUpperCase()}</span>
+                            <small>{fn.group ?? 'Function'}</small>
+                          </button>
+                        ))}
+                    </div>
+                  ),
+                )
               ) : (
                 <p>
                   {functionError ||

@@ -2,15 +2,12 @@ from time import perf_counter
 
 from ..core.errors import MetadataError
 from ..core.execution_budget import query_memory_bytes
-from ..engine.checks import (
-    PLANNING_CHECK_MESSAGES,
-    CheckDiagnostics,
-    WarehouseCheckRunner,
-)
-from ..engine.table_storage import GENERATION, owner, relation_sql
-from ..warehouse.sql import quote_identifier as q
-from ..warehouse.sql import quote_literal
-from ..warehouse.sql import quote_literal as lit
+from ..engine.sql.diagnostics import PLANNING_CHECK_MESSAGES, CheckDiagnostics
+from .query_execution import WarehouseCheckRunner
+from ..engine.sql.storage import GENERATION, owner, relation_sql
+from .sql import quote_identifier as q
+from .sql import quote_literal
+from .sql import quote_literal as lit
 from .in_place_values import InPlaceValuesWriter
 from .current_execution import CurrentTableBuilder
 

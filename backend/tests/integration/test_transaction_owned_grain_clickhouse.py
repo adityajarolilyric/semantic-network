@@ -1,6 +1,6 @@
 # ruff: noqa: F811
 import pytest
-from .test_csv_clickhouse import clickhouse_app  # noqa: F401
+from .test_csv_clickhouse import clickhouse_app, authored_clickhouse_app  # noqa: F401
 from .test_planning_clickhouse import BASE, managed
 from backend.tests.conftest import object_payload
 from .test_managed_clickhouse import await_run
@@ -10,8 +10,8 @@ from .test_measures_clickhouse import build_values, values
 pytestmark = pytest.mark.integration
 
 
-def test_transaction_materialises_without_dimensions_or_base(clickhouse_app):
-    client, admin, database, _ = clickhouse_app
+def test_transaction_materialises_without_dimensions_or_base(authored_clickhouse_app):
+    client, admin, database, _ = authored_clickhouse_app
     source = managed(
         client,
         "SalesStandalone",
@@ -51,7 +51,7 @@ def test_transaction_materialises_without_dimensions_or_base(clickhouse_app):
     ]
     assert (
         admin.command(
-            f"SELECT count() FROM system.tables WHERE database='{database}' AND startsWith(comment,'semanticTable:')"
+            f"SELECT count() FROM system.tables WHERE database='{database}' AND engine='MergeTree'"
         )
         == 1
     )
@@ -124,8 +124,10 @@ def query(client, transaction, mids):
     return response, request
 
 
-def test_independent_transactions_edits_formulas_then_explicit_binding(clickhouse_app):
-    client, _, _, _ = clickhouse_app
+def test_independent_transactions_edits_formulas_then_explicit_binding(
+    authored_clickhouse_app,
+):
+    client, _, _, _ = authored_clickhouse_app
     sales_source = managed(
         client,
         "SalesFacts",
@@ -254,7 +256,7 @@ def test_independent_transactions_edits_formulas_then_explicit_binding(clickhous
     combined, _ = query(client, "sales", [qty, fqty, "price"])
     assert combined.status_code == 200, combined.text
     assert combined.json()["rows"] == [
-        ["P1", "40.0", "50.0", "22.5"],
+        ["P1", "80.0", "50.0", "11.25"],
         ["P2", "5.0", None, "30.0"],
         ["P3", None, "7.0", None],
     ]

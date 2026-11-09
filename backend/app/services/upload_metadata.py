@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from ..core.errors import Conflict, MetadataError
 from ..domain.typed_values import NUMERIC, result_type
-from ..engine.contracts import digest
+from ..engine.sql.contracts import digest
 from ..repositories.metadata import metadata_repositories
 from ..repositories.metadata.criteria import (
     BindingLookup,

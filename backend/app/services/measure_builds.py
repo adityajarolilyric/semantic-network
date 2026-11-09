@@ -2,35 +2,31 @@ from uuid import uuid4
 
 from ..core.errors import Conflict, ImmutableRevision, MetadataError
 from ..domain.measure_policies import MEASURE_TYPE_POLICY
-from ..engine.captured_inputs import MeasureBuildInputs
-from ..engine.sql_history import SqlHistory
-from ..engine.compatibility import MeasureCompatibilityAnalyzer
-from ..engine.contracts import digest
-from ..engine.date_range_resolution import calendar_source_ids
-from ..engine.decision_view import DecisionViewPlanner
-from ..engine.dimension_executor import DimensionTableExecutor
-from ..engine.incremental import (
+from ..engine.execution.inputs.captured import MeasureBuildInputs
+from ..engine.execution.history import SqlHistory
+from ..engine.graph.compatibility import MeasureCompatibilityAnalyzer
+from ..engine.sql.contracts import digest
+from ..engine.transformations.dates.inputs import calendar_source_ids
+from ..engine.decision.planner import DecisionViewPlanner
+from ..warehouse.dimension_execution import DimensionTableExecutor
+from ..engine.execution.builds.incremental import (
     INCREMENTAL_POLICY,
     MaterialisationManifest,
 )
-from ..engine.measure_builds import MeasureBuildHandler
-from ..engine.measure_compiler import (
-    MATERIALISATION_POLICY,
-    MEASURE_COMPILER_VERSION,
-)
-from ..engine.measure_edits import MeasureEditPlanner
-from ..engine.capture_session import PopulationCaptureSession
-from ..engine.relationships import LevelRelationshipAnalyzer
-from ..engine.representations import RepresentationPolicy
-from ..engine.table_storage import STORAGE_POLICY
-from ..engine.transaction_population import transaction_population
-from ..engine.virtual_populations import is_virtual_dimension, virtual_population
-from ..engine.network_gate import NetworkBuildGate
-from ..engine.measure_dependencies import MeasureDependencies
-from ..engine.read_leases import ArtifactReadLeases
-from ..engine.transaction_resolution import (
-    RESOLUTION_POLICY,
-)
+from ..engine.execution.builds.measures import MeasureBuildHandler
+from ..engine.measures.contracts import MATERIALISATION_POLICY, MEASURE_COMPILER_VERSION
+from ..engine.decision.edit_planner import MeasureEditPlanner
+from ..engine.execution.inputs.session import PopulationCaptureSession
+from ..engine.graph.relationships import LevelRelationshipAnalyzer
+from ..engine.graph.representations import RepresentationPolicy
+from ..engine.graph.source_storage import SourceStoragePolicy
+from ..warehouse.current_storage import STORAGE_POLICY
+from ..engine.populations.transaction import transaction_population
+from ..engine.populations.virtual import is_virtual_dimension, virtual_population
+from ..engine.execution.network_gate import NetworkBuildGate
+from ..engine.measures.dependencies import MeasureDependencies
+from ..engine.execution.read_leases import ArtifactReadLeases
+from ..engine.transformations.multigrain.contracts import RESOLUTION_POLICY
 from ..formula_language.expressions import contains_counts
 from ..repositories.metadata import metadata_repositories
 from ..repositories.metadata.criteria import (
@@ -137,8 +133,16 @@ class MeasureBuildService(Service):
                 self.settings.clickhouse_database,
                 self.settings.resolution_max_rows,
             )
+        source_storage = SourceStoragePolicy(objects, managed)
+        source_grains = sorted(
+            context["objectId"]
+            for context in objects
+            if context["kind"] == "grain"
+            and source_storage.binding(context["objectId"])
+        )
         fingerprint = digest(
             {
+                **({"sourceStorage": source_grains} if source_grains else {}),
                 "resolutionPolicy": RESOLUTION_POLICY,
                 "storagePolicy": STORAGE_POLICY,
                 "materialisationPolicy": MATERIALISATION_POLICY,
@@ -656,6 +660,10 @@ class MeasureBuildService(Service):
                 result["rows"] = await warehouse.queries.preview_values(
                     artifact, result["columns"], self.executor.execution_settings()
                 )
+                if artifact.get("storageMode") == "source":
+                    result["rowCount"] = await warehouse.queries.output_row_count(
+                        artifact, self.executor.execution_settings()
+                    )
         runs = await metadata_repositories(repo).runs.list(
             RunLookup(model_id=model, revision_id=revision, resource_kind="measureSet"),
             order_by="createdAt",

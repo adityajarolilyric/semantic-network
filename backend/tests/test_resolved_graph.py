@@ -3,12 +3,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from backend.app.engine.capture_session import PopulationCaptureSession
-from backend.app.engine.compilation_context import CompilationContext
-from backend.app.engine.grain_contexts import resolve_grain_contexts
-from backend.app.engine.managed_inputs import ManagedSourceSnapshot
-from backend.app.engine.resolver import EffectiveSchemaResolver
-from backend.app.engine.relationships import LevelRelationshipAnalyzer
+from backend.app.engine.execution.inputs.session import PopulationCaptureSession
+from backend.app.engine.sql.compilation_context import CompilationContext
+from backend.app.engine.graph.grain_contexts import resolve_grain_contexts
+from backend.app.engine.execution.inputs.managed import ManagedSourceSnapshot
+from backend.app.engine.execution.inputs.schema import EffectiveSchemaResolver
+from backend.app.engine.graph.relationships import LevelRelationshipAnalyzer
 from backend.app.services.dimension_builds import DimensionBuildService
 from .test_incremental import model
 
@@ -121,11 +121,17 @@ async def test_source_capture_is_memoised_within_operation_and_fresh_next_time()
         ),
     ],
 )
-def test_saved_manifest_layout_hashes_remain_compatible(base, projected, expected, monkeypatch):
+def test_saved_manifest_layout_hashes_remain_compatible(
+    base, projected, expected, monkeypatch
+):
     # Captured from the preceding production manifest implementation. A structural
     # refactor must not invalidate manual edits by changing these fingerprints.
-    from backend.app.engine.incremental import MaterialisationManifest
-    monkeypatch.setattr("backend.app.engine.incremental.STORAGE_POLICY", "stable-row-generations-v1")
+    from backend.app.engine.execution.builds.incremental import MaterialisationManifest
+
+    monkeypatch.setattr(
+        "backend.app.engine.execution.builds.incremental.STORAGE_POLICY",
+        "stable-row-generations-v1",
+    )
     from .test_representation_targets import with_projection
 
     objects, populations, managed = model()

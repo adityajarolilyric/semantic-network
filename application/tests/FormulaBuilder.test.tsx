@@ -164,3 +164,35 @@ it('inserts compatible calculated measures and explains incompatible inputs', as
   expect(screen.getByLabelText('Formula')).toHaveValue('[Profit]')
   expect(screen.getByLabelText('Formula')).toHaveFocus()
 })
+
+it('groups the function library by arithmetic, conditional and time-series families', async () => {
+  const user = userEvent.setup()
+  render(
+    <FormulaBuilder
+      value=""
+      onChange={() => {}}
+      measures={[]}
+      attributes={[]}
+      data={emptySnapshot()}
+      functions={[
+        { name: 'sqrt', group: 'Arithmetic', description: 'Square root.' },
+        { name: 'if', group: 'Conditional', description: 'Choose a branch.' },
+        { name: 'rolling', group: 'Time series', description: 'Calendar window.' },
+      ]}
+      validation={null}
+      attributeError=""
+      functionError=""
+      levelSelected
+    />,
+  )
+  await user.click(screen.getByRole('tab', { name: 'Functions' }))
+  expect(
+    screen.getByRole('button', { name: 'Insert SQRT' }).closest('.formula-column-group'),
+  ).toHaveTextContent('Arithmetic')
+  expect(
+    screen.getByRole('button', { name: 'Insert IF' }).closest('.formula-column-group'),
+  ).toHaveTextContent('Conditional')
+  expect(
+    screen.getByRole('button', { name: 'Insert ROLLING' }).closest('.formula-column-group'),
+  ).toHaveTextContent('Time series')
+})

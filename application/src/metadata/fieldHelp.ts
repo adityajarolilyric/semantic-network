@@ -1,5 +1,26 @@
 /** Reviewed UI vocabulary; no API/schema dependency or persisted help state. */
 const help: Record<string, string> = {
+  'Calendar ordering column':
+    'Use a Date for day/week/month periods, or a consecutive numeric calendar index. Text labels such as W1 and W10 do not sort chronologically. A series must have one row per period.',
+  'Period unit':
+    'Offsets count these calendar periods. For a four-week rolling window use week with offsets -3 and 0. Use index for your own fiscal-period sequence.',
+  'Series keys':
+    'Calculate each selected key combination independently. Product and Location create a separate time series per product/location. Do not include a changing month key if the window must cross months.',
+  'Reset by (optional)':
+    'Start cumulative and rolling calculations separately for each reset value, such as Fiscal Year. Use a complete period identifier; a repeating label such as January combines multiple years.',
+  'Minimum populated periods':
+    'Return NULL until this many non-NULL input periods are present. Set 4 for a four-week average that requires four populated weeks.',
+  'This measure is a conversion factor':
+    'Use a factor column from a conversion-table Transaction. Factors are positive, read only and repeat at finer grains; conflicting factors are never summed or averaged.',
+  'Apply a conversion':
+    'Multiply or divide this referenced measure by a stored factor before further aggregation. This changes materialised measure values and preserves the source table.',
+  'Conversion factor':
+    'Select a factor uniquely determined by every native row. Daily FX rates require daily amounts before weekly aggregation; product-specific pack sizes require Product lineage.',
+  'Conversion operation':
+    'Multiply when 1 source unit equals factor target units. Divide for the reverse direction. A price conversion may require separate currency and quantity factors in a formula.',
+  'Target unit or currency':
+    'The canonical unit of the converted stored values, such as EA, kg or INR. Editable values use this unit. Source-backed edits are converted back to source units before writing.',
+
   Aggregation:
     'For String, Date and Boolean values, one policy applies across all grouped rows, including Time. String None returns the single distinct value; conflicting values show Mixed. Date can select earliest/latest, and Boolean can select any true/all true.',
 
@@ -66,7 +87,7 @@ const help: Record<string, string> = {
   Revision:
     'A version of your semantic definitions. Drafts can be changed; published revisions are read-only.',
   Managed:
-    'Makes this source available for semantic modelling through a managed view. The original table stays unchanged.',
+    'Makes this source available through a managed view. Registration does not copy the table. Independent, untransformed Transactions can use it as writable measure storage.',
   'Copy the published definition':
     'Starts the new draft with the published definitions. Its managed views and planning tables must be built again.',
   'Pivot long-format columns':
@@ -140,11 +161,11 @@ const help: Record<string, string> = {
   'Missing transaction value':
     'What to show when a planning row has no matching transaction group: NULL or zero.',
   'Editable measure':
-    'Declares that this measure may be edited at its native or a supported coarser level. Decision View permits edits at native or proven coarser grains. Changes go to Base where reachable, otherwise native, and compatible coarser values are recomputed.',
+    'Declares that this measure may be edited at its native or a supported coarser level. Decision View permits edits at native or proven coarser grains. Changes go to Base where reachable, otherwise native, and compatible coarser values are recomputed. Independent untransformed Transactions write edits into their source table.',
   'Calculation type':
     'AggregateFirst recalculates the formula from inputs at each requested level. CalculateFirst calculates at native grain, then aggregates its result. Only numeric results can be distributed to finer grains.',
   Formula:
-    'Type an expression or search Measures, Columns and Functions in the input library. Click an item to insert it at the cursor; functions show syntax and examples. Types are inferred. Mixed inputs stay Mixed; missing inputs stay NULL unless explicitly handled.',
+    'Start with Name = expression, for example Absolute Error = ABS([Forecast] - [Sales]). Search Measures, Columns and Functions in the input library. Click an item to insert it at the cursor; functions show syntax and examples. Types are inferred. Mixed inputs stay Mixed; missing inputs stay NULL unless explicitly handled.',
   'Nullable result':
     'Allows the calculated result to be missing or unknown. NULL is different from zero.',
   'Non-time aggregation':
@@ -164,7 +185,7 @@ const help: Record<string, string> = {
   'Build Semantic Network':
     'Builds new or changed measure representations and dependent formulas. Unchanged values, including manual edits, are reused. If nothing changed, the current generation is kept. The preview selection does not restrict the build.',
   'Full Semantic Refresh':
-    'Recomputes every measure from its source data and replaces manual edits. Use after direct external source-data changes or when a complete source reload is required.',
+    'Recomputes from current sources. Edits in separate materialised outputs are replaced; source-backed edits remain in the source. Use after external source changes or for a complete rebuild.',
 
   'Preview dimension':
     'Choose the built table to inspect. Shows at most 50 rows and does not trigger a build.',

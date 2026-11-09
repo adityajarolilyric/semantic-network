@@ -11,7 +11,7 @@ from .test_measures_clickhouse import (
     build_values,
     update_measure,
 )
-from backend.app.engine.contracts import digest
+from backend.app.engine.sql.contracts import digest
 
 pytestmark = pytest.mark.integration
 

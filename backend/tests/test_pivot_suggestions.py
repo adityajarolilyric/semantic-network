@@ -1,6 +1,6 @@
 from copy import deepcopy
 
-from backend.app.engine.pivot_suggestions import PivotSuggestionDetector
+from backend.app.engine.transformations.pivot.suggestions import PivotSuggestionDetector
 
 
 def columns(*names):

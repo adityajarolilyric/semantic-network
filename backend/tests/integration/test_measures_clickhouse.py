@@ -564,7 +564,7 @@ def test_time_and_non_time_policies_and_order(
 def test_dimension_attribute_hierarchy_and_parent_attribute_keys(
     clickhouse_app, exposed_projection
 ):
-    from backend.app.engine.contracts import digest
+    from backend.app.engine.sql.contracts import digest
 
     client, _, _, _ = clickhouse_app
     setup(client)
@@ -903,7 +903,7 @@ def test_rebuilds_reuse_exactly_two_tables_per_level_and_isolate_candidates(
 
 def test_generation_collection_preserves_shared_tables_and_active_rows(clickhouse_app):
     from datetime import timedelta
-    from backend.app.engine.artifacts import ArtifactCollector
+    from backend.app.warehouse.retention import ArtifactCollector
     from backend.app.services.base import now
 
     client, admin, database, _ = clickhouse_app
@@ -1051,7 +1051,7 @@ def test_removed_measure_columns_retire_and_readdition_uses_new_storage_slot(
     clickhouse_app,
 ):
     from datetime import timedelta
-    from backend.app.engine.artifacts import ArtifactCollector
+    from backend.app.warehouse.retention import ArtifactCollector
     from backend.app.services.base import now
 
     client, admin, database, _ = clickhouse_app
@@ -1122,8 +1122,8 @@ def test_removed_measure_columns_retire_and_readdition_uses_new_storage_slot(
 def test_one_time_table_rename_resumes_and_preserves_snapshots(
     clickhouse_app, monkeypatch, tmp_path
 ):
-    from backend.app.engine.contracts import digest
-    from backend.app.engine.table_storage import TableStorage
+    from backend.app.engine.sql.contracts import digest
+    from backend.app.warehouse.current_storage import TableStorage
     from backend.scripts.rename_planning_tables import DimensionTableRename
 
     client, admin, database, _ = clickhouse_app
@@ -1480,7 +1480,7 @@ def test_materialisation_reverses_axes_on_irregular_intersections(
 def test_time_only_materialisation_uses_time_policy_and_each_parent_period(
     clickhouse_app, time_method, expected
 ):
-    from backend.app.engine.contracts import digest
+    from backend.app.engine.sql.contracts import digest
 
     client, _, _, _ = clickhouse_app
     pop = managed(
