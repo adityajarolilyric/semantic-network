@@ -15,6 +15,7 @@ from ..repositories.metadata import metadata_repositories
 from ..repositories.metadata.criteria import ArtifactLookup, RunLookup
 from .sql import quote_literal as lit, quote_identifier as q
 from .source_retirement import SourceCopyRetirement
+from .source_output_views import SourceOutputViews
 
 
 class SourceValueStorage:
@@ -23,6 +24,7 @@ class SourceValueStorage:
         self.warehouse = storage.warehouse
         self.store = storage.store
         self.retirement = SourceCopyRetirement(storage)
+        self.output_views = SourceOutputViews(self)
 
     async def save(self, artifact):
         await metadata_repositories(self.store.repository).artifacts.replace(
@@ -179,9 +181,10 @@ class SourceValueStorage:
         return query.sql(dialect="clickhouse")
 
     async def publish(self, artifact):
-        if not artifact.get("sourceCloneName"):
-            return
         await self.storage.require_running(artifact)
+        if not artifact.get("sourceCloneName"):
+            await self.output_views.publish(artifact)
+            return
 
         def inspect(connect):
             client = connect()
@@ -199,7 +202,11 @@ class SourceValueStorage:
                     "names": [
                         artifact["sourceTableName"],
                         artifact["sourceCloneName"],
-                        artifact["managedSourceViewName"],
+                        *(
+                            [artifact["managedSourceViewName"]]
+                            if artifact.get("managedSourceViewName")
+                            else []
+                        ),
                     ],
                 },
             ).result_rows
@@ -215,8 +222,14 @@ class SourceValueStorage:
         artifact["sourcePublication"] = {
             "oldUuid": artifact["sourceUuid"],
             "candidateUuid": rows[artifact["sourceCloneName"]][0],
-            "managedViewSql": rows[artifact["managedSourceViewName"]][2],
-            "managedViewOwner": rows[artifact["managedSourceViewName"]][1],
+            **(
+                {
+                    "managedViewSql": rows[artifact["managedSourceViewName"]][2],
+                    "managedViewOwner": rows[artifact["managedSourceViewName"]][1],
+                }
+                if artifact.get("managedSourceViewName")
+                else {}
+            ),
         }
         await self.save(artifact)
         live_query = self.replace_table(
@@ -246,8 +259,11 @@ class SourceValueStorage:
         artifact["sourcePublication"]["exchanged"] = True
         artifact["sourceQuery"] = live_query
         await self.save(artifact)
+        await self.output_views.publish(artifact)
 
     def refresh_managed_view(self, client, artifact):
+        if not artifact.get("managedSourceViewName"):
+            return
         publication = artifact["sourcePublication"]
         table = self.warehouse.qualify(artifact["managedSourceViewName"])
         if not self.owns_view(
@@ -262,6 +278,9 @@ class SourceValueStorage:
         )
 
     async def cleanup(self, artifact, *, rollback=False):
+        if rollback:
+            await self.output_views.rollback(artifact)
+
         def clean(connect):
             client = connect()
             clone = artifact.get("sourceCloneName")
@@ -315,6 +334,7 @@ class SourceValueStorage:
 
         await self.warehouse.run(clean)
         if not rollback:
+            await self.output_views.finish(artifact)
             await self.retirement.finish(artifact)
         artifact.update(cleanupPending=False)
         if rollback:

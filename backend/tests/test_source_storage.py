@@ -7,6 +7,7 @@ import pytest
 from backend.app.engine.graph.grain_contexts import resolve_grain_contexts
 from backend.app.engine.graph.source_storage import SourceStoragePolicy
 from backend.app.engine.sql.snapshot_reads import snapshot_read
+from backend.app.engine.sql.storage import relation_sql
 
 
 def model():
@@ -110,3 +111,24 @@ def test_source_snapshot_reads_owned_view_columns_without_generation_filter():
     )
     assert "__semantic_generation" not in sql
     assert '"Quantity"' in sql and '"source_output"' in sql
+
+
+def test_direct_managed_input_reads_the_source_without_a_generation_filter():
+    class Warehouse:
+        @staticmethod
+        def qualify(name):
+            return '"db"."' + name + '"'
+
+    sql = relation_sql(
+        Warehouse(),
+        {
+            "artifactId": "input_reference",
+            "storageMode": "source_input",
+            "physicalName": "Forecast",
+            "columns": [
+                {"columnId": "product", "name": "product", "nullable": False},
+            ],
+        },
+    )
+    assert "__semantic_generation" not in sql
+    assert 'FROM "db"."Forecast"' in sql

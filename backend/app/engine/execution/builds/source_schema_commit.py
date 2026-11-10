@@ -1,4 +1,4 @@
-"""Commit storage type widening with the same fenced source edit publication."""
+"""Commit direct input references and type widening with fenced publication."""
 
 from ....core.metadata import utc_now
 from ....repositories.metadata import metadata_repositories
@@ -11,15 +11,17 @@ from ....repositories.metadata.criteria import (
 )
 from ...sql.contracts import digest
 from .incremental import MaterialisationManifest
+from .source_input_commit import SourceInputCommit
 
 
 class SourceSchemaCommit:
     def __init__(self, builds):
         self.builds = builds
+        self.inputs = SourceInputCommit()
 
     async def apply(self, repo, run, outcomes):
         repositories = metadata_repositories(repo)
-        changed = False
+        changed = await self.inputs.apply(repo, run, outcomes)
         for artifact in outcomes:
             promotions = artifact.get("sourcePromotions")
             if not promotions:

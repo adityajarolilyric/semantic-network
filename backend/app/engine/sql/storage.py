@@ -19,7 +19,8 @@ def column_sql(column):
 
 def relation_sql(warehouse, artifact):
     if artifact.get("query") or (
-        artifact.get("storageMode") in {"current", "source"} and artifact.get("viewName")
+        artifact.get("storageMode") in {"current", "source"}
+        and artifact.get("viewName")
     ):
         artifact = {
             **artifact,
@@ -30,6 +31,6 @@ def relation_sql(warehouse, artifact):
     )
     if artifact.get("query"):
         return f"SELECT {columns} FROM ({artifact['query']})"
-    if artifact.get("storageMode") in {"current", "source"}:
+    if artifact.get("storageMode") in {"current", "source", "source_input"}:
         return f"SELECT {columns} FROM {warehouse.qualify(artifact.get('viewName', artifact['physicalName']))}"
     return f"SELECT {columns} FROM {warehouse.qualify(artifact['physicalName'])} WHERE {q(GENERATION)}={lit(token(artifact))}"

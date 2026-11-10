@@ -7,9 +7,14 @@ from ....core.metadata import revision_scope, utc_now
 from ....core.errors import MetadataError, Conflict
 from ....domain.measure_policies import MEASURE_TYPE_POLICY
 from ....repositories.metadata import metadata_repositories
-from ....repositories.metadata.criteria import TableResourceLookup
+from ....repositories.metadata.criteria import (
+    TableResourceLookup,
+    BindingLookup,
+    ArtifactLookup,
+)
 from ....warehouse.source_writeback import SourceWriteback
 from ...measures.compiler import MeasureCompiler
+from ...populations.transaction import transaction_population
 from ...sql.contracts import digest
 
 
@@ -54,18 +59,53 @@ class SourceValueBuilder:
             "viewName": name,
             "sourceTableName": binding["tableName"],
             "sourceId": binding["sourceId"],
-            "managedSourceViewName": prepared.compiler.managed[binding["sourceId"]][
-                "physicalName"
-            ],
+            **(
+                {
+                    "managedSourceViewName": prepared.compiler.managed[
+                        binding["sourceId"]
+                    ]["physicalName"]
+                }
+                if prepared.compiler.managed[binding["sourceId"]].get("storageMode")
+                != "source_input"
+                else {}
+            ),
             "buildOwner": "semanticSourceEdit:" + aid,
             "cleanupPending": True,
             "inputHash": run["inputHash"],
             "numericPolicy": MEASURE_TYPE_POLICY,
         }
 
+        managed_input = prepared.compiler.managed[binding["sourceId"]]
+        if managed_input.get("storageMode") != "source_input":
+            artifact["retiredInputView"] = {
+                "artifactId": managed_input["artifactId"],
+                "physicalName": managed_input["physicalName"],
+            }
+
         async def reserve(repo):
             await worker.fenced(repo, run)
             repositories = metadata_repositories(repo)
+            active_binding = await repositories.bindings.find(
+                BindingLookup(
+                    model_id=run["modelId"],
+                    revision_id=run["revisionId"],
+                    resource_kind="measureValues",
+                    resource_id=grain_id,
+                )
+            )
+            active_output = (
+                await repositories.artifacts.require(
+                    ArtifactLookup(artifact_id=active_binding["artifactId"]),
+                    "Active source output",
+                )
+                if active_binding
+                else None
+            )
+            if active_output and active_output.get("storageMode") == "source":
+                artifact["previousOutput"] = {
+                    "artifactId": active_output["artifactId"],
+                    "physicalName": active_output["physicalName"],
+                }
             resource = await repositories.table_resources.find(
                 TableResourceLookup(
                     model_id=run["modelId"],
@@ -84,6 +124,7 @@ class SourceValueBuilder:
 
         await builds.store.transaction(reserve)
         managed = deepcopy(prepared.compiler.managed)
+        managed[binding["sourceId"]]["physicalName"] = binding["tableName"]
         edit_delta = (
             prepared.compiler.edit_patch.state.get("delta")
             if run.get("isEdit")
@@ -133,10 +174,19 @@ class SourceValueBuilder:
             managed[binding["sourceId"]]["physicalName"] = physical
         # A source view must never reference an earlier output view: that would
         # retain stale definitions and produce cycles on incremental rebuilds.
+        populations = dict(prepared.populations)
+        context = prepared.compiler.objects[grain_id]
+        populations[grain_id] = transaction_population(
+            context,
+            prepared.objects,
+            managed,
+            builds.settings.clickhouse_database,
+            builds.settings.resolution_max_rows,
+        )
         compiler = MeasureCompiler(
             builds.settings.clickhouse_database,
             prepared.objects,
-            prepared.populations,
+            populations,
             managed,
             prepared.compiler.base_id,
         )

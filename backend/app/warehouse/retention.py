@@ -116,6 +116,9 @@ class ArtifactCollector:
             warehouse = self.service.executor.warehouse
 
             def drop(connect):
+                # This is a reference to an imported source, never an owned object.
+                if artifact.get("storageMode") == "source_input":
+                    return
                 if artifact.get("storageMode") == "current":
                     if artifact["physicalName"] == artifact.get(
                         "liveName"

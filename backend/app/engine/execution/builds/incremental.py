@@ -192,7 +192,7 @@ class MaterialisationManifest:
                     {
                         "evaluations": evaluations,
                         **(
-                            {"storage": "source-view-v1"}
+                            {"storage": "source-view-v2-single-view"}
                             if self.source_storage.binding(lid)
                             else {}
                         ),

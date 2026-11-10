@@ -111,11 +111,21 @@ class ClickHouseExecutor:
         def operation(connect):
             client = connect()
             info = self.warehouse.table_info(client, artifact["physicalName"])
-            if (
-                not info
-                or info[0] != "View"
-                or info[1] != "semanticArtifact:" + artifact["artifactId"]
-            ):
+            direct = artifact.get("storageMode") == "source_input"
+            valid = (
+                (
+                    info
+                    and info[0] == "MergeTree"
+                    and artifact["physicalName"] == artifact.get("sourceTableName")
+                )
+                if direct
+                else (
+                    info
+                    and info[0] == "View"
+                    and info[1] == "semanticArtifact:" + artifact["artifactId"]
+                )
+            )
+            if not valid:
                 raise MetadataError(
                     "managed_view_unavailable",
                     "The saved managed view is missing or changed. Use Ensure saved view.",

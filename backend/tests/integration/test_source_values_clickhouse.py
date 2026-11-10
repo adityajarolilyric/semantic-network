@@ -2,6 +2,10 @@
 
 # ruff: noqa: F811
 from uuid import uuid4
+from copy import deepcopy
+from datetime import timedelta
+
+from backend.app.core.metadata import utc_now
 import time
 
 import pytest
@@ -26,6 +30,22 @@ def assert_physical_tables(admin, database):
             return
         if time.monotonic() >= deadline:
             assert len(tables) == 1, tables
+        time.sleep(0.02)
+
+
+def assert_single_output_view(admin, database, expected_name=None):
+    deadline = time.monotonic() + 5
+    while True:
+        views = admin.query(
+            "SELECT name FROM system.tables WHERE database={db:String} AND engine='View' ORDER BY name",
+            parameters={"db": database},
+        ).result_rows
+        if len(views) == 1:
+            if expected_name is not None:
+                assert views[0][0] == expected_name
+            return views[0][0]
+        if time.monotonic() >= deadline:
+            assert len(views) == 1, views
         time.sleep(0.02)
 
 
@@ -90,6 +110,10 @@ def test_standalone_build_uses_source_and_edits_it_without_permanent_grain_table
     run = build_values(client)
     assert run["state"] == "succeeded", run
     assert_physical_tables(admin, database)
+    output_view = assert_single_output_view(admin, database)
+    managed_preview = client.get(BASE + "/managed-tables/" + source + "/preview")
+    assert managed_preview.status_code == 200, managed_preview.text
+    assert managed_preview.json()["rowCount"] == 3
     assert admin.command(f"SELECT sum(qty) FROM `{database}`.IndependentForecast") == 60
     response = edit(
         client,
@@ -110,18 +134,21 @@ def test_standalone_build_uses_source_and_edits_it_without_permanent_grain_table
     ).result_rows == [(7,), (8,), (9,)]
     assert_physical_tables(admin, database)
     assert admin.command(f"SELECT count() FROM `{database}`.IndependentForecast") == 3
+    assert_single_output_view(admin, database, output_view)
     stored_source = client.get(BASE + "/sources/" + source).json()
     assert stored_source["definition"]["columns"][1]["physicalType"] == "Float64"
     assert stored_source["definition"]["columns"][1]["nullable"]
     preview = output(client, grain)
     columns = {column["name"]: i for i, column in enumerate(preview["columns"])}
     assert float(preview["rows"][0][columns["Qty"]]) == pytest.approx(60.5, abs=1e-6)
+    assert_single_output_view(admin, database, output_view)
     # Full Refresh reads the edited source of truth, rather than resurrecting an original copy.
     run = build_values(client)
     assert run["state"] == "succeeded", run
     assert float(output(client, grain)["rows"][0][columns["Qty"]]) == pytest.approx(
         60.5, abs=1e-6
     )
+    assert_single_output_view(admin, database, output_view)
 
 
 def build_incremental(client):
@@ -235,6 +262,7 @@ def test_failed_source_publication_rolls_back_rows_schema_and_views(
         f"SELECT * FROM `{database}`.IndependentForecast ORDER BY ALL"
     ).result_rows
     before = client.get(BASE + "/sources/" + source).json()
+    view_name = assert_single_output_view(admin, database)
     activation = client.app.state.container.measure_builds.handler.activation
     original_apply = activation.source_schema.apply
 
@@ -262,6 +290,7 @@ def test_failed_source_publication_rolls_back_rows_schema_and_views(
         == original
     )
     assert client.get(BASE + "/sources/" + source).json() == before
+    assert_single_output_view(admin, database, view_name)
     assert output(client, grain)["state"] == "ready"
     assert_physical_tables(admin, database)
 
@@ -543,5 +572,75 @@ def test_unrepresentable_source_weights_leave_original_values_unchanged(clickhou
         )
         == 30
     )
+    assert output(client, grain)["state"] == "ready"
+    assert_physical_tables(admin, database)
+
+
+def test_rebuild_retires_legacy_owned_views_and_preserves_unrelated_views(
+    clickhouse_app,
+):
+    client, admin, database, _ = clickhouse_app
+    source, _ = seed(client)
+    assert build_values(client)["state"] == "succeeded"
+    active_view = assert_single_output_view(admin, database)
+    container = client.app.state.container
+    original = next(
+        a
+        for a in container.store.documents["engine_artifacts"]
+        if a.get("sourceId") == source and a.get("storageMode") == "source_input"
+    )
+    for name in ("legacy_input_view", "legacy_values_view"):
+        aid = "artifact_" + uuid4().hex
+        admin.command(
+            f"CREATE VIEW `{database}`.`{name}` AS SELECT * FROM `{database}`.IndependentForecast"
+        )
+        admin.command(
+            f"ALTER TABLE `{database}`.`{name}` MODIFY COMMENT 'semanticArtifact:{aid}'"
+        )
+        old = {
+            **deepcopy(original),
+            "artifactId": aid,
+            "physicalName": name,
+            "kind": "view",
+            "storageMode": "source",
+        }
+
+        async def insert(repo):
+            await repo.insert("engine_artifacts", old)
+
+        client.portal.call(container.store.transaction, insert)
+    admin.command(f"CREATE VIEW `{database}`.unrelated_view AS SELECT 1 AS value")
+    assert build_values(client)["state"] == "succeeded"
+    views = admin.query(
+        "SELECT name FROM system.tables WHERE database={db:String} AND engine='View' ORDER BY name",
+        parameters={"db": database},
+    ).result_rows
+    assert views == sorted([(active_view,), ("unrelated_view",)])
+    assert_physical_tables(admin, database)
+
+
+def test_collecting_an_unbound_source_reference_never_drops_the_source(clickhouse_app):
+    client, admin, database, _ = clickhouse_app
+    source, grain = seed(client)
+    assert build_values(client)["state"] == "succeeded"
+    assert_single_output_view(admin, database)
+    container = client.app.state.container
+    reference = next(
+        a
+        for a in container.store.documents["engine_artifacts"]
+        if a.get("sourceId") == source and a.get("storageMode") == "source_input"
+    )
+    expired = {
+        **deepcopy(reference),
+        "artifactId": "artifact_" + uuid4().hex,
+        "createdAt": utc_now() - timedelta(days=2),
+    }
+
+    async def insert(repo):
+        await repo.insert("engine_artifacts", expired)
+
+    client.portal.call(container.store.transaction, insert)
+    client.portal.call(container.engine_worker.collector.collect)
+    assert admin.command(f"SELECT count() FROM `{database}`.IndependentForecast") == 3
     assert output(client, grain)["state"] == "ready"
     assert_physical_tables(admin, database)
