@@ -46,7 +46,10 @@ class NetworkBuildGate:
             order_by="createdAt",
             limit=1001,
         )
-        if any(r.get("resourceKind") in {"measureSet", "dimension"} for r in active):
+        if any(
+            r.get("resourceKind") in {"measureSet", "dimension", "objectView"}
+            for r in active
+        ):
             raise MetadataError(
                 "semantic_network_unavailable",
                 "A semantic table is being built. Queries and edits are unavailable until it completes.",

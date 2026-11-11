@@ -1,6 +1,6 @@
 """Pure SQL planning for resolved-transaction previews and diagnostics."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from sqlglot import parse_one
 
@@ -69,3 +69,11 @@ def compile_resolution_preview(
         compiler, sql, compiler.table(source_table_name), resolved, profile_count
     )
     return CompiledResolutionPreview(execution, queries)
+
+
+def compile_persisted_resolution(compiled, compiler, resolved):
+    query = parse_one(
+        compiler.with_sql("SELECT * FROM " + quote_identifier(resolved.node)),
+        read="clickhouse",
+    )
+    return replace(compiled, query=query), resolved.columns, resolved.mappings

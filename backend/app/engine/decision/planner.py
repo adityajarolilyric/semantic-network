@@ -75,6 +75,31 @@ class DecisionViewPlanner:
             )
         )
 
+    def common_sources(self, request, fields):
+        """Require a real semantic context, even for an axis-free grand total."""
+        relationships = ViewRelationships(self.graph, fields)
+        availability = MeasureCompatibilityAnalyzer(
+            list(self.objects.values()), self.base_id, relationships
+        )
+        sources = {
+            lid
+            for lid in self.relationships.levels
+            if all(relationships.resolve(lid, field["coordinate"]) for field in fields)
+            and all(
+                availability.outcome(mid, lid).available for mid in request.measures
+            )
+        }
+        if not sources:
+            names = ", ".join(
+                f'"{self.objects[mid]["name"]}"' for mid in request.measures
+            )
+            raise MetadataError(
+                "decision_view_incompatible",
+                f"{names} cannot be plotted together with the selected attributes: "
+                "no common dimension has a proven semantic path for the complete selection.",
+            )
+        return sources
+
     def plan(self, request, populations, values):
         fields = self.fields(request)
         count_source_levels = set()
@@ -120,6 +145,7 @@ class DecisionViewPlanner:
                     "counting_view_unavailable",
                     "The measure’s Output Dimension must be built and determine every selected pivot attribute.",
                 )
+        common_sources = self.common_sources(request, fields)
         base_outputs = relationships.outputs(self.base_id)
         removed = [
             c
@@ -130,7 +156,7 @@ class DecisionViewPlanner:
         ]
         candidates, rejected = ([], {})
         for lid, artifact in values.items():
-            if lid not in populations:
+            if lid not in populations or lid not in common_sources:
                 continue
             if any((not relationships.resolve(lid, f["coordinate"]) for f in fields)):
                 rejected[lid] = "Required dimension attributes are unavailable."
@@ -148,19 +174,13 @@ class DecisionViewPlanner:
                 )
             )
             leaves = self.leaves(request.measures, exact, artifact)
-            if not connected and any(
-                (
-                    self.objects[mid]["definition"]["nativeGrainId"] != lid
-                    for mid in leaves
+            missing = leaves - artifact.get("measureColumns", {}).keys()
+            if missing:
+                names = ", ".join(
+                    f'"{self.objects[mid]["name"]}"' for mid in sorted(missing)
                 )
-            ):
                 rejected[lid] = (
-                    "An independent level can supply only its own native measures and their supported formulas."
-                )
-                continue
-            if not leaves <= artifact.get("measureColumns", {}).keys():
-                rejected[lid] = (
-                    "A required measure or formula input is not materialised here."
+                    f"Required measures or formula inputs are not materialised here: {names}."
                 )
                 continue
             typed_native = bool(leaves) and all(
@@ -221,65 +241,18 @@ class DecisionViewPlanner:
                 )
             )
         if not candidates:
-            leaves = self.leaves(request.measures, False, {})
-            measure_levels = {}
-            for mid in leaves:
-                definition = self.objects[mid]["definition"]
-                native = definition["nativeGrainId"]
-                sources = [self.base_id, native]
-                if definition["resultType"]["type"] in {"string", "date", "boolean"}:
-                    sources.reverse()
-                source = next(
-                    (
-                        lid
-                        for lid in sources
-                        if lid in values
-                        and lid in populations
-                        and (mid in values[lid].get("measureColumns", {}))
-                        and (
-                            relationships.analyze(lid, TARGET)["relationship"]
-                            in {"same", "equivalent", "roll_up"}
-                        )
-                        and all(
-                            (
-                                relationships.resolve(lid, f["coordinate"])
-                                for f in fields
-                            )
-                        )
-                    ),
-                    None,
-                )
-                if source is None:
-                    raise MetadataError(
-                        "decision_view_unavailable",
-                        f'''"{self.objects[mid]["name"]}" has no stored native or Base representation supporting the selected attributes.''',
-                    )
-                measure_levels[mid] = source
-            sources = list(
-                dict.fromkeys([*measure_levels.values(), *count_source_levels])
+            names = ", ".join(
+                f'"{self.objects[mid]["name"]}"' for mid in request.measures
             )
-            if not sources:
-                sources = [
-                    lid
-                    for lid in values
-                    if all(
-                        (relationships.resolve(lid, f["coordinate"]) for f in fields)
-                    )
-                ]
-            if not sources:
-                raise MetadataError(
-                    "decision_view_unavailable",
-                    "No stored native or Base population supports the selected attributes.",
-                )
-            return ViewPlan(
-                sources[0],
-                False,
-                fields,
-                leaves,
-                "Aggregates native or Base representations independently at the requested grain.",
-                native_only=self.base_id not in sources,
-                count_source_levels=tuple(sorted(count_source_levels)),
-                measure_levels=measure_levels,
+            raise MetadataError(
+                "decision_view_build_required",
+                f"{names} have no single compatible materialised table containing all required "
+                "measures or formula inputs. Build Semantic Network before querying this selection.",
+                status=409,
+                details=[
+                    {"dimension": self.objects[lid]["name"], "message": reason}
+                    for lid, reason in rejected.items()
+                ],
             )
         chosen = min(
             candidates,

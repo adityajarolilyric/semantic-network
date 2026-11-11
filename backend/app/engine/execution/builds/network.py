@@ -95,6 +95,20 @@ class SemanticNetworkHandler:
             current = await service.store.transaction(prepared)
             child = None
             await worker.step(run, "source_views", "succeeded")
+        if not current.get("objectViewsPrepared") and getattr(
+            service.managed, "object_views", None
+        ):
+            await service.managed.object_views.prepare_network(run)
+
+            async def mark_views(repo):
+                active = await worker.fenced(repo, run)
+                updated = {**active, "objectViewsPrepared": True}
+                await metadata_repositories(repo).runs.replace(
+                    RunLookup(run_id=run["runId"]), updated
+                )
+                return updated
+
+            current = await service.store.transaction(mark_views)
         index = current["dimensionIndex"]
         if child and child["resourceKind"] == "measureSet":
 

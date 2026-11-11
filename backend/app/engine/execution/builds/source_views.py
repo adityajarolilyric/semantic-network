@@ -7,8 +7,6 @@ from ....repositories.metadata.criteria import (
     ManagedTableLookup,
 )
 from ...sql.contracts import digest
-from ...graph.grain_contexts import resolve_grain_contexts
-from ...graph.source_storage import SourceStoragePolicy
 from ..storage.view_names import has_readable_name
 
 
@@ -18,8 +16,6 @@ class SourceViewPreparation:
 
     async def next_build(self, run, objects):
         repositories = metadata_repositories(self.managed.store.repository)
-        graph = resolve_grain_contexts(objects)
-        policy = SourceStoragePolicy(graph, {})
         for source in sorted(
             (
                 o
@@ -40,18 +36,6 @@ class SourceViewPreparation:
             artifact = await repositories.artifacts.require(
                 ArtifactLookup(artifact_id=binding["artifactId"]), "Managed source view"
             )
-            direct = artifact.get("storageMode") == "source_input"
-            if direct:
-                policy.managed[source_id] = artifact
-                if any(
-                    policy.binding(o["objectId"])
-                    for o in graph
-                    if o["kind"] == "grain"
-                    and o["owner"]["objectId"] in policy.consumers.get(source_id, set())
-                ):
-                    continue
-            if not direct and has_readable_name(artifact, source, objects):
-                continue
             definition = await repositories.managed_tables.require(
                 ManagedTableLookup(
                     model_id=run["modelId"],
@@ -60,6 +44,13 @@ class SourceViewPreparation:
                 ),
                 "Managed source definition",
             )
+            identity = not definition["definition"].get("pipeline")
+            if identity:
+                # Object-view publication consolidates legacy identity wrappers
+                # atomically with the owning object, without allocating a new input.
+                continue
+            if not identity and has_readable_name(artifact, source, objects):
+                continue
             return await self.managed.submit(
                 run["modelId"],
                 run["revisionId"],

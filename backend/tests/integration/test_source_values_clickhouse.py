@@ -37,7 +37,7 @@ def assert_single_output_view(admin, database, expected_name=None):
     deadline = time.monotonic() + 5
     while True:
         views = admin.query(
-            "SELECT name FROM system.tables WHERE database={db:String} AND engine='View' ORDER BY name",
+            "SELECT name FROM system.tables WHERE database={db:String} AND engine='View' AND name LIKE '%_values_%' ORDER BY name",
             parameters={"db": database},
         ).result_rows
         if len(views) == 1:
@@ -583,6 +583,10 @@ def test_rebuild_retires_legacy_owned_views_and_preserves_unrelated_views(
     source, _ = seed(client)
     assert build_values(client)["state"] == "succeeded"
     active_view = assert_single_output_view(admin, database)
+    initial_views = admin.query(
+        "SELECT name FROM system.tables WHERE database={db:String} AND engine='View'",
+        parameters={"db": database},
+    ).result_rows
     container = client.app.state.container
     original = next(
         a
@@ -615,7 +619,8 @@ def test_rebuild_retires_legacy_owned_views_and_preserves_unrelated_views(
         "SELECT name FROM system.tables WHERE database={db:String} AND engine='View' ORDER BY name",
         parameters={"db": database},
     ).result_rows
-    assert views == sorted([(active_view,), ("unrelated_view",)])
+    assert (active_view,) in initial_views
+    assert views == sorted([*initial_views, ("unrelated_view",)])
     assert_physical_tables(admin, database)
 
 

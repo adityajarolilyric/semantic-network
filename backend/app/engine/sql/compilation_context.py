@@ -23,6 +23,9 @@ class CompilationContext(ClickHouseCompiler):
         self.max_nodes = 1024
 
     def object_input(self, owner, relation):
+        saved = self.managed.get(owner["objectId"])
+        if saved and saved.get("viewRole") == "members":
+            return self.table(saved["physicalName"]), saved["columns"]
         pivot = owner["definition"].get("pivot")
         if not pivot or not pivot.get("enabled", True):
             return super().object_input(owner, relation)

@@ -20,6 +20,9 @@ class TransactionAPI(RevisionResourceAPI):
         self.resolution = resolution
         self.grains = grains
         self.router.add_api_route(
+            "/{resource_id}/preview", self.saved_preview, methods=["GET"]
+        )
+        self.router.add_api_route(
             "/from-grain", self.from_grain, methods=["POST"], status_code=201
         )
         self.router.add_api_route(
@@ -41,6 +44,17 @@ class TransactionAPI(RevisionResourceAPI):
             "/resolution/schema", self.output_schema, methods=["POST"]
         )
         self.router.add_api_route("/{resource_id}/schema", self.schema, methods=["GET"])
+
+    async def saved_preview(
+        self,
+        model_id: Identifier,
+        revision_id: Identifier,
+        resource_id: Identifier,
+        sql_only: bool = False,
+    ):
+        return await self.service.preview_saved(
+            model_id, revision_id, resource_id, sql_only
+        )
 
     async def from_grain(
         self,

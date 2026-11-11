@@ -81,7 +81,7 @@ def calculated(client, oid, calculation):
     )
 
 
-def seed_view(client):
+def seed_view(client, *, reporting=False):
     pop = managed(
         client, "Intersections", b"product,location\nP1,L1\nP1,L2\nP2,L1\nP3,L2\n"
     )
@@ -217,6 +217,20 @@ def seed_view(client):
         client, "forecast", f, "base", [("product", "col_1"), ("location", "col_2")]
     )
     transaction(client, "sales", s, "pt", [("product", "col_1")])
+    if reporting:
+        # Reporting representations are built only at Base/Transaction-native
+        # Dimensions. Declare this context explicitly rather than relying on the
+        # retired behaviour of materialising every lookup Dimension.
+        reporting = managed(
+            client, "BrandZoneReporting", b"brand,zone\nA,Z1\nA,Z2\nB,Z2\n"
+        )
+        transaction(
+            client,
+            "brand_zone_reporting",
+            reporting,
+            "brand_zone",
+            [("brand", "col_1"), ("zone", "col_2")],
+        )
     measure(client, "FQTY", "forecast", "base", "col_3")
     measure(client, "SQTY", "sales", "pt", "col_2")
     measure(
@@ -249,7 +263,7 @@ def query_view(client, rows=(), columns=(), measures=("FQTY",)):
 
 def test_decision_view_exact_coarser_and_formula_semantics(clickhouse_app):
     client, _, _, _ = clickhouse_app
-    seed_view(client)
+    seed_view(client, reporting=True)
     response = query_view(
         client,
         [field("Product", "brand")],
@@ -269,7 +283,7 @@ def test_decision_view_exact_coarser_and_formula_semantics(clickhouse_app):
 
 def test_decision_view_further_rollup_recalculates_aggregate_first(clickhouse_app):
     client, _, _, _ = clickhouse_app
-    seed_view(client)
+    seed_view(client, reporting=True)
     response = query_view(
         client,
         [field("Product", "brand")],
@@ -290,7 +304,7 @@ def test_decision_view_further_rollup_recalculates_aggregate_first(clickhouse_ap
 
 def test_decision_view_average_of_unequal_groups_falls_back_to_base(clickhouse_app):
     client, _, _, _ = clickhouse_app
-    seed_view(client)
+    seed_view(client, reporting=True)
     response = query_view(client, [field("Product", "brand")], measures=["AVGF"])
     assert response.status_code == 200, response.text
     view = response.json()

@@ -297,3 +297,6 @@ For calculated measures, the full editor places Measure type, Calculation type a
 The Measures library includes referenced and calculated measures. Compatible calculated inputs show a Calculated label. Unrelated inputs and measures that would introduce a dependency cycle are disabled with an explanation. A formula can use a calculated input directly; the engine resolves its dependencies first and honours every calculation's grain and calculation type. An input does not need to be separately built at each displayed grain. Save and live formula validation check the complete chain.
 
 Formula validation errors identify measures and output dimensions by their user-facing names. Invalid formulas show red diagnostic text and a red input border; the error styling clears when validation succeeds. Stable IDs remain in structured API diagnostic metadata for internal references.
+
+
+For Dimension/Transaction transformations, Save publishes that object's independent view. Raw Data Preview shows the uploaded physical rows; normal Preview shows the saved transformed view. If the form is new or changed, Preview asks to Save first and stays in the editor afterward. Build Semantic Network refreshes dependent saved views before populations and measures. See [saved-view behaviour](OBJECT_VIEWS.md).

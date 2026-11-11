@@ -6,6 +6,7 @@ export type EditorProps<T extends ObjectInput> = {
   data: Snapshot
   editing: boolean
   onSave: (input: T) => Promise<void>
+  onSaveForPreview?: (input: T) => Promise<void>
   onCancel: () => void
   busy: boolean
 }

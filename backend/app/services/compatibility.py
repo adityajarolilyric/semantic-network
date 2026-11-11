@@ -164,7 +164,17 @@ class CompatibilityService(Service):
                     "This level exceeds the eight-field pivot limit; choose fewer dimension_members in Planning View."
                 )
             elif not values:
-                result.update(status="needs_materialisation", reason=build_reason)
+                planner = DecisionViewPlanner(objects, rev["baseDimensionId"])
+                payload = DecisionViewRequest(
+                    rows=context["rows"],
+                    columns=context["columns"],
+                    measures=list(selected),
+                )
+                try:
+                    planner.common_sources(payload, planner.fields(payload))
+                    result.update(status="needs_materialisation", reason=build_reason)
+                except MetadataError as error:
+                    result.update(status="unavailable", reason=error.message)
             else:
                 payload = DecisionViewRequest(
                     rows=context["rows"],
@@ -182,17 +192,11 @@ class CompatibilityService(Service):
                         sourceDimensionName=by_id[plan.level_id]["name"],
                     )
                 except MetadataError as error:
-                    # Structural compatibility does not imply a common materialised source.
-                    reasons = [
-                        item.get("message", "")
-                        for item in (error.details or [])
-                        if isinstance(item, dict)
-                    ]
                     result.update(
-                        status="unavailable"
-                        if len(values) == len(levels)
-                        else "needs_materialisation",
-                        reason=" ".join([error.message, *reasons]),
+                        status="needs_materialisation"
+                        if error.code == "decision_view_build_required"
+                        else "unavailable",
+                        reason=error.message,
                     )
             if len(selected) == 1:
                 result["operation"] = analyzer.outcome(

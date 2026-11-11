@@ -9,7 +9,11 @@ from ..engine.transformations.dates.inputs import calendar_source_ids
 from ..engine.transformations.pipeline import InputPipelineCompiler, PreviewTarget
 from ..engine.measures.compiler import MeasureCompiler
 from ..engine.transformations.inputs import input_columns
-from ..engine.decision.previews import compile_resolution_preview
+from ..engine.object_views.compilation import direct_identity_inputs
+from ..engine.decision.previews import (
+    compile_resolution_preview,
+    compile_persisted_resolution,
+)
 from ..engine.execution.read_leases import ArtifactReadLeases
 from ..engine.graph.relationships import Coordinate, LevelRelationshipAnalyzer
 from ..engine.transformations.multigrain.planner import TransactionResolutionPlanner
@@ -276,6 +280,15 @@ class TransactionResolutionService(Service):
             model, revision, payload, PreviewTarget.DIMENSION_OUTPUT, sql_only=sql_only
         )
 
+    async def compile_view(self, model, revision, payload):
+        return await self._preview(
+            model,
+            revision,
+            payload,
+            PreviewTarget.TRANSACTION_OUTPUT,
+            compile_only=True,
+        )
+
     async def preview(self, model, revision, payload, *, sql_only=False):
         return await self._preview(
             model,
@@ -285,7 +298,9 @@ class TransactionResolutionService(Service):
             sql_only=sql_only,
         )
 
-    async def _preview(self, model, revision, payload, target, *, sql_only=False):
+    async def _preview(
+        self, model, revision, payload, target, *, sql_only=False, compile_only=False
+    ):
         unbound = (
             target == PreviewTarget.TRANSACTION_OUTPUT
             and payload.definition.dimensionId is None
@@ -426,6 +441,11 @@ class TransactionResolutionService(Service):
                 for sid, artifact in captured["relations"].items()
                 if sid in captured["managed"]
             }
+            saved_views, _ = await self.populations.object_inputs.load(
+                repo, model, revision, objects
+            )
+            saved_views.pop(candidate["objectId"], None)
+            managed.update(saved_views)
             inputs = {a["artifactId"]: a for a in managed.values()}
             await self.read_leases.acquire(
                 repo,
@@ -508,6 +528,15 @@ class TransactionResolutionService(Service):
                 self.settings.measure_max_sql_bytes,
             )
             compiled = preview.execution
+            if compile_only:
+                persisted, columns, mappings = compile_persisted_resolution(
+                    compiled, compiler, resolved
+                )
+                return (
+                    direct_identity_inputs(persisted, objects, managed, definitions),
+                    columns,
+                    mappings,
+                )
             if sql_only:
                 return {"sql": compiled.formatted_sql, "dialect": "clickhouse"}
             await self.executor.checks(compiled)

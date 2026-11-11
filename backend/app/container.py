@@ -33,6 +33,9 @@ from .services.workspace import WorkspaceService
 from .services.workspace_gate import WorkspaceGate
 from .services.workspace_reset import WorkspaceResetService
 from .warehouse.repository import WarehouseRepository
+from .warehouse.object_views import ObjectViewStorage
+from .engine.object_views.planner import ObjectViewPlanner
+from .engine.object_views.lifecycle import ObjectViewService
 from .warehouse.service import WarehouseSourceService
 
 
@@ -120,6 +123,22 @@ class ServiceContainer:
         self.transaction_resolution = TransactionResolutionService(
             self.store, self.settings, self.dimension_builds, self.managed_tables
         )
+        self.object_views = ObjectViewService(
+            self.store,
+            ObjectViewPlanner(self.dimension_builds, self.transaction_resolution),
+            ObjectViewStorage(
+                self.warehouse_repository, self.dimension_builds.executor
+            ),
+            self.engine_worker,
+            self.dimensions,
+            self.transactions,
+        )
+        self.managed_tables.object_views = self.object_views
+        self.dimensions.object_views = self.object_views
+        self.transactions.object_views = self.object_views
+        self.upload_metadata.object_views = self.object_views
+        self.engine_worker.handlers["objectView"] = self.object_views
+        self.dimension_builds.storage.object_views = self.object_views
         self.transaction_grains = TransactionGrainService(
             self.transactions, self.transaction_resolution
         )

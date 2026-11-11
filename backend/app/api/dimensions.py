@@ -19,6 +19,9 @@ class DimensionAPI(RevisionResourceAPI):
         self.builds = builds
         self.commands = commands
         self.router.add_api_route(
+            "/{resource_id}/preview", self.saved_preview, methods=["GET"]
+        )
+        self.router.add_api_route(
             "/save-and-build", self.save_and_build, methods=["POST"], status_code=202
         )
         self.router.add_api_route("/schema", self.output_schema, methods=["POST"])
@@ -40,6 +43,17 @@ class DimensionAPI(RevisionResourceAPI):
         )
         self.router.add_api_route(
             "/preview/population", self.preview_population, methods=["POST"]
+        )
+
+    async def saved_preview(
+        self,
+        model_id: Identifier,
+        revision_id: Identifier,
+        resource_id: Identifier,
+        sql_only: bool = False,
+    ):
+        return await self.service.preview_saved(
+            model_id, revision_id, resource_id, sql_only
         )
 
     async def output_schema(

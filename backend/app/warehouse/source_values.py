@@ -232,7 +232,7 @@ class SourceValueStorage:
             ),
         }
         await self.save(artifact)
-        live_query = self.replace_table(
+        live_query = artifact.get("sourceLiveQuery") or self.replace_table(
             artifact["sourceQuery"],
             self.warehouse.settings.clickhouse_database,
             artifact["sourceCloneName"],

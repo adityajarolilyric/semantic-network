@@ -38,6 +38,7 @@ class EngineWorker:
         self.workspace_gate = workspace_gate
         self.owner = uuid4().hex
         self.task = None
+        self.stopping = False
         self.last_collection = now()
         self.collector = collector
         self.sql_history = SqlHistory(store)
@@ -46,9 +47,11 @@ class EngineWorker:
         self.handlers[resource_kind] = handler
 
     def start(self):
+        self.stopping = False
         self.task = asyncio.create_task(self.loop())
 
     async def stop(self):
+        self.stopping = True
         if self.task:
             self.task.cancel()
             with suppress(asyncio.CancelledError):
@@ -56,7 +59,7 @@ class EngineWorker:
 
     async def loop(self):
         recovered = False
-        while True:
+        while not self.stopping:
             try:
                 async with (
                     self.workspace_gate.shared()

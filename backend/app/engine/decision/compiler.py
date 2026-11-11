@@ -8,6 +8,7 @@ from ..measures.aggregation import AggregationOperator, AggregationPlan
 from ..measures.compiler import MeasureCompiler
 from ..measures.contracts import COMPLETE, VALUE
 from ..sql.contracts import ExecutionPlan, RelationSchema
+from .materialised import MaterialisedViewCompiler
 from .relationships import TARGET, ViewRelationships, virtual_level
 
 
@@ -35,7 +36,6 @@ class DecisionViewCompiler(MeasureCompiler):
             for source in dict.fromkeys(
                 [
                     self.view.level_id,
-                    *self.view.measure_levels.values(),
                     *self.view.count_source_levels,
                 ]
             ):
@@ -200,24 +200,9 @@ class DecisionViewCompiler(MeasureCompiler):
                         )
                 result = self.compile_calculated_measure(measure, TARGET)
             else:
-                source_level = self.view.measure_levels.get(
-                    measure_id, self.view.level_id
-                )
+                source_level = self.view.level_id
                 query = self.stored_value(measure_id, source_level)
                 result = self.aggregate_view(query, measure, source_level)
-                coverage = self.coverage_nodes.get(result)
-                native = measure["definition"]["nativeGrainId"]
-                if (
-                    coverage
-                    and native != source_level
-                    and native in self.values
-                    and self.relationships.analyze(native, TARGET)["relationship"]
-                    in ("same", "equivalent", "roll_up")
-                ):
-                    fallback = self.aggregate_view(
-                        self.stored_value(measure_id, native), measure, native
-                    )
-                    result = self.with_coverage(result, coverage, TARGET, fallback)
             self.cache[key] = result
             return result
         finally:
@@ -226,8 +211,19 @@ class DecisionViewCompiler(MeasureCompiler):
     def stored_value(self, measure_id, level):
         return self.stored_measure(measure_id, level, self.values)
 
+    def rounded_value(self, expression, measure):
+        # Decision reads retain Float64 precision. Storage quantisation belongs
+        # to materialisation; two-decimal display formatting belongs to the UI.
+        if measure["definition"]["resultType"]["type"] == "number":
+            return f"toFloat64({expression})"
+        return super().rounded_value(expression, measure)
+
     def compile(self, measure_ids):
+        materialised = MaterialisedViewCompiler(self).compile(measure_ids)
+        if materialised is not None:
+            return materialised
         joins, selected = [], ["p." + q(k) + " AS " + q(k) for k in self.keys(TARGET)]
+        state_columns = []
         for index, mid in enumerate(measure_ids):
             node = self.compile_measure_at_level(mid, TARGET)
             alias = f"v{index}"
@@ -236,10 +232,18 @@ class DecisionViewCompiler(MeasureCompiler):
             )
             value, _ = self.cast_node_value(alias, node, self.measures[mid])
             selected.append(value + " AS " + q(f"value_{index}"))
-        for index, mid in enumerate(measure_ids):
-            selected.append(
-                f"toUInt8(coalesce(v{index}.{q(COMPLETE)},1)=2) AS {q('__mixed_' + str(index))}"
-            )
+            if node in self.mixed_nodes:
+                state_columns.append(
+                    {
+                        "columnId": f"__mixed_{index}",
+                        "role": "mixed",
+                        "measureId": mid,
+                        "expression": f"toUInt8(coalesce(v{index}.{q(COMPLETE)},1)=2)",
+                    }
+                )
+        for offset, column in enumerate(state_columns):
+            column["resultIndex"] = len(self.keys(TARGET)) + len(measure_ids) + offset
+            selected.append(column.pop("expression") + " AS " + q(column["columnId"]))
         sql = self.with_sql(
             f"SELECT {', '.join(selected)} FROM ({self.population(TARGET)}) p {' '.join(joins)}"
         )
@@ -247,6 +251,6 @@ class DecisionViewCompiler(MeasureCompiler):
         return ExecutionPlan(
             parse_one(sql, read="clickhouse"),
             tuple(self.assertions),
-            RelationSchema(()),
+            RelationSchema(tuple(state_columns)),
             "decision-view-v1",
         )

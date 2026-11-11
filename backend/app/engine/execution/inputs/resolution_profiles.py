@@ -12,6 +12,7 @@ async def prepare_resolution_profiles(warehouse, objects, managed, limit, settin
     for tx in objects:
         if (
             tx["kind"] != "transaction"
+            or managed.get(tx["objectId"], {}).get("resourceKind") == "objectView"
             or tx["definition"].get("mappingMode") != "resolve_multi_grain"
         ):
             continue

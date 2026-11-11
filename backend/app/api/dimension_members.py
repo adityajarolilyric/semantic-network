@@ -16,6 +16,9 @@ class DimensionMembersAPI(RevisionResourceAPI):
     def __init__(self, service: DimensionMembersService, inputs=None):
         super().__init__(service, "dimension-members", DimensionMembersDocument)
         self.inputs = inputs
+        self.router.add_api_route(
+            "/{resource_id}/preview", self.saved_preview, methods=["GET"]
+        )
         self.router.add_api_route("/{resource_id}/grain", self.grain, methods=["POST"])
 
         self.router.add_api_route("/input/schema", self.input_schema, methods=["POST"])
@@ -23,6 +26,18 @@ class DimensionMembersAPI(RevisionResourceAPI):
             "/input/preview", self.input_preview, methods=["POST"]
         )
         self.router.add_api_route("/preview", self.preview, methods=["POST"])
+
+    async def saved_preview(
+        self,
+        model_id: Identifier,
+        revision_id: Identifier,
+        resource_id: Identifier,
+        sql_only: bool = False,
+    ):
+        owner = await self.service.owner(model_id, revision_id, resource_id)
+        return await self.service.dimensions.preview_saved(
+            model_id, revision_id, owner["objectId"], sql_only
+        )
 
     async def grain(
         self, model_id: Identifier, revision_id: Identifier, resource_id: Identifier

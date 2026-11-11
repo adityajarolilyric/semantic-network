@@ -2,6 +2,8 @@ from copy import deepcopy
 from datetime import timedelta
 
 import pytest
+import asyncio
+from unittest.mock import AsyncMock
 
 from backend.app.core.config import Settings
 from backend.app.core.errors import Conflict, MetadataError
@@ -217,7 +219,7 @@ async def test_collection_retains_bound_published_artifact_and_drops_only_owned_
     from backend.app.warehouse.retention import ArtifactCollector
 
     store, service, worker = await context()
-    await submit(service)
+    await submit(service, SPEC)
     await worker.execute(await worker.claim())
     await submit(service, SPEC, 1, "next_definition")
     await worker.execute(await worker.claim())
@@ -277,3 +279,24 @@ async def test_step_durations_use_the_current_attempt_and_restart_on_retry(monke
     )
     assert step["durationMs"] == 500
     assert step["attempt"] == retried["fence"]
+
+
+@pytest.mark.asyncio
+async def test_worker_stops_even_if_handler_cleanup_swallows_cancellation():
+    _, _, worker = await context()
+    entered = asyncio.Event()
+    worker.claim = AsyncMock(return_value={"runId": "test_shutdown"})
+
+    async def execute(_run):
+        entered.set()
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            # Heartbeat cleanup can consume the cancellation at an await boundary.
+            return
+
+    worker.execute = execute
+    worker.start()
+    await entered.wait()
+    await asyncio.wait_for(worker.stop(), timeout=1)
+    assert worker.task.done()

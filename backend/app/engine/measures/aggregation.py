@@ -120,7 +120,19 @@ class AggregationOperator:
         return AggregationResult(query.sql(dialect="clickhouse"), has_mixed)
 
 
-def aggregate_expression(expression, method, policy, ordering=None, state=None):
+def aggregate_expression(
+    expression, method, policy, ordering=None, state=None, *, compact=False
+):
+    # The OrNull combinator implements the same ignore/all-null contract without
+    # a separate non-NULL counter. Keep stateful/ordered reducers on their
+    # established lowering: Mixed can be an eligible value even when NULL.
+    if compact and state is None and method in {"sum", "avg", "min", "max"}:
+        result = f"{method}OrNull({expression})"
+        if policy["allNullResult"] == "zero":
+            result = f"coalesce({result},0)"
+        if policy["nullInputPolicy"] == "propagate":
+            result = f"if(countIf(isNull({expression}))>0,NULL,{result})"
+        return result
     if method in ("first", "last"):
         if not ordering:
             raise MetadataError(

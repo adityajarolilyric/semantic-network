@@ -27,6 +27,28 @@ class DimensionPlanner:
     def plan(self, level, objects, relations):
         objects = {o["objectId"]: o for o in objects}
         definition = level["definition"]
+        saved = relations.get(level["objectId"])
+        if (
+            saved
+            and saved.get("resourceKind") == "objectView"
+            and saved.get("viewRole") != "members"
+        ):
+            scan = RelationScan(
+                saved["physicalName"],
+                tuple(
+                    (c["columnId"], c.get("storageName", c["name"]))
+                    for c in saved["columns"]
+                ),
+            )
+            return DimensionPlan(
+                DistinctProject(scan),
+                RelationSchema(tuple(saved["columns"])),
+                tuple(definition["grain"]["keyIds"]),
+                (scan,),
+                (),
+                (),
+                True,
+            )
         population = definition["population"]
         projection = population["operation"] == "distinct_projection"
         selections = [
@@ -123,7 +145,8 @@ class DimensionPlanner:
                     generation=relation.get("generationToken", relation["artifactId"])
                     if projection
                     and not relation.get("query")
-                    and relation.get("storageMode") != "current"
+                    and relation.get("storageMode")
+                    not in {"current", "source", "source_input", "object_view"}
                     else None,
                     nonnullable_ids=tuple(
                         cid
@@ -143,10 +166,15 @@ class DimensionPlanner:
         for index, binding in enumerate(definition["memberBindings"]):
             dimension = objects[binding["memberCatalogId"]]
             dim_def = dimension["definition"]
-            relation = relations[dim_def["sourceId"]]
+            saved_member = relations.get(binding["memberCatalogId"])
+            relation = saved_member or relations[dim_def["sourceId"]]
 
-            transform = input_plan(
-                dimension, relation["columns"], relation["physicalName"]
+            transform = (
+                None
+                if saved_member
+                else input_plan(
+                    dimension, relation["columns"], relation["physicalName"]
+                )
             )
             source_columns = {
                 c["columnId"]: c
@@ -162,7 +190,7 @@ class DimensionPlanner:
                     (c["columnId"], source_columns[c["sourceColumnId"]]["name"])
                     for c in dim_def["columns"]
                 ),
-                dim_def.get("filters"),
+                None if saved_member else dim_def.get("filters"),
                 transform=transform,
                 filter_columns=tuple(
                     {**source_columns[c["sourceColumnId"]], "columnId": c["columnId"]}

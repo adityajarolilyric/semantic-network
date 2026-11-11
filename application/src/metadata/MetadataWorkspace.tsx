@@ -194,19 +194,39 @@ export function MetadataWorkspace({
       setBusy(false)
     }
   }
-  async function save(input: ObjectInput) {
+  async function persistEditor(input: ObjectInput, close: boolean) {
     if (!model || !revision || !editor) return
-    const ok = await run(
-      () =>
-        input.kind === 'dimension' && input.definition.population.operation !== 'source'
-          ? metadataApi.managedOperation(
-              metadataApi.scope(model.modelId, revision.revisionId) + '/dimensions/save-and-build',
-              { definition: inputOf(input), expectedVersion: editor.version ?? null },
-            )
-          : metadataApi.save(model.modelId, revision.revisionId, inputOf(input), editor.version),
-      'Changes saved.',
-    )
-    if (ok) setEditor(null)
+    let saved: ObjectDocument | undefined
+    const ok = await run(async () => {
+      if (input.kind === 'dimension' && input.definition.population.operation !== 'source') {
+        const base = metadataApi.scope(model.modelId, revision.revisionId)
+        await metadataApi.managedOperation(base + '/dimensions/save-and-build', {
+          definition: inputOf(input),
+          expectedVersion: editor.version ?? null,
+        })
+        saved = await metadataApi.request<ObjectDocument>(base + '/dimensions/' + input.objectId)
+      } else
+        saved = await metadataApi.save(
+          model.modelId,
+          revision.revisionId,
+          inputOf(input),
+          editor.version,
+        )
+    }, 'Changes saved.')
+    if (!ok || !saved) throw new Error('Save failed. Correct the error before Preview.')
+    if (close) setEditor(null)
+    else {
+      // Source-member creation returns its owning Dimension document. Keep the
+      // current authoring facade while advancing its authoritative version.
+      setEditor({ input: inputOf(input), version: saved.version })
+    }
+  }
+  async function save(input: ObjectInput) {
+    try {
+      await persistEditor(input, true)
+    } catch {
+      /* run() displays the save error */
+    }
   }
   async function createQuickMeasure(measure: Measure) {
     if (!model || !revision || !editable || busy) return
@@ -293,6 +313,7 @@ export function MetadataWorkspace({
     editing: !!editor?.version,
     onCancel: () => setEditor(null),
     busy,
+    onSaveForPreview: (input: ObjectInput) => persistEditor(input, false),
   }
   return (
     <>

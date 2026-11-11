@@ -32,6 +32,7 @@ class UploadMetadataService(Service):
         self.workspace = workspace
         self.managed = managed
         self.transactions = transactions
+        self.object_views = None
 
     async def onboard(self, table, import_id):
         model = await self.workspace.bootstrap()
@@ -101,7 +102,24 @@ class UploadMetadataService(Service):
                 await metadata_repositories(repo).objects.insert(document)
             return warnings
 
-        return await self.store.transaction(operation)
+        warnings = await self.store.transaction(operation)
+        if self.object_views:
+            objects = await self.definitions(
+                self.store.repository, model_id, revision_id
+            )
+            source = next(
+                o
+                for o in objects
+                if o["kind"] == "source" and o["definition"]["tableName"] == table
+            )
+            for document in objects:
+                if document["kind"] in {"dimension", "transaction"} and (
+                    document["definition"].get("sourceId") == source["objectId"]
+                    or document.get("memberCatalog", {}).get("sourceId")
+                    == source["objectId"]
+                ):
+                    await self.object_views.ensure_saved(document)
+        return warnings
 
     async def is_scoped(self, model_id, revision_id, table):
         repositories = metadata_repositories(self.store.repository)

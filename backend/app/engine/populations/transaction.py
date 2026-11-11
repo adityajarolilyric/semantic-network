@@ -2,6 +2,7 @@
 
 from ...warehouse.sql import quote_identifier as q
 from ..sql.compilation_context import CompilationContext
+from ..transformations.multigrain.contracts import ResolvedTransaction
 from ..sql.contracts import Check, digest
 from ..transformations.pipeline import InputPipelineCompiler, PreviewTarget
 
@@ -15,9 +16,19 @@ def transaction_population(context, objects, managed, database, max_rows):
     compiler = CompilationContext(
         database, objects, managed, resolution_max_rows=max_rows
     )
-    resolved = InputPipelineCompiler(compiler).compile(
-        transaction, PreviewTarget.UNMAPPED_TRANSACTION
-    )
+    saved = managed.get(transaction["objectId"])
+    if saved and saved.get("resourceKind") == "objectView":
+        resolved = ResolvedTransaction(
+            compiler.cte("SELECT * FROM " + compiler.table(saved["physicalName"])),
+            saved["columns"],
+            saved["mappings"],
+            "",
+            [],
+        )
+    else:
+        resolved = InputPipelineCompiler(compiler).compile(
+            transaction, PreviewTarget.UNMAPPED_TRANSACTION
+        )
     keys = context["definition"]["grain"]["keyIds"]
     source_columns = {c["columnId"]: c for c in resolved.columns}
     sql = compiler.with_sql(

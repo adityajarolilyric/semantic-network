@@ -68,6 +68,9 @@ async def test_source_capture_is_memoised_within_operation_and_fresh_next_time()
         {"artifactId": "first"},
         1,
     )
+    service.object_inputs = AsyncMock()
+    service.object_inputs.load.return_value = ({}, {})
+    service.object_inputs.select = lambda *args: ({}, {})
     service.input_capture = AsyncMock()
     service.input_capture.capture_source.return_value = snapshot
     session = PopulationCaptureSession({obj["objectId"]: obj for obj in objects})

@@ -1,3 +1,4 @@
+import { saveBeforePreview } from './savedPreview'
 import { ViewSqlButton } from '../../components/ViewSqlButton'
 import { useDimensionCatalog } from '../useDimensionCatalog'
 import { usePopulationInputColumns } from './usePopulationInputColumns'
@@ -19,6 +20,7 @@ export function DimensionEditor({
   data,
   editing,
   onSave,
+  onSaveForPreview,
   onCancel,
   busy,
   base,
@@ -235,15 +237,20 @@ export function DimensionEditor({
       return
     }
     if (!base) return
+    try {
+      if (!(await saveBeforePreview(value, initial, editing, onSaveForPreview))) return
+    } catch (e) {
+      setPreviewError(e instanceof Error ? e.message : 'Save failed.')
+      return
+    }
     actionInFlight.current = true
     setPreviewBusy(true)
     setPreviewError('')
     try {
       setPreview(
         await metadataApi.request<DimensionTableStatus>(
-          base + '/dimensions/preview/population',
-          'POST',
-          inputOf(value),
+          base + '/dimensions/' + value.objectId + '/preview',
+          'GET',
         ),
       )
     } catch (error) {
@@ -939,8 +946,7 @@ export function DimensionEditor({
       {preview && (
         <>
           <p className="meta-hint">
-            {preview.state === 'preview' ? 'Built preview (metadata not saved)' : 'Built table'}:{' '}
-            {preview.rowCount?.toLocaleString()} rows. Showing up to 50 records.
+            Saved view: {preview.rowCount?.toLocaleString()} rows. Showing up to 50 records.
           </p>
           <PlanningResult
             data={preview}
@@ -972,9 +978,9 @@ export function DimensionEditor({
             if (!form.current?.reportValidity())
               throw new Error('Complete the required fields first.')
             return metadataApi.request(
-              base + '/dimensions/preview/population?sql_only=true',
-              'POST',
-              inputOf(value),
+              base + '/dimensions/' + value.objectId + '/preview?sql_only=true',
+              'GET',
+              undefined,
               undefined,
               signal,
             )

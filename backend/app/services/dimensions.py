@@ -46,5 +46,7 @@ class DimensionService(ObjectService):
 
         current = await self.store.transaction(unchanged)
         if current is not None:
+            if self.object_views:
+                await self.object_views.ensure_saved(current)
             return current
         return await super().update(model_id, revision_id, object_id, payload, expected)

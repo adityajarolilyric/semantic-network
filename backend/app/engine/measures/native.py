@@ -24,6 +24,16 @@ class NativeMeasureCompiler:
     def resolve_transaction(self, transaction_id):
         if transaction_id not in self.compiler.transaction_relations:
             tx = self.compiler.objects[transaction_id]
+            saved = self.compiler.managed.get(transaction_id)
+            if saved and saved.get("resourceKind") == "objectView":
+                node = self.compiler.cte(
+                    "SELECT * FROM " + self.compiler.table(saved["physicalName"])
+                )
+                result = ResolvedTransaction(
+                    node, saved["columns"], saved["mappings"], node, [node], node
+                )
+                self.compiler.transaction_relations[transaction_id] = result
+                return result
             if tx["definition"].get("mappingMode") != "resolve_multi_grain":
                 target = (
                     PreviewTarget.CALENDAR_INPUT
@@ -73,8 +83,10 @@ class NativeMeasureCompiler:
         d = measure["definition"]
         level = d["nativeGrainId"]
         tx = self.compiler.objects[d["transactionId"]]["definition"]
-        if tx.get("mappingMode") == "resolve_multi_grain" or (
-            tx.get("calendarResolution") or tx.get("pivot") or tx.get("filters")
+        if (
+            d["transactionId"] in self.compiler.managed
+            or tx.get("mappingMode") == "resolve_multi_grain"
+            or (tx.get("calendarResolution") or tx.get("pivot") or tx.get("filters"))
         ):
             resolved = self.compiler.resolve_transaction(d["transactionId"])
             table = q(resolved.node)

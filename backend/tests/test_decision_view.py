@@ -56,7 +56,7 @@ def test_virtual_grain_resolves_formula_grain_references():
 @pytest.mark.asyncio
 async def test_read_lease_prevents_collection_after_generation_is_unbound():
     store, service, worker = await context()
-    await submit(service)
+    await submit(service, SPEC)
     await worker.execute(await worker.claim())
     await submit(service, SPEC, 1, "second")
     await worker.execute(await worker.claim())

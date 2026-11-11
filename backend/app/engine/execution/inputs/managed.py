@@ -19,6 +19,9 @@ class ManagedInputVerifier:
         objects_by_id = {document["objectId"]: document for document in objects}
         service = self.managed_tables
         for source_id, artifact in artifacts.items():
+            if artifact.get("resourceKind") == "objectView":
+                await service.executor.verify_object_view(artifact)
+                continue
             source = objects_by_id[source_id]
             await service.executor.inspect(source)
             plan = service.planner.plan(

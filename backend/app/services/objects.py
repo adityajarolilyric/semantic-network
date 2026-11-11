@@ -12,6 +12,7 @@ from .base import Service, now, scope
 
 class ObjectService(Service):
     kind: str
+    object_views = None
 
     async def get(self, model_id, revision_id, object_id):
         return await metadata_repositories(self.store.repository).objects.require(
@@ -22,6 +23,14 @@ class ObjectService(Service):
                 kind=self.kind,
             ),
             self.kind,
+        )
+
+    async def preview_saved(self, model_id, revision_id, object_id, sql_only=False):
+        await self.get(model_id, revision_id, object_id)
+        if not self.object_views:
+            raise Conflict("Save the object before Preview.")
+        return await self.object_views.preview(
+            model_id, revision_id, object_id, sql_only
         )
 
     async def list(self, model_id, revision_id, cursor, limit):
@@ -83,11 +92,14 @@ class ObjectService(Service):
             existing = {obj["objectId"]: obj for obj in objects}
             if allow_existing and document["objectId"] in existing:
                 candidates = [document, *related]
-                content = lambda obj: {
-                    k: v
-                    for k, v in obj.items()
-                    if k not in {"version", "createdAt", "updatedAt", "_id"}
-                }
+
+                def content(obj):
+                    return {
+                        k: v
+                        for k, v in obj.items()
+                        if k not in {"version", "createdAt", "updatedAt", "_id"}
+                    }
+
                 if all(
                     item["objectId"] in existing
                     and content(existing[item["objectId"]]) == content(item)
@@ -118,6 +130,10 @@ class ObjectService(Service):
                 await metadata_repositories(repo).objects.insert(item)
             return document
 
+        if self.object_views:
+            return await self.object_views.save(
+                self, model_id, revision_id, payload, None, operation
+            )
         return await self.store.transaction(operation)
 
     async def update(self, model_id, revision_id, object_id, payload, expected):
@@ -209,6 +225,10 @@ class ObjectService(Service):
                     )
             return updated
 
+        if self.object_views:
+            return await self.object_views.save(
+                self, model_id, revision_id, payload, expected, operation
+            )
         return await self.store.transaction(operation)
 
     async def delete(self, model_id, revision_id, object_id, expected):
@@ -271,6 +291,15 @@ class ObjectService(Service):
                         revision_id=revision_id,
                         resource_kind="measureValues",
                         resource_id=transaction_grain_id(object_id),
+                    )
+                )
+            if self.kind in {"dimension", "transaction"}:
+                await metadata_repositories(repo).bindings.delete(
+                    BindingLookup(
+                        model_id=model_id,
+                        revision_id=revision_id,
+                        resource_kind="objectView",
+                        resource_id=object_id,
                     )
                 )
             if self.kind == "dimension":

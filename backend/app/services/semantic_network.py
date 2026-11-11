@@ -109,6 +109,19 @@ class SemanticNetworkService(Service):
                 raise Conflict(
                     "A measure build or edit is still running. Retry after it finishes."
                 )
+            saving = await repositories.runs.list(
+                RunLookup(
+                    model_id=model,
+                    revision_id=revision,
+                    resource_kind="objectView",
+                    state_in=["queued", "running", "waiting"],
+                ),
+                limit=1,
+            )
+            if saving:
+                raise Conflict(
+                    "An object view is being saved. Retry after it completes."
+                )
             last_network = await self.gate.latest(repo, model, revision)
             recovery_measures = []
             build_mode = mode

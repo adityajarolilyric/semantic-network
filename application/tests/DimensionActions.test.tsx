@@ -80,7 +80,7 @@ it('Save commits metadata without building a physical table', async () => {
   expect(build).not.toHaveBeenCalled()
 })
 
-it('Preview reads the proposed population without saving or building', async () => {
+it('Preview reads the saved view without saving unchanged metadata', async () => {
   const request = vi.spyOn(metadataApi, 'request').mockResolvedValue(ready)
   const build = vi.spyOn(metadataApi, 'managedOperation')
   const save = vi.fn(async () => {})
@@ -97,11 +97,7 @@ it('Preview reads the proposed population without saving or building', async () 
   )
   await userEvent.click(screen.getByRole('button', { name: 'Preview' }))
   await waitFor(() =>
-    expect(request).toHaveBeenCalledWith(
-      '/models/m/revisions/r/dimensions/preview/population',
-      'POST',
-      initial,
-    ),
+    expect(request).toHaveBeenCalledWith('/models/m/revisions/r/dimensions/level/preview', 'GET'),
   )
   expect(await screen.findByRole('cell', { name: 'P1' })).toBeVisible()
   expect(save).not.toHaveBeenCalled()
@@ -225,4 +221,55 @@ it('shows creation-style parent selections when changing an edited Dimension str
       }),
     }),
   )
+})
+
+it('asks to save changed metadata before reading the saved view', async () => {
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+  const request = vi.spyOn(metadataApi, 'request').mockResolvedValue(ready)
+  const saveForPreview = vi.fn(async () => {})
+  render(
+    <DimensionEditor
+      initial={initial}
+      data={data()}
+      editing
+      busy={false}
+      base="/models/m/revisions/r"
+      onSave={vi.fn()}
+      onSaveForPreview={saveForPreview}
+      onCancel={vi.fn()}
+    />,
+  )
+  await userEvent.clear(screen.getByLabelText('Name'))
+  await userEvent.type(screen.getByLabelText('Name'), 'Changed Product')
+  await userEvent.click(screen.getByRole('button', { name: 'Preview' }))
+  expect(confirm).toHaveBeenCalledOnce()
+  await waitFor(() => expect(saveForPreview).toHaveBeenCalledOnce())
+  expect(request).toHaveBeenCalledWith('/models/m/revisions/r/dimensions/level/preview', 'GET')
+  expect(saveForPreview.mock.invocationCallOrder[0]).toBeLessThan(
+    request.mock.invocationCallOrder.at(-1)!,
+  )
+})
+
+it('does not preview unsaved changes when saving is declined', async () => {
+  vi.spyOn(window, 'confirm').mockReturnValue(false)
+  const request = vi.spyOn(metadataApi, 'request').mockResolvedValue(ready)
+  const saveForPreview = vi.fn(async () => {})
+  render(
+    <DimensionEditor
+      initial={initial}
+      data={data()}
+      editing
+      busy={false}
+      base="/models/m/revisions/r"
+      onSave={vi.fn()}
+      onSaveForPreview={saveForPreview}
+      onCancel={vi.fn()}
+    />,
+  )
+  await userEvent.clear(screen.getByLabelText('Name'))
+  await userEvent.type(screen.getByLabelText('Name'), 'Changed Product')
+  const calls = request.mock.calls.length
+  await userEvent.click(screen.getByRole('button', { name: 'Preview' }))
+  expect(saveForPreview).not.toHaveBeenCalled()
+  expect(request.mock.calls.length).toBe(calls)
 })

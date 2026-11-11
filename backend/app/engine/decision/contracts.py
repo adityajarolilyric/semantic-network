@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass
@@ -10,4 +10,3 @@ class ViewPlan:
     explanation: str
     native_only: bool = False
     count_source_levels: tuple = ()
-    measure_levels: dict = field(default_factory=dict)

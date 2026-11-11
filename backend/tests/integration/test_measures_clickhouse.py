@@ -552,6 +552,9 @@ def test_time_and_non_time_policies_and_order(
         "col_4",
         agg={**AGG, "nonTime": non_time, "time": time_method, "order": order},
     )
+    # Product is an intentional reporting target, so make it a Transaction-native
+    # context under the current representation-placement contract.
+    transaction(client, "product_reporting", tx, "product", [("product", "col_1")])
     assert build(client, "base")["state"] == "succeeded"
     assert build(client, "product")["state"] == "succeeded"
     run = build_values(client)

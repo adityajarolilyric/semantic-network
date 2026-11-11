@@ -10,3 +10,4 @@ class PopulationCaptureSession:
     objects_by_id: dict[str, dict]
     populations: dict[tuple[str, bool], dict] = field(default_factory=dict)
     sources: dict[str, ManagedSourceSnapshot] = field(default_factory=dict)
+    object_views: tuple[dict, dict] | None = None

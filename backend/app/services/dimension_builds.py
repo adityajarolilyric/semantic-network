@@ -1,6 +1,7 @@
 from datetime import timedelta
 from uuid import uuid4
 
+from ..engine.object_views.inputs import ObjectViewInputs
 from ..core.errors import Conflict, ImmutableRevision, MetadataError
 from ..engine.sql.contracts import Check, ExecutionPlan, digest
 from ..engine.execution.builds.populations import DimensionBuildHandler
@@ -28,6 +29,7 @@ class DimensionBuildService(Service):
         super().__init__(store, settings.max_objects_per_revision)
         self.settings, self.managed = settings, managed
         self.input_capture = ManagedInputCapture()
+        self.object_inputs = ObjectViewInputs()
         self.planner = DimensionPlanner(settings.resolution_max_rows)
         self.compiler = DimensionCompiler(settings.clickhouse_database)
         self.storage = TableStorage(store, managed.executor.warehouse)
@@ -139,6 +141,17 @@ class DimensionBuildService(Service):
             versions[sid] = source_snapshot.source_version
             bindings[sid] = source_snapshot.binding
             managed_inputs[sid] = source_snapshot.definition
+        if session.object_views is None:
+            session.object_views = await self.object_inputs.load(
+                repo, model, revision, objects
+            )
+        saved_views, saved_bindings = self.object_inputs.select(
+            level, objects, *session.object_views
+        )
+        # A draft candidate's own hash differs, so it cannot accidentally read its
+        # previously saved view while compiling a changed definition.
+        relations.update(saved_views)
+        bindings.update(saved_bindings)
         captured = {
             "relations": relations,
             "versions": versions,
@@ -310,7 +323,11 @@ class DimensionBuildService(Service):
                     level["name"],
                 )
             )
-            for relation in captured["relations"].values():
+            pinned_relations = {
+                relation["artifactId"]: relation
+                for relation in captured["relations"].values()
+            }
+            for relation in pinned_relations.values():
                 if relation.get("query"):
                     continue
                 artifact = await metadata_repositories(repo).artifacts.require(

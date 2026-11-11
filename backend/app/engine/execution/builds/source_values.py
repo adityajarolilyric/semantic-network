@@ -172,6 +172,7 @@ class SourceValueBuilder:
                 factor_sql=factor_sql,
             )
             managed[binding["sourceId"]]["physicalName"] = physical
+            managed.pop(binding["transactionId"], None)
         # A source view must never reference an earlier output view: that would
         # retain stale definitions and produce cycles on incremental rebuilds.
         populations = dict(prepared.populations)
@@ -199,6 +200,18 @@ class SourceValueBuilder:
             )
         await builds.executor.checks(compiled)
         artifact["sourceQuery"] = compiled.sql
+        if (
+            artifact.get("sourceCloneName")
+            and binding["transactionId"] in prepared.compiler.managed
+        ):
+            live_compiler = MeasureCompiler(
+                builds.settings.clickhouse_database,
+                prepared.objects,
+                prepared.populations,
+                prepared.compiler.managed,
+                prepared.compiler.base_id,
+            )
+            artifact["sourceLiveQuery"] = live_compiler.compile_level(grain_id)[0].sql
         outcome = await storage.create_view(
             artifact, compiled, builds.executor.execution_settings()
         )

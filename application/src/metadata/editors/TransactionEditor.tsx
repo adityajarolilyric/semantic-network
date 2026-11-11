@@ -1,3 +1,4 @@
+import { saveBeforePreview } from './savedPreview'
 import { ViewSqlButton } from '../../components/ViewSqlButton'
 import { useDimensionCatalog } from '../useDimensionCatalog'
 import {
@@ -30,6 +31,7 @@ export function TransactionEditor({
   data,
   editing,
   onSave,
+  onSaveForPreview,
   onCancel,
   busy,
   base,
@@ -111,21 +113,7 @@ export function TransactionEditor({
     { ...value, definition: { ...d, filters: null } },
     !createGrain && !!d.filters,
   )
-  const grainPayload = (includeMeasures = false) => ({
-    ...(includeMeasures ? { measures: transactionMeasureSelections(measureDrafts) } : {}),
-    objectId: value.objectId,
-    kind: 'transaction',
-    name: value.name,
-    displayName: value.displayName,
-    description: value.description,
-    sourceId: d.sourceId,
-    pivot: d.pivot ?? null,
-    calendarResolution: d.calendarResolution ?? null,
-    filters: d.filters ?? null,
-    grainColumnIds: grainKeys,
-  })
-  async function saveTransaction() {
-    if (!measuresReady || (createGrain && !grainKeys.length)) return
+  function transactionToSave() {
     const definition = createGrain
       ? {
           ...d,
@@ -142,11 +130,15 @@ export function TransactionEditor({
               ? d.keyMappings.map((mapping) => mapping.sourceColumnId)
               : [],
         }
-    await onSave({
+    return {
       ...value,
       definition,
       ...(!editing ? { measures: transactionMeasureSelections(measureDrafts) } : {}),
-    })
+    }
+  }
+  async function saveTransaction() {
+    if (!measuresReady || (createGrain && !grainKeys.length)) return
+    await onSave(transactionToSave())
   }
   return (
     <form
@@ -530,14 +522,19 @@ export function TransactionEditor({
                 setPreviewBusy(true)
                 setError('')
                 try {
+                  if (
+                    !(await saveBeforePreview(
+                      transactionToSave(),
+                      initial,
+                      editing,
+                      onSaveForPreview,
+                    ))
+                  )
+                    return
                   setPreview(
                     await metadataApi.request(
-                      base +
-                        (createGrain
-                          ? '/transactions/from-grain/preview'
-                          : '/transactions/resolution/preview'),
-                      'POST',
-                      createGrain ? grainPayload() : value,
+                      base + '/transactions/' + value.objectId + '/preview',
+                      'GET',
                     ),
                   )
                 } catch (error) {
@@ -564,13 +561,9 @@ export function TransactionEditor({
                 if (!form.current?.reportValidity())
                   throw new Error('Complete the required fields first.')
                 return metadataApi.request(
-                  base +
-                    (createGrain
-                      ? '/transactions/from-grain/preview'
-                      : '/transactions/resolution/preview') +
-                    '?sql_only=true',
-                  'POST',
-                  createGrain ? grainPayload() : value,
+                  base + '/transactions/' + value.objectId + '/preview?sql_only=true',
+                  'GET',
+                  undefined,
                   undefined,
                   signal,
                 )

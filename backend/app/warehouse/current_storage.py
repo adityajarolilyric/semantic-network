@@ -429,6 +429,8 @@ class TableStorage(LegacyTableStorage):
 
     async def recover(self, model, revision):
         """Undo interrupted exchanges or clean successful ones by recorded UUID."""
+        if getattr(self, "object_views", None):
+            await self.object_views.recover(model, revision)
         await self.source_values.recover(model, revision)
         repositories = metadata_repositories(self.store.repository)
         after = None

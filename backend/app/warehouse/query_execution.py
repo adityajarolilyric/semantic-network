@@ -69,7 +69,12 @@ class WarehouseQueryExecutor:
 
     @staticmethod
     def decision_view_sql(compiled, max_groups):
-        return f"SELECT * FROM ({compiled.sql}) ORDER BY ALL LIMIT {max_groups + 1}"
+        return (
+            compiled.query.copy()
+            .order_by("ALL NULLS LAST")
+            .limit(max_groups + 1)
+            .sql(dialect="clickhouse")
+        )
 
     async def _preview_artifact(
         self, artifact, settings, *, columns=None, ownership_message=None

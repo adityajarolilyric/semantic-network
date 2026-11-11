@@ -1,3 +1,4 @@
+import { saveBeforePreview } from './savedPreview'
 import { ViewSqlButton } from '../../components/ViewSqlButton'
 import { FilterEditor } from './FilterEditor'
 import { TransformationsPanel } from './TransformationsPanel'
@@ -14,6 +15,8 @@ export function DimensionMembersEditor({
   initial,
   data,
   onSave,
+  onSaveForPreview,
+  editing,
   onCancel,
   busy,
   base,
@@ -359,6 +362,24 @@ export function DimensionMembersEditor({
               }
               onClick={async () => {
                 if (!form.current?.reportValidity()) return
+                try {
+                  if (
+                    !(await saveBeforePreview(
+                      {
+                        ...value,
+                        displayName: value.name,
+                        definition: { ...d, attributeColumnIds: [...exposed] },
+                      },
+                      initial,
+                      editing,
+                      onSaveForPreview,
+                    ))
+                  )
+                    return
+                } catch (e) {
+                  setPreviewError(e instanceof Error ? e.message : 'Save failed.')
+                  return
+                }
                 const controller = new AbortController()
                 previewRequest.current?.abort()
                 previewRequest.current = controller
@@ -367,13 +388,9 @@ export function DimensionMembersEditor({
                 setPreview(null)
                 try {
                   const result = await metadataApi.request<DimensionTableStatus>(
-                    base + '/dimension-members/preview',
-                    'POST',
-                    {
-                      ...value,
-                      displayName: value.name,
-                      definition: { ...d, attributeColumnIds: [...exposed] },
-                    },
+                    base + '/dimension-members/' + value.objectId + '/preview',
+                    'GET',
+                    undefined,
                     undefined,
                     controller.signal,
                   )
@@ -401,13 +418,9 @@ export function DimensionMembersEditor({
                 if (!form.current?.reportValidity())
                   throw new Error('Complete the required fields first.')
                 return metadataApi.request(
-                  base + '/dimension-members/preview?sql_only=true',
-                  'POST',
-                  {
-                    ...value,
-                    displayName: value.name,
-                    definition: { ...d, attributeColumnIds: [...exposed] },
-                  },
+                  base + '/dimension-members/' + value.objectId + '/preview?sql_only=true',
+                  'GET',
+                  undefined,
                   undefined,
                   signal,
                 )

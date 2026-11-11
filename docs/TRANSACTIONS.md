@@ -18,7 +18,7 @@ Filters also work without an existing dimension: they filter Transaction rows af
 
 - `POST /transactions/from-grain`: creation command with object identity/name/description, sourceId, grainColumnIds and optional dimensionName, pivot, calendarResolution, filters and measures. In one MongoDB transaction, validate/create the dimension, Transaction and any selected Measures and select Base only if this is the first dimension and Base is unset. Existing Base is preserved. Generated IDs make exact retries idempotent; changed requests or edited objects conflict rather than overwrite.
 - `POST /transactions/from-grain/preview`: same command; without filters, preview the distinct proposed population. With filters, preview the transformed, filtered Transaction rows (preserving detail records), with count and at most 50 rows. Neither path creates definitions, changes versions or selects Base.
-- Save metadata commits the Dimension, Transaction and selected Measures atomically, without creating physical tables. Build Semantic later prepares populations and values in dependency order.
+- Save commits the Transaction, selected Measures and its independent transformed view atomically, without copying source data or automatically creating a Dimension. Build Semantic later prepares populations and values in dependency order.
 
 Nullable/invalid keys and resource bounds keep their existing build checks. A declared time-like column does not create a Time Dimension or infer temporal ordering. Decision View supports explicit dimension grain/population-attribute axes so an unbound generated level is usable without Dimensions. See [Decision View](DECISION_VIEW.md).
 
@@ -30,7 +30,7 @@ For a direct remap that preserves the source, Pivot/Calendar stages and the same
 
 Calculations at a different output Dimension, mixed dependencies, nonnumeric results, counts, attributes and grain references are not relocated automatically. A changed set of source keys or a multi-grain remap likewise does not infer a new calculation grain. These retain normal compatibility checks. **Reason:** a pure calculation can retain its meaning at the same explicitly mapped business grain, while contextual expressions or another grain may mean something different. Auto-created grains have no implied relationship to later business Dimensions.
 
-The Transaction, all relocated Measures and revision version commit in one MongoDB transaction with version checks. Measure versions advance so stale editors cannot overwrite the change and incremental materialisation detects the affected dependencies. Any invalid mapping, dependent formula or write conflict rolls the whole change back. Preview and View SQL validate the proposed Measure references without saving them. Save remains metadata-only; the next Build Semantic refreshes the affected values using the existing incremental dependency analysis.
+The Transaction, all relocated Measures and revision version commit in one MongoDB transaction with version checks. Measure versions advance so stale editors cannot overwrite the change and incremental materialisation detects the affected dependencies. Any invalid mapping, dependent formula or write conflict rolls the whole change back. Save validates the proposed Measure references and publishes the transformed Transaction view with the metadata. Normal Preview and View SQL read that saved view; the next Build Semantic refreshes the affected values using the existing incremental dependency analysis.
 
 ## Create measures with a Transaction
 
@@ -50,7 +50,7 @@ Map every native grain key exactly once to the effective source schema. Multiple
 
 Use `mappingMode="resolve_multi_grain"` when rows assign values at native or coarser grains. Match the **actual native intersections**, not a Cartesian product of dimension members.
 
-Resolution previews compile the current native Dimension population virtually, without requiring a built table. Dimension SQL exposes public column names; the preview boundary aliases these names back to stable column IDs before matching. Persisted populations use the same logical IDs, so changing a column's display/output name does not change its mapping. Native population and transaction validation still run; missing members are not silently discarded.
+Internal draft/stage diagnostic endpoints can compile the current native Dimension population virtually, without requiring a built table. The normal editor Preview instead requires Save and reads the saved Transaction view. Dimension SQL exposes public column names; the preview boundary aliases these names back to stable column IDs before matching. Persisted populations use the same logical IDs, so changing a column's display/output name does not change its mapping. Native population and transaction validation still run; missing members are not silently discarded.
 
 - Fixed-column rules map supplied source fields to native/dimension attributes. All present restrictions must hold.
 - New rules use **Column equals attribute** only. Pivot long attribute/value pairs into explicit columns first. Saved legacy Level/Value rules remain executable and unchanged rules can be saved; new or modified selector rules are rejected by CRUD.
@@ -189,3 +189,6 @@ SQL inspection: **View SQL** beside Preview compiles the current Transaction pip
 Pivot Data's **Suggest pivot** button calls the scoped managed-table suggestion API with the Source ID. It profiles at most 100 rows before object-local transformations and fills an editable draft; it does not save the Transaction or modify its shared input. Review sampled outputs and record keys, and use Discover to include other selector values. Existing Pivot → Date Resolution → mapping/resolution → final Filters execution order and validation remain unchanged. See [Pivot suggestions](SOURCES_AND_MANAGED_TABLES.md#pivot-suggestions).
 
 **Match native attribute** lists only the selected native Dimension's actual output fields: grain keys, population attributes and explicitly selected relationship attributes. Reachable but unselected fields from other Dimensions are excluded; add them to the native Dimension before configuring a new match. The options API preserves saved catalog-qualified references as aliases of the corresponding native output, without listing duplicate choices or rewriting saved metadata. Saved matches with no native output show a prompt to select/add the required attribute. Calendar-resolution choices remain independent.
+
+
+Saved objects own independent transformed views. Normal Preview requires saved changes and reads that view; Raw Preview reads the physical source. See [Save, Preview and publication rules](OBJECT_VIEWS.md).

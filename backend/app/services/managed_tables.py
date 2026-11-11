@@ -308,6 +308,17 @@ class ManagedTableService(Service):
                     "runId": run_id,
                     "physicalName": source_view_name(
                         source, artifact_id, source_view_role(source, objects)
+                    )
+                    if plan.definition["pipeline"]
+                    else source["definition"]["tableName"],
+                    **(
+                        {
+                            "storageMode": "source_input",
+                            "kind": "source",
+                            "sourceTableName": source["definition"]["tableName"],
+                        }
+                        if not plan.definition["pipeline"]
+                        else {}
                     ),
                     "viewNamingPolicy": VIEW_NAMING_POLICY,
                     "definitionHash": run["definitionHash"],

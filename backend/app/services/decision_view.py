@@ -3,6 +3,7 @@ from uuid import uuid4
 from ..core.errors import Conflict, MetadataError
 from ..engine.decision.attributes import DecisionAttributeCatalog
 from ..engine.decision.compiler import DecisionViewCompiler
+from ..engine.decision.cell_states import decode_cell_states
 from ..engine.decision.planner import DecisionViewPlanner
 from ..engine.decision.edit_planner import MeasureEditPlanner
 from ..engine.execution.read_leases import ArtifactReadLeases
@@ -172,7 +173,6 @@ class DecisionViewService(Service):
                     for level in dict.fromkeys(
                         [
                             plan.level_id,
-                            *plan.measure_levels.values(),
                             *plan.count_source_levels,
                         ]
                     )
@@ -234,13 +234,7 @@ class DecisionViewService(Service):
                     "This pivot would be too wide or too large to display. Move an attribute from columns to rows, or select fewer fields.",
                 )
             width = n_rows + n_columns + len(request.measures)
-            cell_states = [
-                [
-                    "mixed" if str(flag).lower() in {"1", "true"} else None
-                    for flag in row[width:]
-                ]
-                for row in rows
-            ]
+            cell_states = decode_cell_states(rows, request.measures, compiled.schema)
             rows = [row[:width] for row in rows]
             by_id = {o["objectId"]: o for o in objects}
             return {
@@ -270,12 +264,10 @@ class DecisionViewService(Service):
                     {
                         "measureId": mid,
                         "message": by_id[mid]["name"]
-                        + ": some finer cells are unavailable because allocation weights are missing or total zero. Incomplete aggregates are unavailable unless a native representation can supply them.",
+                        + ": some finer cells are unavailable because allocation weights are missing or total zero. Incomplete aggregates remain unavailable in the selected representation.",
                     }
                     for mid in plan.leaves
-                    if values[plan.measure_levels.get(mid, plan.level_id)]
-                    .get("incompleteMeasures", {})
-                    .get(mid)
+                    if values[plan.level_id].get("incompleteMeasures", {}).get(mid)
                 ],
                 "rows": rows,
                 "cellStates": cell_states,

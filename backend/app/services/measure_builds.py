@@ -69,6 +69,20 @@ class MeasureBuildService(Service):
             captured = await self.populations.capture_population_inputs(
                 repo, model, revision, level, objects, session=capture_session
             )
+            managed.update(
+                {
+                    sid: artifact
+                    for sid, artifact in captured["relations"].items()
+                    if artifact.get("resourceKind") == "objectView"
+                }
+            )
+            bindings.update(
+                {
+                    key: value
+                    for key, value in captured["bindings"].items()
+                    if key.startswith("object:")
+                }
+            )
             if is_virtual_dimension(level):
                 compiled = self.populations.compiler.compile(
                     self.populations.planner.plan(level, objects, captured["relations"])
@@ -125,6 +139,21 @@ class MeasureBuildService(Service):
             managed_defs[source_id] = source_snapshot.definition
             managed[source_id] = source_snapshot.artifact
             bindings["source:" + source_id] = source_snapshot.binding
+        saved_views, saved_bindings = await self.populations.object_inputs.load(
+            repo, model, revision, objects
+        )
+        managed.update(saved_views)
+        managed_defs.update(
+            {
+                oid: {
+                    "definitionHash": view["definitionHash"],
+                    "definition": {},
+                    "objectView": True,
+                }
+                for oid, view in saved_views.items()
+            }
+        )
+        bindings.update(saved_bindings)
         for context in (o for o in objects if o["kind"] == "grain"):
             populations[context["objectId"]] = transaction_population(
                 context,
