@@ -14,6 +14,7 @@ from .native import NativeMeasureCompiler
 from .output import MeasureOutputCompiler
 from .propagation import MeasurePropagationCompiler
 from .values import MeasureValueCompiler
+from .temporal_calendar import TemporalCalendarCompiler
 
 
 class MeasureCompiler(DimensionSqlRenderer):
@@ -68,6 +69,7 @@ class MeasureCompiler(DimensionSqlRenderer):
         self.value_compiler = MeasureValueCompiler(self)
         self.output_compiler = MeasureOutputCompiler(self)
         self.propagation_compiler = MeasurePropagationCompiler(self)
+        self.temporal_calendar_compiler = TemporalCalendarCompiler(self)
 
     def object_input(self, owner, relation):
         self.context.max_nodes = self.max_nodes

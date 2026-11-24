@@ -9,6 +9,8 @@ from ..engine.transformations.dates.calendar import CalendarResolutionPlanner
 from ..engine.graph.compatibility import MeasureCompatibilityAnalyzer
 from ..engine.measures.dependencies import MeasureDependencies
 from ..engine.graph.grain_contexts import resolve_grain_contexts
+from ..engine.graph.temporal_context import TemporalContextResolver
+from ..formula_language.expressions import contains_temporal
 from ..formula_language.service import FormulaLanguage
 from ..repositories.metadata import metadata_repositories
 from ..repositories.metadata.criteria import RevisionLookup
@@ -132,6 +134,14 @@ class MeasureService(ObjectService):
                 )
                 formula["astVersion"] = 2
             context = SemanticGraphValidator(objects)
+            if contains_temporal(formula["expression"]) and not definition.get(
+                "temporal"
+            ):
+                level = context.objects.get(definition["nativeGrainId"])
+                if level:
+                    definition["temporal"] = TemporalContextResolver(context).resolve(
+                        level
+                    )["context"]
             previous_type = definition["resultType"]
             try:
                 definition["resultType"] = {
@@ -183,7 +193,13 @@ class MeasureService(ObjectService):
                 }
             return canonical_measure(normalize_measure(document))
         if definition.get("conversion"):
-            document = {**document, "business": {**document["business"], "unit": definition["conversion"]["targetUnit"]}}
+            document = {
+                **document,
+                "business": {
+                    **document["business"],
+                    "unit": definition["conversion"]["targetUnit"],
+                },
+            }
         transaction = next(
             (
                 o

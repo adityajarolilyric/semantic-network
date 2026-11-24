@@ -350,6 +350,97 @@ def test_weekly_calendar_and_year_reset(clickhouse_app):
     ]
 
 
+def test_calendar_metadata_infers_windows_without_manual_series_settings(
+    clickhouse_app,
+):
+    client, *_ = clickhouse_app
+    seed(
+        client,
+        b"product,period,qty,factor\nP1,2026-01-05,10,1\nP1,2026-01-12,20,1\nP1,2026-01-26,40,1\nP2,2026-01-05,100,1\nP2,2026-01-12,200,1\n",
+    )
+    calendar = managed(
+        client, "WeeklyCalendar", b"week_start\n2026-01-05\n2026-01-12\n2026-01-26\n"
+    )
+    assert_post(
+        client,
+        "/dimension-members",
+        {
+            "objectId": "Calendar",
+            "kind": "dimensionMembers",
+            "name": "Calendar",
+            "displayName": "Calendar",
+            "isTimeDim": True,
+            "definition": {
+                "sourceId": calendar,
+                "columns": [
+                    {
+                        "columnId": "week_start",
+                        "name": "week_start",
+                        "displayName": "Week start",
+                        "sourceColumnId": "col_1",
+                    }
+                ],
+                "keyColumnIds": ["week_start"],
+                "labelColumnId": "week_start",
+                "attributeColumnIds": ["week_start"],
+                "time": {
+                    "baseGrain": "week",
+                    "dateColumnId": "week_start",
+                    "orderingColumnId": "week_start",
+                },
+            },
+        },
+    )
+    current = client.get(BASE + "/dimensions/base").json()
+    payload = {
+        key: value
+        for key, value in current.items()
+        if key not in {"modelId", "revisionId", "version", "createdAt", "updatedAt"}
+    }
+    payload["definition"]["memberBindings"] = [
+        {
+            "memberCatalogId": "Calendar",
+            "keyMappings": [
+                {"grainColumnId": "period", "memberColumnId": "week_start"}
+            ],
+            "selectedAttributeColumnIds": [],
+        }
+    ]
+    response = client.put(
+        BASE + "/dimensions/base",
+        json=payload,
+        headers={"If-Match": str(current["version"])},
+    )
+    assert response.status_code == 200, response.text
+    assert (
+        build(client, "base", version=response.json()["version"])["state"]
+        == "succeeded"
+    )
+    for name, text in [
+        ("RunningAuto", 'CUMULATIVE([Qty],"SUM")'),
+        ("RollingAuto", 'ROLLING([Qty],"SUM",-1,0)'),
+    ]:
+        response = calculated(client, name, text, context=None)
+        assert response.status_code == 201, response.text
+        context = response.json()["definition"]["temporal"]
+        assert context["timeKeyId"] == context["orderColumnId"] == "period"
+        assert context["periodUnit"] == "week"
+        assert context["partitionColumnIds"] == ["product"]
+        assert context["resetColumnId"] is None
+    run = build_values(client)
+    assert run["state"] == "succeeded", run
+    result, columns = values(client, "base")
+    rows = {
+        (row[columns["product"]], row[columns["period"]]): row for row in result["rows"]
+    }
+    assert [
+        float(rows["P1", day][columns["RunningAuto"]])
+        for day in ["2026-01-05", "2026-01-12", "2026-01-26"]
+    ] == [10, 30, 70]
+    assert float(rows["P2", "2026-01-12"][columns["RunningAuto"]]) == 300
+    assert float(rows["P1", "2026-01-26"][columns["RollingAuto"]]) == 40
+
+
 @pytest.mark.parametrize("with_base", [True, False])
 def test_product_specific_factor_repeats_to_native_base_without_summing(
     clickhouse_app, with_base

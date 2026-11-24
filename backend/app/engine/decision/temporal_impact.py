@@ -48,7 +48,13 @@ class TemporalEditImpact:
 
     def expand(self, scope, node, level, context):
         c = self.compiler
-        population = c.population(level)
+        calendar = c.temporal_calendar_compiler.population(
+            level,
+            c.population(level),
+            context,
+            slices=node["function"] not in {"lag", "lead"},
+        )
+        population = calendar.sql
         source = f"SELECT p.* FROM ({population}) p INNER JOIN {q(scope)} s ON {c.join_keys('p', 's', level)}"
         _, start, end = window_spec(node)
         # Input i affects output j when j+start <= i <= j+end.
@@ -64,7 +70,12 @@ class TemporalEditImpact:
             else f"CROSS JOIN ({source}) s"
         )
         conditions = []
-        conditions.append(f"{output_order}>={source_order}-({end})")
+        if node["function"] == "cumulative" and calendar.slice_order:
+            conditions.append(
+                f"tuple({output_order},p.{q(calendar.slice_order)})>=tuple({source_order},s.{q(calendar.slice_order)})"
+            )
+        else:
+            conditions.append(f"{output_order}>={source_order}-({end})")
         if start is not None:
             conditions.append(f"{output_order}<={source_order}-({start})")
         # Hash join by series first; range bounds stay in WHERE for CH 25.3.

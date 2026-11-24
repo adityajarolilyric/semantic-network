@@ -5,7 +5,11 @@ from copy import deepcopy
 from ....core.errors import MetadataError
 from ....domain.measure_policies import MEASURE_TYPE_POLICY, TYPED_MEASURE_TYPE_POLICY
 from ....domain.typed_values import uses_typed_features
-from ....formula_language.expressions import contains_counts, measure_references
+from ....formula_language.expressions import (
+    contains_counts,
+    contains_temporal,
+    measure_references,
+)
 from ....warehouse.current_storage import STORAGE_POLICY
 from ...graph.grain_contexts import resolve_grain_contexts
 from ...graph.relationships import LevelRelationshipAnalyzer
@@ -20,6 +24,7 @@ from ...measures.contracts import (
     MeasureNode,
 )
 from ...measures.dependencies import MeasureDependencies
+from ...measures.temporal_calendar import calendar_slice_keys
 from ...sql.contracts import digest
 
 INCREMENTAL_POLICY = "incremental-representations-v3-transaction-targets"
@@ -61,6 +66,19 @@ class MaterialisationManifest:
                     d.pop(optional, None)
             if d.get("formula"):
                 d["formula"] = {"expression": d["formula"]["expression"]}
+            if (
+                contains_temporal((d.get("formula") or {}).get("expression"))
+                and d.get("temporal")
+                and calendar_slice_keys(
+                    self.relationships, d["nativeGrainId"], d["temporal"]
+                )
+            ):
+                d["temporalEvaluationPolicy"] = "native-calendar-slices-v1"
+                dimension_members.update(
+                    obj["objectId"]
+                    for obj in self.objects.values()
+                    if obj["kind"] == "dimensionMembers" and obj.get("isTimeDim")
+                )
             # Retain the v6 evaluation fingerprint for semantically identical
             # saved counts, preserving existing manually edited dependencies.
             if contains_counts((d.get("formula") or {}).get("expression")):

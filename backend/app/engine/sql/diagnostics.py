@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from ...core.errors import MetadataError
 
 PLANNING_CHECK_MESSAGES = {
-    "temporal_order_conflict": "Each time series must have exactly one row per calendar period and a non-NULL, whole-number calendar order. Check series keys and the selected time grain.",
+    "temporal_order_conflict": "Calendar order must be valid and unique within each series and native calendar slice. Cumulative/rolling support Week–Month intersections when their actual calendar dates distinguish them. LAG/LEAD require one row per target period.",
     "invalid_conversion_factor": "Conversion factors must be positive, finite and uniquely determined for each populated native row. Check missing rates and overlapping factor records.",
     "null_planning_key": "Dimension grain keys cannot be NULL.",
     "duplicate_planning_key": "The same Dimension grain has conflicting output attributes. Select attributes determined by the grain or correct the source data.",

@@ -424,6 +424,7 @@ it('automatically fixes temporal formulas to CalculateFirst and exposes calendar
   )
   expect(screen.getByRole('radio', { name: 'Calculate first' })).toBeChecked()
   expect(screen.getByRole('radio', { name: 'Aggregate first' })).toBeDisabled()
+  await user.click(screen.getByText('Advanced time-series settings'))
   expect(screen.getByLabelText('Calendar ordering column')).toBeVisible()
   expect(screen.getByLabelText('Period unit')).toHaveValue('week')
 })

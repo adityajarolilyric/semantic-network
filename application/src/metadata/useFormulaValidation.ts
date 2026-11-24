@@ -3,6 +3,14 @@ import { metadataApi } from './api'
 import type { CalcDefinition, Expression, MeasureCommon } from './types'
 
 export type FormulaValidation = {
+  temporalResolution?: {
+    context: CalcDefinition['temporal']
+    summary: string
+    reason: string
+    columns: { columnId: string; name: string }[]
+    keys: { columnId: string; name: string }[]
+    timeKeyIds: string[]
+  }
   name?: string
   expressionText?: string
   valid: boolean

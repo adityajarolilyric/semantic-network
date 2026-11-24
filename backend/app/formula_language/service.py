@@ -6,6 +6,7 @@ from dataclasses import asdict
 from ..core.errors import MetadataError
 from ..domain.formula_types import attribute_physical_type, infer
 from ..validation.graph import SemanticGraphValidator
+from ..engine.graph.temporal_context import TemporalContextResolver
 from . import AST_VERSION, LANGUAGE_VERSION
 from .catalog import FUNCTION_CATALOG
 from .expressions import (
@@ -92,6 +93,12 @@ class FormulaLanguage:
             level = context.objects.get(payload.nativeGrainId)
             if not level or level["kind"] not in {"dimension", "grain"}:
                 raise MetadataError("formula_level", "Choose an output dimension.")
+            if contains_temporal(expression):
+                resolution = TemporalContextResolver(context).resolve(
+                    level, owner["definition"]["temporal"]
+                )
+                owner["definition"]["temporal"] = resolution["context"]
+                result["temporalResolution"] = resolution
             kind = infer(
                 expression,
                 lambda mid: context.objects[mid]["definition"]["resultType"]["type"],

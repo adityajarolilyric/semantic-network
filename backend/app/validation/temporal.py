@@ -4,6 +4,7 @@ from ..core.errors import MetadataError
 from ..domain.typed_values import result_type, NUMERIC
 from ..formula_language.expressions import contains_temporal, contains_counts, walk
 from ..formula_language.temporal import is_temporal, window_spec
+from ..engine.graph.temporal_context import TemporalContextResolver
 
 
 def validate_temporal(context, owner, level):
@@ -28,8 +29,11 @@ def validate_temporal(context, owner, level):
             "Intersection counts and temporal functions have different calculation grains. Create a separate count measure first."
         )
     if not temporal or not level:
+        resolution = TemporalContextResolver(context).resolve(level) if level else None
         error(
-            "Choose a time key, calendar ordering column and series keys for this time-series formula."
+            resolution["reason"]
+            if resolution
+            else "Choose an Output Dimension for this time-series formula."
         )
         return
     keys = set(level["definition"]["grain"]["keyIds"])

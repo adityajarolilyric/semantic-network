@@ -286,23 +286,12 @@ export function MeasureEditor({
     (conversionSyntax.key === syntaxKey && conversionSyntax.active)
   useEffect(() => {
     if (d.measureType !== 'calculated') return
-    if (
-      (temporal || conversionFormula) &&
-      (d.calculationType !== 'CalculateFirst' || (temporal && !d.temporal))
-    ) {
+    if ((temporal || conversionFormula) && d.calculationType !== 'CalculateFirst') {
       update({
         calculationType: 'CalculateFirst',
         aggregation: d.aggregation ?? defaultAggregation,
         allocation: d.allocation ?? { mode: 'weighted_by_self' },
-        temporal: temporal
-          ? (d.temporal ?? {
-              timeKeyId: '',
-              orderColumnId: '',
-              periodUnit: 'week',
-              partitionColumnIds: [],
-              minimumPeriods: 1,
-            })
-          : null,
+        temporal: temporal ? (d.temporal ?? null) : null,
       })
     } else if (!temporal && d.temporal) update({ temporal: null })
   }, [
@@ -423,7 +412,7 @@ export function MeasureEditor({
           onChange={async (id) => {
             try {
               const level = await dimensionMembers.resolve(id)
-              update({ nativeGrainId: level.objectId, outputGrain: level.owner })
+              update({ nativeGrainId: level.objectId, outputGrain: level.owner, temporal: null })
             } catch (error) {
               setError(error instanceof Error ? error.message : 'Could not select Dimension.')
             }
@@ -660,13 +649,14 @@ export function MeasureEditor({
             compact={quick}
             disabled={busy || validatingSave}
           />
-          {temporal && d.temporal && (
+          {temporal && (
             <TemporalSettings
               base={base}
               dimension={data.dimensions.find(
                 (dimension) => dimension.objectId === d.nativeGrainId,
               )}
               value={d.temporal}
+              resolution={validation?.temporalResolution}
               level={dimensionMembers.levels.find((level) => level.objectId === d.nativeGrainId)}
               onChange={(context) => update({ temporal: context })}
             />
