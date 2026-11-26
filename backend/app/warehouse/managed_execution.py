@@ -1,9 +1,10 @@
 from sqlglot import exp, parse_one
 
 from ..core.errors import MetadataError
-from ..warehouse.repository import quote_identifier, quote_literal
-from ..engine.checks import CheckDiagnostics, WarehouseCheckRunner
-from ..engine.contracts import digest
+from ..engine.sql.diagnostics import CheckDiagnostics
+from .query_execution import WarehouseCheckRunner
+from ..engine.sql.contracts import digest, Check
+from .sql import quote_identifier, quote_literal
 
 
 class ClickHouseExecutor:
@@ -61,6 +62,10 @@ class ClickHouseExecutor:
         return f"SELECT * FROM ({plan.sql}) AS {quote_identifier(self.owner_alias(artifact))}"
 
     async def create(self, artifact, plan):
+        if artifact.get("storageMode") == "source_input":
+            await self.verify(artifact, plan)
+            return
+
         def operation(connect):
             client = connect()
             name = artifact["physicalName"]
@@ -110,11 +115,21 @@ class ClickHouseExecutor:
         def operation(connect):
             client = connect()
             info = self.warehouse.table_info(client, artifact["physicalName"])
-            if (
-                not info
-                or info[0] != "View"
-                or info[1] != "semanticArtifact:" + artifact["artifactId"]
-            ):
+            direct = artifact.get("storageMode") == "source_input"
+            valid = (
+                (
+                    info
+                    and info[0] == "MergeTree"
+                    and artifact["physicalName"] == artifact.get("sourceTableName")
+                )
+                if direct
+                else (
+                    info
+                    and info[0] == "View"
+                    and info[1] == "semanticArtifact:" + artifact["artifactId"]
+                )
+            )
+            if not valid:
                 raise MetadataError(
                     "managed_view_unavailable",
                     "The saved managed view is missing or changed. Use Ensure saved view.",
@@ -131,6 +146,28 @@ class ClickHouseExecutor:
                 )
 
         await self.warehouse.run(operation)
+
+    async def verify_object_view(self, artifact):
+        def verify(connect):
+            client = connect()
+            info = self.warehouse.table_info(client, artifact["physicalName"])
+            if (
+                not info
+                or info[0] != "View"
+                or info[1] != "semanticArtifact:" + artifact["artifactId"]
+            ):
+                raise MetadataError(
+                    "object_view_unavailable",
+                    "The saved object view is missing or changed. Save the object again.",
+                    409,
+                )
+
+        await self.warehouse.run(verify)
+        await self.check_runner.run(
+            tuple(Check(c["code"], c["sql"]) for c in artifact.get("checks", [])),
+            {"max_execution_time": self.warehouse.settings.clickhouse_timeout_sec},
+            self.check_diagnostics,
+        )
 
     async def preview(self, plan, table=None):
         await self.checks(plan)
@@ -173,7 +210,6 @@ class ClickHouseExecutor:
             raise MetadataError(
                 "unknown_column", "Choose an attribute column from the selected table."
             )
-        from ..warehouse.repository import quote_identifier
 
         def operation(connect):
             result = connect().query(

@@ -85,6 +85,15 @@ def test_pivot_null_zero_missing_and_immutable_views(clickhouse_app):
     before = admin.query(
         f"SELECT name FROM system.tables WHERE database='{database}' AND engine='View'"
     ).result_rows
+    managed_before = client.get(base + "/managed-tables/" + source).json()
+    sql_response = client.post(
+        base + "/managed-tables/" + source + "/preview?sql_only=true", json=pivot()
+    )
+    assert sql_response.status_code == 200, sql_response.text
+    assert (
+        admin.command("SELECT count() FROM (" + sql_response.json()["sql"] + ")") == 3
+    )
+    assert client.get(base + "/managed-tables/" + source).json() == managed_before
     response = save(client, base, source, pivot(), "save_pivot")
     run = await_run(client, base, response)
     assert run["state"] == "succeeded", run
@@ -226,7 +235,7 @@ def test_publish_clone_and_dependency_protection(clickhouse_app):
     assert await_run(client, base, response)["state"] == "succeeded"
     level = {
         "objectId": "pl_product",
-        "kind": "planningLevel",
+        "kind": "dimension",
         "name": "Product",
         "displayName": "Product",
         "definition": {
@@ -243,12 +252,12 @@ def test_publish_clone_and_dependency_protection(clickhouse_app):
             },
         },
     }
-    result = client.post(base + "/planning-levels", json=level)
+    result = client.post(base + "/dimensions", json=level)
     assert result.status_code == 201, result.text
     rev = client.get(base).json()
     update = client.put(
         base,
-        json={"basePlanningLevelId": "pl_product", "changeReason": ""},
+        json={"baseDimensionId": "pl_product", "changeReason": ""},
         headers={"If-Match": str(rev["version"])},
     )
     assert update.status_code == 200, update.text
@@ -264,7 +273,7 @@ def test_publish_clone_and_dependency_protection(clickhouse_app):
     cid = current["definition"]["columns"][1]["columnId"]
     dim = {
         "objectId": "dim_product",
-        "kind": "dimension",
+        "kind": "dimensionMembers",
         "name": "Product",
         "displayName": "Product",
         "isTimeDim": False,
@@ -289,11 +298,15 @@ def test_publish_clone_and_dependency_protection(clickhouse_app):
             "attributeColumnIds": ["forecast"],
         },
     }
-    assert client.post(base + "/dimensions", json=dim).status_code == 201
+    assert client.post(base + "/dimension-members", json=dim).status_code == 201
     assert save(client, base, source, {"pipeline": []}).status_code == 422
     from .test_planning_clickhouse import build
 
-    assert build(client, "pl_product")["state"] == "succeeded"
+    for dimension in client.get(base + "/dimensions").json()["items"]:
+        assert (
+            build(client, dimension["objectId"], version=dimension["version"])["state"]
+            == "succeeded"
+        )
     before = client.get(base).json()
     model = client.get("/api/v1/models/default_model").json()
     published = client.post(

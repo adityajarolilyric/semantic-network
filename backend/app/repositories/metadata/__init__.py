@@ -1,27 +1,29 @@
 """Transaction-bound domain repositories; no client creation or new sessions."""
 
 from functools import cached_property
+
 from ...db.schema import CollectionSchemas
+from .activation import ActivationWriter
 from .catalog import (
-    ModelRepository,
-    RevisionRepository,
-    ObjectRepository,
-    ManagedTableRepository,
     ContractRepository,
+    ManagedTableRepository,
+    ModelRepository,
+    ObjectRepository,
+    RevisionRepository,
 )
+from .criteria import ManagedTableLookup, ObjectLookup, RecordLookup
 from .engine import (
-    RunRepository,
     ArtifactRepository,
     BindingRepository,
-    RunInputRepository,
     PinRepository,
     ReadLeaseRepository,
+    RunInputRepository,
+    RunRepository,
     StepRepository,
     TableResourceRepository,
 )
-from .workspace import WorkspaceControlRepository, WorkspaceLeaseRepository
 from .records import RecordCategory, RecordRepository
-from .criteria import ObjectLookup, ManagedTableLookup, RecordLookup
+from .workspace import WorkspaceControlRepository, WorkspaceLeaseRepository
 
 
 class MetadataRepositories:
@@ -66,9 +68,7 @@ class MetadataRepositories:
 
     @cached_property
     def activation(self):
-        from .activation import ActivationWriter
-
-        return ActivationWriter(self.documents)
+        return ActivationWriter(self)
 
     @cached_property
     def models(self):

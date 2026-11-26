@@ -1,8 +1,7 @@
 from typing import Literal
-from pydantic import BaseModel
-
 
 from fastapi import APIRouter
+from pydantic import BaseModel
 
 from ..core.errors import Conflict
 from ..schemas.models import ModelDocument

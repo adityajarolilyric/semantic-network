@@ -5,8 +5,8 @@ from pydantic import ValidationError
 from sqlglot import exp
 
 from backend.app.core.errors import MetadataError
-from backend.app.engine.compiler import ClickHouseCompiler
-from backend.app.engine.planner import ManagedTablePlanner
+from backend.app.engine.transformations.pivot.compiler import ClickHouseCompiler
+from backend.app.engine.transformations.pivot.planner import ManagedTablePlanner
 from backend.app.schemas.managed_tables import ManagedDefinition
 from backend.tests.test_engine import SOURCE, SPEC
 

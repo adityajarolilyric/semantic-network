@@ -231,7 +231,7 @@ test('expand forecast rows and choose generated Brand/Zone keys before saving', 
   await page.screenshot({ path: 'test-results/forecast-row-pivot.png', fullPage: true })
 })
 
-test('pivot a Dimension independently, preview raw/transformed data and reopen it', async ({
+test('pivot a DimensionMembers independently, preview raw/transformed data and reopen it', async ({
   page,
 }) => {
   test.setTimeout(90_000)
@@ -248,8 +248,8 @@ test('pivot a Dimension independently, preview raw/transformed data and reopen i
   }
   await post('/api/v1/models', {
     modelId: model,
-    name: 'Owned dimensions',
-    displayName: 'Owned dimensions',
+    name: 'Owned dimensionMembers',
+    displayName: 'Owned dimensionMembers',
   })
   await post(`/api/v1/models/${model}/revisions`, {
     revisionId: 'draft_1',
@@ -277,7 +277,7 @@ test('pivot a Dimension independently, preview raw/transformed data and reopen i
     )
     .toBe('succeeded')
   const original = await (await page.request.get(base + '/managed-tables/' + run.sourceId)).json()
-  await page.goto(`/?model=${model}&revision=draft_1&tab=dimensions`)
+  await page.goto(`/?model=${model}&revision=draft_1&tab=dimensionMembers`)
   await page
     .getByRole('navigation', { name: 'Workspace', exact: true })
     .getByRole('button', { name: 'Dimensions', exact: true })

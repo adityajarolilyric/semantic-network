@@ -13,6 +13,7 @@ class WarehouseSourceService:
         self.repository = repository
         self.settings = settings
         self.parser = CsvParser(max_rows=settings.csv_max_rows)
+        self.upload_metadata = None
 
     async def status(self):
         try:
@@ -59,4 +60,18 @@ class WarehouseSourceService:
             )
         parsed = await asyncio.to_thread(self.parser.parse, content)
         fingerprint = hashlib.sha256(content).hexdigest()
-        return await self.repository.import_csv(table, parsed, import_id, fingerprint)
+        result = await self.repository.import_csv(table, parsed, import_id, fingerprint)
+        if self.upload_metadata:
+            try:
+                result.warnings.extend(
+                    await self.upload_metadata.onboard(table, import_id)
+                )
+            except MetadataError as error:
+                # The physical import has committed. Preserve its success and expose
+                # recoverable setup failures; replaying the import completes setup.
+                result.semanticSetupComplete = False
+                result.warnings.append(
+                    "CSV uploaded; automatic semantic setup incomplete. "
+                    + error.message
+                )
+        return result

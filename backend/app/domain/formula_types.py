@@ -1,9 +1,13 @@
 """Type inference and function signatures for the semantic expression AST."""
 
-from ..core.errors import MetadataError
-from .typed_values import NUMERIC, result_type
+import re
+from datetime import date
 
+from ..core.errors import MetadataError
 from ..formula_language.catalog import FUNCTIONS
+from ..formula_language.temporal import is_temporal, window_spec
+from .grains import transaction_column_reference
+from .typed_values import NUMERIC, result_type
 
 
 def infer(node, measure_type, attribute_type, depth=0):
@@ -61,6 +65,11 @@ def infer(node, measure_type, attribute_type, depth=0):
             )
         return "number"
     fn = node["function"]
+    if is_temporal(node):
+        window_spec(node)
+        if child(node["arguments"][0]) != "number":
+            error("Time-series functions require numeric inputs.")
+        return "number"
     args = [child(n) for n in node["arguments"]]
     low, high = FUNCTIONS[fn]
     if not low <= len(args) <= high:
@@ -82,13 +91,10 @@ def infer(node, measure_type, attribute_type, depth=0):
     if fn == "date":
         if args != ["string"]:
             error("DATE requires an ISO date string.")
-        from datetime import date
 
         literal = node["arguments"][0]
         if literal["type"] == "literal":
             try:
-                import re
-
                 if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", literal["value"]):
                     raise ValueError()
                 date.fromisoformat(literal["value"])
@@ -103,8 +109,10 @@ def infer(node, measure_type, attribute_type, depth=0):
         if args != ["date", "date"]:
             error("DAYS_BETWEEN requires two Dates.")
         return "number"
-    if fn in {"abs", "round"} and any(t != "number" for t in args):
-        error("ABS and ROUND require numeric inputs.")
+    if fn in {"abs", "round", "sqrt", "root", "power", "ceil", "floor"} and any(
+        t != "number" for t in args
+    ):
+        error("Arithmetic functions require numeric inputs.")
     if len(set(args)) > 1:
         error("Function arguments must have matching types.")
     return args[0]
@@ -112,20 +120,26 @@ def infer(node, measure_type, attribute_type, depth=0):
 
 def attribute_physical_type(context, owner, node):
     if node["type"] == "grainRef":
-        level = context.objects.get(owner["definition"]["nativePlanningLevelId"])
+        level = context.objects.get(owner["definition"]["nativeGrainId"])
         physical = context.grain_type(level, node["grainColumnId"]) if level else None
-    elif node.get("dimensionId"):
-        obj = context.objects.get(node["dimensionId"])
+    elif node.get("memberCatalogId"):
+        obj = context.objects.get(node["memberCatalogId"])
         physical = (
             context.dimension_type(obj, node["columnId"])
-            if obj and obj["kind"] == "dimension"
+            if obj and obj["kind"] == "dimensionMembers"
             else None
         )
+    elif node.get("transactionId"):
+        grain_id, column_id = transaction_column_reference(
+            node["transactionId"], node["columnId"], list(context.objects.values())
+        )
+        obj = context.objects.get(grain_id)
+        physical = context.grain_type(obj, column_id) if obj and column_id else None
     else:
-        obj = context.objects.get(node.get("planningLevelId"))
+        obj = context.objects.get(node.get("dimensionId"))
         physical = (
             context.grain_type(obj, node["columnId"])
-            if obj and obj["kind"] == "planningLevel"
+            if obj and obj["kind"] in {"dimension", "grain"}
             else None
         )
     value = result_type(physical or "", True)

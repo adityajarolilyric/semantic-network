@@ -1,8 +1,10 @@
 from typing import Annotated, Literal, Union
 
-from pydantic import Field, model_validator
+from pydantic import AliasChoices, Field, model_validator
 
 from .common import Identifier, Schema
+from .grains import GrainReference as OutputGrainReference
+from .temporal import TemporalContext
 
 
 class MeasureReference(Schema):
@@ -17,15 +19,26 @@ class GrainReference(Schema):
 
 class AttributeReference(Schema):
     type: Literal["attributeRef"]
+    memberCatalogId: Identifier | None = None
     dimensionId: Identifier | None = None
-    planningLevelId: Identifier | None = None
+    transactionId: Identifier | None = None
     columnId: Identifier
 
     @model_validator(mode="after")
     def one_owner(self):
-        if (self.dimensionId is None) == (self.planningLevelId is None):
+        if (
+            sum(
+                value is not None
+                for value in (
+                    self.memberCatalogId,
+                    self.dimensionId,
+                    self.transactionId,
+                )
+            )
+            != 1
+        ):
             raise ValueError(
-                "Choose exactly one Dimension or Planning Level attribute owner."
+                "Choose exactly one DimensionMembers or Dimension attribute owner."
             )
         return self
 
@@ -48,6 +61,15 @@ class CallExpression(Schema):
     type: Literal["call"]
     function: Literal[
         "abs",
+        "sqrt",
+        "root",
+        "power",
+        "ceil",
+        "floor",
+        "rolling",
+        "cumulative",
+        "lag",
+        "lead",
         "round",
         "coalesce",
         "min",
@@ -107,9 +129,15 @@ class Formula(Schema):
 
 
 class FormulaValidationInput(Schema):
+    temporal: TemporalContext | None = None
+    requireAssignment: bool = False
     objectId: Identifier
     name: str = Field(default="", max_length=200)
     displayText: str = Field(min_length=1, max_length=4000)
     languageVersion: Literal["planning-v1"] = "planning-v1"
-    nativePlanningLevelId: Identifier
+    nativeGrainId: Identifier | None = Field(
+        default=None,
+        validation_alias=AliasChoices("nativeGrainId", "nativeDimensionId"),
+    )
+    outputGrain: OutputGrainReference | None = None
     calculationType: Literal["AggregateFirst", "CalculateFirst"] = "AggregateFirst"

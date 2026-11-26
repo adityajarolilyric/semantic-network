@@ -1,9 +1,9 @@
-from ..repositories.metadata import metadata_repositories
-from ..repositories.metadata.criteria import RunLookup, WorkspaceControlLookup
 import asyncio
 from contextlib import suppress
 from uuid import uuid4
 
+from ..repositories.metadata import metadata_repositories
+from ..repositories.metadata.criteria import RunLookup, WorkspaceControlLookup
 from .base import now
 
 
@@ -27,7 +27,7 @@ class WorkspaceResetService:
                 cursor = None
                 while True:
                     runs = await metadata_repositories(repo).runs.list(
-                        RunLookup(state_in=["queued", "running"]),
+                        RunLookup(state_in=["queued", "running", "waiting"]),
                         order_by="runId",
                         after=cursor,
                         limit=100,

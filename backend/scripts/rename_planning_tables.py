@@ -21,8 +21,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from backend.app.core.config import Settings  # noqa: E402
 from backend.app.core.errors import Conflict  # noqa: E402
-from backend.app.engine.contracts import digest  # noqa: E402
-from backend.app.engine.table_storage import TableStorage, owner  # noqa: E402
+from backend.app.engine.sql.contracts import digest  # noqa: E402
+from backend.app.warehouse.current_storage import TableStorage
+from backend.app.engine.sql.storage import owner
 from backend.app.repositories.mongo import MongoMetadataStore  # noqa: E402
 from backend.app.services.base import now, scope  # noqa: E402
 from backend.app.services.workspace_gate import WorkspaceGate  # noqa: E402
@@ -45,7 +46,7 @@ def rewrite_references(value, mapping):
     return value
 
 
-class PlanningTableRename:
+class DimensionTableRename:
     def __init__(self, store, warehouse, gate, journal_path, target):
         self.store, self.warehouse, self.gate = store, warehouse, gate
         self.path, self.target = Path(journal_path), target
@@ -69,7 +70,7 @@ class PlanningTableRename:
             "engine_artifacts",
             {
                 "kind": "table",
-                "resourceKind": {"$in": ["planningLevel", "measureValues"]},
+                "resourceKind": {"$in": ["dimension", "measureValues"]},
             },
             "artifactId",
         ):
@@ -97,7 +98,7 @@ class PlanningTableRename:
                 {
                     **scope(resource["modelId"], resource["revisionId"]),
                     "objectId": resource["resourceId"],
-                    "kind": "planningLevel",
+                    "kind": "dimension",
                 },
             )
             new = TableStorage.physical_name(
@@ -338,7 +339,7 @@ async def main():
     gate = WorkspaceGate(store)
     await store.open()
     try:
-        migration = PlanningTableRename(store, warehouse, gate, journal_path, target)
+        migration = DimensionTableRename(store, warehouse, gate, journal_path, target)
         if args.apply:
             result = await migration.apply()
             print(

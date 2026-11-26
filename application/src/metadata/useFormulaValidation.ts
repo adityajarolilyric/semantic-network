@@ -1,20 +1,34 @@
 import { useEffect, useState } from 'react'
 import { metadataApi } from './api'
-import type { Expression, MeasureCommon } from './types'
+import type { CalcDefinition, Expression, MeasureCommon } from './types'
 
 export type FormulaValidation = {
+  temporalResolution?: {
+    context: CalcDefinition['temporal']
+    summary: string
+    reason: string
+    columns: { columnId: string; name: string }[]
+    keys: { columnId: string; name: string }[]
+    timeKeyIds: string[]
+  }
+  name?: string
+  expressionText?: string
   valid: boolean
   expression?: Expression
   containsCounts: boolean
+  containsTemporal?: boolean
+  containsConversionFactors?: boolean
   resultType?: MeasureCommon['resultType']
   unit?: string | null
   diagnostics: { message: string; line?: number; column?: number }[]
 }
 export type FormulaRequest = {
+  temporal?: CalcDefinition['temporal']
+  requireAssignment?: boolean
   objectId: string
   name: string
   displayText: string
-  nativePlanningLevelId: string
+  nativeGrainId: string
   calculationType: 'AggregateFirst' | 'CalculateFirst'
   languageVersion: 'planning-v1'
 }
@@ -31,7 +45,7 @@ export function useFormulaValidation(base: string | undefined, payload: FormulaR
   const key = JSON.stringify(payload)
   const [result, setResult] = useState<{ key: string; value: FormulaValidation } | null>(null)
   useEffect(() => {
-    if (!base || !payload || !payload.displayText.trim() || !payload.nativePlanningLevelId) return
+    if (!base || !payload || !payload.displayText.trim() || !payload.nativeGrainId) return
     const controller = new AbortController()
     const timer = setTimeout(() => {
       void validateFormula(base, payload, controller.signal)

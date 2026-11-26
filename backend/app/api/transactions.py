@@ -5,8 +5,8 @@ from ..schemas.common import Identifier
 from ..schemas.managed_tables import ObjectInputTransform
 from ..schemas.transactions import (
     CalendarSchemaInput,
-    TransactionDocument,
     TransactionCreateInput,
+    TransactionDocument,
     TransactionFromGrainInput,
     TransactionInput,
 )
@@ -19,6 +19,9 @@ class TransactionAPI(RevisionResourceAPI):
         super().__init__(service, "transactions", TransactionDocument)
         self.resolution = resolution
         self.grains = grains
+        self.router.add_api_route(
+            "/{resource_id}/preview", self.saved_preview, methods=["GET"]
+        )
         self.router.add_api_route(
             "/from-grain", self.from_grain, methods=["POST"], status_code=201
         )
@@ -42,6 +45,17 @@ class TransactionAPI(RevisionResourceAPI):
         )
         self.router.add_api_route("/{resource_id}/schema", self.schema, methods=["GET"])
 
+    async def saved_preview(
+        self,
+        model_id: Identifier,
+        revision_id: Identifier,
+        resource_id: Identifier,
+        sql_only: bool = False,
+    ):
+        return await self.service.preview_saved(
+            model_id, revision_id, resource_id, sql_only
+        )
+
     async def from_grain(
         self,
         model_id: Identifier,
@@ -55,8 +69,11 @@ class TransactionAPI(RevisionResourceAPI):
         model_id: Identifier,
         revision_id: Identifier,
         payload: TransactionFromGrainInput,
+        sql_only: bool = False,
     ):
-        return await self.grains.preview(model_id, revision_id, payload)
+        return await self.grains.preview(
+            model_id, revision_id, payload, sql_only=sql_only
+        )
 
     async def output_schema(
         self, model_id: Identifier, revision_id: Identifier, payload: TransactionInput
@@ -76,8 +93,11 @@ class TransactionAPI(RevisionResourceAPI):
         model_id: Identifier,
         revision_id: Identifier,
         payload: ObjectInputTransform,
+        sql_only: bool = False,
     ):
-        return await self.resolution.preview_input(model_id, revision_id, payload)
+        return await self.resolution.preview_input(
+            model_id, revision_id, payload, sql_only=sql_only
+        )
 
     async def calendar_schema(
         self,
@@ -92,21 +112,30 @@ class TransactionAPI(RevisionResourceAPI):
         model_id: Identifier,
         revision_id: Identifier,
         payload: CalendarSchemaInput,
+        sql_only: bool = False,
     ):
-        return await self.resolution.preview_calendar(model_id, revision_id, payload)
+        return await self.resolution.preview_calendar(
+            model_id, revision_id, payload, sql_only=sql_only
+        )
 
     async def options(
         self,
         model_id: Identifier,
         revision_id: Identifier,
-        planningLevelId: Identifier | None = None,
+        dimensionId: Identifier | None = None,
     ):
-        return await self.resolution.options(model_id, revision_id, planningLevelId)
+        return await self.resolution.options(model_id, revision_id, dimensionId)
 
     async def preview(
-        self, model_id: Identifier, revision_id: Identifier, payload: TransactionInput
+        self,
+        model_id: Identifier,
+        revision_id: Identifier,
+        payload: TransactionInput,
+        sql_only: bool = False,
     ):
-        return await self.resolution.preview(model_id, revision_id, payload)
+        return await self.resolution.preview(
+            model_id, revision_id, payload, sql_only=sql_only
+        )
 
     async def schema(
         self, model_id: Identifier, revision_id: Identifier, resource_id: Identifier

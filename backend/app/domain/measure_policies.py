@@ -1,6 +1,7 @@
 import re
 
 from ..core.errors import MetadataError
+from ..formula_language.compatibility import normalize_count_definition
 
 
 def referenced_result_type(physical_type: str, nullable: bool) -> dict | None:
@@ -37,7 +38,6 @@ def normalize_measure(document):
     if document.get("kind") != "measure":
         return document
     definition = document["definition"]
-    from ..formula_language.compatibility import normalize_count_definition
 
     definition = normalize_count_definition(definition)
     document = {**document, "definition": definition}

@@ -17,7 +17,7 @@
       "metadataContractVersion": 1,
       "approvalStatus": "draft",
       "changeReason": "Define shared PLT/PT semantics with server-resolved warehouse configuration.",
-      "basePlanningLevelId": "pl_plt"
+      "baseDimensionId": "pl_plt"
     }
   ],
   "semantic_objects": [
@@ -244,7 +244,7 @@
       "modelId": "model_supply_planning",
       "revisionId": "rev_1",
       "objectId": "dim_product",
-      "kind": "dimension",
+      "kind": "dimensionMembers",
       "schemaVersion": 1,
       "name": "Product",
       "displayName": "Product",
@@ -281,7 +281,7 @@
       "modelId": "model_supply_planning",
       "revisionId": "rev_1",
       "objectId": "dim_location",
-      "kind": "dimension",
+      "kind": "dimensionMembers",
       "schemaVersion": 1,
       "name": "Location",
       "displayName": "Location",
@@ -318,7 +318,7 @@
       "modelId": "model_supply_planning",
       "revisionId": "rev_1",
       "objectId": "dim_time",
-      "kind": "dimension",
+      "kind": "dimensionMembers",
       "schemaVersion": 1,
       "name": "Time",
       "displayName": "Time",
@@ -352,7 +352,7 @@
       "modelId": "model_supply_planning",
       "revisionId": "rev_1",
       "objectId": "pl_plt",
-      "kind": "planningLevel",
+      "kind": "dimension",
       "schemaVersion": 1,
       "name": "PLT",
       "displayName": "Product / Location / Time",
@@ -411,35 +411,35 @@
             }
           ]
         },
-        "dimensionBindings": [
+        "memberBindings": [
           {
-            "dimensionId": "dim_product",
+            "memberCatalogId": "dim_product",
             "keyMappings": [
               {
                 "grainColumnId": "plt_product",
-                "dimensionColumnId": "product_id"
+                "memberColumnId": "product_id"
               }
             ],
             "selectedAttributeColumnIds": [],
             "unmatchedMemberPolicy": "reject"
           },
           {
-            "dimensionId": "dim_location",
+            "memberCatalogId": "dim_location",
             "keyMappings": [
               {
                 "grainColumnId": "plt_location",
-                "dimensionColumnId": "location_id"
+                "memberColumnId": "location_id"
               }
             ],
             "selectedAttributeColumnIds": [],
             "unmatchedMemberPolicy": "reject"
           },
           {
-            "dimensionId": "dim_time",
+            "memberCatalogId": "dim_time",
             "keyMappings": [
               {
                 "grainColumnId": "plt_date",
-                "dimensionColumnId": "date"
+                "memberColumnId": "date"
               }
             ],
             "selectedAttributeColumnIds": [],
@@ -456,7 +456,7 @@
       "modelId": "model_supply_planning",
       "revisionId": "rev_1",
       "objectId": "pl_pt",
-      "kind": "planningLevel",
+      "kind": "dimension",
       "schemaVersion": 1,
       "name": "PT",
       "displayName": "Product / Time",
@@ -464,7 +464,7 @@
       "definition": {
         "population": {
           "operation": "distinct_projection",
-          "sourcePlanningLevelId": "pl_plt"
+          "sourceDimensionId": "pl_plt"
         },
         "grain": {
           "keyIds": [
@@ -488,24 +488,24 @@
             }
           ]
         },
-        "dimensionBindings": [
+        "memberBindings": [
           {
-            "dimensionId": "dim_product",
+            "memberCatalogId": "dim_product",
             "keyMappings": [
               {
                 "grainColumnId": "pt_product",
-                "dimensionColumnId": "product_id"
+                "memberColumnId": "product_id"
               }
             ],
             "selectedAttributeColumnIds": [],
             "unmatchedMemberPolicy": "reject"
           },
           {
-            "dimensionId": "dim_time",
+            "memberCatalogId": "dim_time",
             "keyMappings": [
               {
                 "grainColumnId": "pt_date",
-                "dimensionColumnId": "date"
+                "memberColumnId": "date"
               }
             ],
             "selectedAttributeColumnIds": [],
@@ -526,10 +526,10 @@
       "schemaVersion": 1,
       "name": "Forecast",
       "displayName": "Forecast",
-      "description": "Forecast records mapped directly to their native planning level.",
+      "description": "Forecast records mapped directly to their native dimension.",
       "definition": {
         "sourceId": "src_forecast",
-        "planningLevelId": "pl_plt",
+        "dimensionId": "pl_plt",
         "mappingMode": "direct",
         "keyMappings": [
           {
@@ -558,10 +558,10 @@
       "schemaVersion": 1,
       "name": "Sales",
       "displayName": "Sales",
-      "description": "Sales records mapped directly to their native planning level.",
+      "description": "Sales records mapped directly to their native dimension.",
       "definition": {
         "sourceId": "src_sales",
-        "planningLevelId": "pl_pt",
+        "dimensionId": "pl_pt",
         "mappingMode": "direct",
         "keyMappings": [
           {
@@ -594,7 +594,7 @@
         "measureType": "referenced",
         "transactionId": "tx_forecast",
         "valueColumnId": "forecast_qty",
-        "nativePlanningLevelId": "pl_plt",
+        "nativeDimensionId": "pl_plt",
         "resultType": {
           "type": "number",
           "nullable": true
@@ -631,7 +631,7 @@
         "measureType": "referenced",
         "transactionId": "tx_sales",
         "valueColumnId": "sales_qty",
-        "nativePlanningLevelId": "pl_pt",
+        "nativeDimensionId": "pl_pt",
         "resultType": {
           "type": "number",
           "nullable": true
@@ -666,7 +666,7 @@
       },
       "definition": {
         "measureType": "calculated",
-        "nativePlanningLevelId": "pl_pt",
+        "nativeDimensionId": "pl_pt",
         "calculationType": "AggregateFirst",
         "formula": {
           "displayText": "ABS(FQTY - SQTY)",

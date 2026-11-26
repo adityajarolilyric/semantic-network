@@ -47,8 +47,16 @@ def clickhouse_app():
         admin.close()
 
 
+@pytest.fixture
+def authored_clickhouse_app(clickhouse_app):
+    """Manual engine definitions are independent of automatic CSV onboarding."""
+    client, *_ = clickhouse_app
+    client.app.state.container.warehouse_sources.upload_metadata = None
+    return clickhouse_app
+
+
 def test_real_csv_import_catalog_and_preview(clickhouse_app):
-    client, _, _, _ = clickhouse_app
+    client, admin, _, _ = clickhouse_app
     response = upload(
         client,
         b"product_id,quantity,price,date,active,notes\n001,10,123.456,2026-10-31,true,\n002,20,0.001,2026-11-01,false,hello\n",
@@ -57,6 +65,7 @@ def test_real_csv_import_catalog_and_preview(clickhouse_app):
     assert response.json()["rowCount"] == 2
     preview = client.get(ROOT + "/tables/Forecast/preview?limit=1&offset=1")
     assert preview.status_code == 200, preview.text
+    assert admin.command("SELECT count() FROM (" + preview.json()["sql"] + ")") == 2
     assert preview.json()["rows"] == [
         ["002", "20", "0.001", "2026-11-01", "false", "hello"]
     ]

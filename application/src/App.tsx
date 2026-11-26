@@ -9,7 +9,13 @@ import { useSources } from './hooks/useSources'
 
 export default function App() {
   const [tab, setTab] = useState<Tab>(() => {
-    const value = new URLSearchParams(location.search).get('tab')
+    const requested = new URLSearchParams(location.search).get('tab')
+    const value =
+      requested === 'materialise'
+        ? 'decision-view'
+        : requested === 'levels' || requested === 'dimensionMembers'
+          ? 'dimensions'
+          : requested
     return tabs.find((t) => t.id === value)?.id ?? 'sources'
   })
   const onTab = (value: Tab) => {
@@ -82,12 +88,10 @@ export default function App() {
               {tab === 'sources'
                 ? 'Bring your data in. Explore it before you start modeling.'
                 : tab === 'context-graph'
-                  ? 'Explore shared plotting contexts, measure paths and compatibility.'
-                  : tab === 'planning-view'
+                  ? 'Trace dimension lineage, transaction mappings and measure output grains.'
+                  : tab === 'decision-view'
                     ? 'Explore dimension attributes and measures in a planning pivot.'
-                    : tab === 'materialise'
-                      ? 'Build your semantic network and explore planning-level tables.'
-                      : 'Capture the meaning, grain, and policies behind your data.'}
+                    : 'Capture the meaning, grain, and policies behind your data.'}
             </p>
           </div>
           {tab === 'sources' && <WorkspaceReset />}
@@ -98,7 +102,10 @@ export default function App() {
                   <UploadPanel
                     maxRows={sources.status?.maxCsvRows ?? 5000}
                     maxBytes={sources.status?.maxFileBytes ?? 10_485_760}
-                    onImported={sources.imported}
+                    onImported={async (result) => {
+                      management.onImported?.()
+                      await sources.imported(result)
+                    }}
                   />
                   <TableCatalog
                     management={management}

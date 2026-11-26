@@ -1,6 +1,6 @@
 # ruff: noqa: F811
 import pytest
-from .test_csv_clickhouse import clickhouse_app  # noqa: F401
+from .test_csv_clickhouse import authored_clickhouse_app, clickhouse_app  # noqa: F401
 from .test_planning_clickhouse import BASE, managed, create, build
 from .test_measures_clickhouse import assert_post, measure, build_values, values
 from .test_transaction_resolution_clickhouse import setup_date_range
@@ -35,8 +35,10 @@ def schema(client, kind, oid, source, p):
     return response.json()["columns"]
 
 
-def test_owned_dimension_pivot_preview_and_native_population_lookup(clickhouse_app):
-    client, admin, database, _ = clickhouse_app
+def test_owned_dimension_pivot_preview_and_native_population_lookup(
+    authored_clickhouse_app,
+):
+    client, admin, database, _ = authored_clickhouse_app
     source = managed(
         client,
         "LongCustomers",
@@ -44,14 +46,14 @@ def test_owned_dimension_pivot_preview_and_native_population_lookup(clickhouse_a
     )
     before = client.get(BASE + "/managed-tables/" + source).json()
     p = pivot(["col_1"], ["channel", "sold_to"], keys=["col_1"])
-    cols = schema(client, "dimensions", "Customer", source, p)
-    other = schema(client, "dimensions", "OtherCustomer", source, p)
+    cols = schema(client, "dimension-members", "Customer", source, p)
+    other = schema(client, "dimension-members", "OtherCustomer", source, p)
     assert {c["columnId"] for c in cols if c["columnId"].startswith("pv_")}.isdisjoint(
         {c["columnId"] for c in other if c["columnId"].startswith("pv_")}
     )
     customer = {
         "objectId": "Customer",
-        "kind": "dimension",
+        "kind": "dimensionMembers",
         "name": "Customer",
         "displayName": "Customer",
         "isTimeDim": False,
@@ -72,20 +74,20 @@ def test_owned_dimension_pivot_preview_and_native_population_lookup(clickhouse_a
             "attributeColumnIds": [c["columnId"] for c in cols],
         },
     }
-    response = client.post(BASE + "/dimensions/preview", json=customer)
+    response = client.post(BASE + "/dimension-members/preview", json=customer)
     assert response.status_code == 200, response.text
     assert response.json()["rowCount"] == 2
     assert {tuple(row) for row in response.json()["rows"]} == {
         ("C1", "Retail", "A"),
         ("C2", "Wholesale", "B"),
     }
-    assert_post(client, "/dimensions", customer)
+    assert_post(client, "/dimension-members", customer)
     pop = managed(client, "CustomerPopulation", b"customer_id\nC1\nC2\n")
     create(
         client,
         {
             "objectId": "customer_level",
-            "kind": "planningLevel",
+            "kind": "dimension",
             "name": "Customer level",
             "displayName": "Customer level",
             "definition": {
@@ -100,11 +102,11 @@ def test_owned_dimension_pivot_preview_and_native_population_lookup(clickhouse_a
                         }
                     ],
                 },
-                "dimensionBindings": [
+                "memberBindings": [
                     {
-                        "dimensionId": "Customer",
+                        "memberCatalogId": "Customer",
                         "keyMappings": [
-                            {"grainColumnId": "customer", "dimensionColumnId": "col_1"}
+                            {"grainColumnId": "customer", "memberColumnId": "col_1"}
                         ],
                         "selectedAttributeColumnIds": [
                             c["columnId"] for c in cols if c["columnId"] != "col_1"
@@ -116,9 +118,7 @@ def test_owned_dimension_pivot_preview_and_native_population_lookup(clickhouse_a
     )
     result = build(client, "customer_level")
     assert result["state"] == "succeeded", result
-    data = client.get(
-        BASE + "/planning-levels/customer_level/table?preview=true"
-    ).json()
+    data = client.get(BASE + "/dimensions/customer_level/table?preview=true").json()
     assert {tuple(row) for row in data["rows"]} == {
         ("C1", "Retail", "A"),
         ("C2", "Wholesale", "B"),
@@ -127,8 +127,10 @@ def test_owned_dimension_pivot_preview_and_native_population_lookup(clickhouse_a
     assert admin.command(f"SELECT count() FROM `{database}`.`LongCustomers`") == 4
 
 
-def test_pivot_then_calendar_then_column_resolution_and_measure_load(clickhouse_app):
-    client, _, _, _ = clickhouse_app
+def test_pivot_then_calendar_then_column_resolution_and_measure_load(
+    authored_clickhouse_app,
+):
+    client, _, _, _ = authored_clickhouse_app
     setup_date_range(client)
     # Calendar resolution must also read an independently pivoted Time dimension.
     rows = b"date,attribute,value\n" + b"".join(
@@ -138,10 +140,10 @@ def test_pivot_then_calendar_then_column_resolution_and_measure_load(clickhouse_
     calendar_source = managed(client, "LongCalendar", rows)
     calendar_pivot = pivot(["col_1"], ["week"], keys=["col_1"])
     calendar_columns = schema(
-        client, "dimensions", "Time", calendar_source, calendar_pivot
+        client, "dimension-members", "Time", calendar_source, calendar_pivot
     )
     week_source = next(c["columnId"] for c in calendar_columns if c["name"] == "week")
-    current = client.get(BASE + "/dimensions/Time").json()
+    current = client.get(BASE + "/dimension-members/Time").json()
     payload = {
         k: v
         for k, v in current.items()
@@ -152,7 +154,7 @@ def test_pivot_then_calendar_then_column_resolution_and_measure_load(clickhouse_
     payload["definition"]["columns"][0]["sourceColumnId"] = "col_1"
     payload["definition"]["columns"][1]["sourceColumnId"] = week_source
     response = client.put(
-        BASE + "/dimensions/Time",
+        BASE + "/dimension-members/Time",
         json=payload,
         headers={"If-Match": str(current["version"])},
     )
@@ -176,7 +178,7 @@ def test_pivot_then_calendar_then_column_resolution_and_measure_load(clickhouse_
     assert response.status_code == 200, response.text
     assert response.json()["rowCount"] == 1
     cfg = {
-        "dimensionId": "Time",
+        "memberCatalogId": "Time",
         "startColumnId": "col_3",
         "endColumnId": "col_4",
         "selectedColumnIds": ["week"],
@@ -194,7 +196,7 @@ def test_pivot_then_calendar_then_column_resolution_and_measure_load(clickhouse_
     week = next(
         c["columnId"]
         for c in response.json()["columns"]
-        if c.get("dimensionColumnId") == "week"
+        if c.get("memberColumnId") == "week"
     )
     tx = {
         "objectId": "promotion",
@@ -205,7 +207,7 @@ def test_pivot_then_calendar_then_column_resolution_and_measure_load(clickhouse_
             "sourceId": source,
             "pivot": p,
             "calendarResolution": cfg,
-            "planningLevelId": "period_native",
+            "dimensionId": "period_native",
             "mappingMode": "resolve_multi_grain",
             "resolution": {
                 "axes": [
@@ -253,9 +255,9 @@ def test_pivot_then_calendar_then_column_resolution_and_measure_load(clickhouse_
 
 
 def test_owned_pivot_duplicate_cells_fail_without_modifying_shared_managed_table(
-    clickhouse_app,
+    authored_clickhouse_app,
 ):
-    client, _, _, _ = clickhouse_app
+    client, _, _, _ = authored_clickhouse_app
     source = managed(
         client,
         "ConflictingAttributes",
@@ -264,22 +266,22 @@ def test_owned_pivot_duplicate_cells_fail_without_modifying_shared_managed_table
     before = client.get(BASE + "/managed-tables/" + source).json()
     p = pivot(["col_1"], ["channel"], keys=["col_1"])
     response = client.post(
-        BASE + "/dimensions/input/preview",
-        json={"objectId": "dimension", "sourceId": source, "pivot": p},
+        BASE + "/dimension-members/input/preview",
+        json={"objectId": "dimensionMembers", "sourceId": source, "pivot": p},
     )
     assert response.status_code == 422, response.text
     assert response.json()["error"]["code"] == "duplicate_pivot_cell"
     assert client.get(BASE + "/managed-tables/" + source).json() == before
 
 
-def test_direct_pivot_value_columns_are_available_to_measures(clickhouse_app):
-    client, _, _, _ = clickhouse_app
+def test_direct_pivot_value_columns_are_available_to_measures(authored_clickhouse_app):
+    client, _, _, _ = authored_clickhouse_app
     pop = managed(client, "ProductPopulation", b"product\nP1\nP2\n")
     create(
         client,
         {
             "objectId": "products",
-            "kind": "planningLevel",
+            "kind": "dimension",
             "name": "Products",
             "displayName": "Products",
             "definition": {
@@ -294,14 +296,14 @@ def test_direct_pivot_value_columns_are_available_to_measures(clickhouse_app):
                         }
                     ],
                 },
-                "dimensionBindings": [],
+                "memberBindings": [],
             },
         },
     )
     rev = client.get(BASE).json()
     response = client.put(
         BASE,
-        json={"basePlanningLevelId": "products", "changeReason": ""},
+        json={"baseDimensionId": "products", "changeReason": ""},
         headers={"If-Match": str(rev["version"])},
     )
     assert response.status_code == 200, response.text
@@ -321,7 +323,7 @@ def test_direct_pivot_value_columns_are_available_to_measures(clickhouse_app):
         "displayName": "Quantities",
         "definition": {
             "sourceId": source,
-            "planningLevelId": "products",
+            "dimensionId": "products",
             "pivot": p,
             "keyMappings": [{"sourceColumnId": "col_1", "grainColumnId": "product"}],
         },

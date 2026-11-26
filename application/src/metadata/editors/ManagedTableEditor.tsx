@@ -1,3 +1,4 @@
+import { ViewSqlButton } from '../../components/ViewSqlButton'
 import { FieldHelp } from '../../components/FieldHelp'
 import { useEffect, useState } from 'react'
 import { metadataApi } from '../api'
@@ -550,6 +551,22 @@ export function ManagedTableEditor({
         >
           Preview
         </button>
+        <ViewSqlButton
+          disabled={
+            busy ||
+            working ||
+            (!!stage?.enabled && (!schemaEligible || schemaPending || !!schemaError))
+          }
+          loadSql={(signal) =>
+            metadataApi.request(
+              path + '/preview?sql_only=true',
+              'POST',
+              definition,
+              undefined,
+              signal,
+            )
+          }
+        />
         <button
           type="button"
           className="secondary-button"

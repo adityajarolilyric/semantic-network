@@ -1,5 +1,26 @@
 /** Reviewed UI vocabulary; no API/schema dependency or persisted help state. */
 const help: Record<string, string> = {
+  'Calendar ordering column':
+    'Use a Date for day/week/month periods, or a consecutive numeric calendar index. Text labels such as W1 and W10 do not sort chronologically. A series must have one row per period.',
+  'Period unit':
+    'Offsets count these calendar periods. For a four-week rolling window use week with offsets -3 and 0. Use index for your own fiscal-period sequence.',
+  'Series keys':
+    'Calculate each selected key combination independently. Product and Location create a separate time series per product/location. Do not include a changing month key if the window must cross months.',
+  'Reset by (optional)':
+    'Start cumulative and rolling calculations separately for each reset value, such as Fiscal Year. Use a complete period identifier; a repeating label such as January combines multiple years.',
+  'Minimum populated periods':
+    'Return NULL until this many non-NULL input periods are present. Set 4 for a four-week average that requires four populated weeks.',
+  'This measure is a conversion factor':
+    'Use a factor column from a conversion-table Transaction. Factors are positive, read only and repeat at finer grains; conflicting factors are never summed or averaged.',
+  'Apply a conversion':
+    'Multiply or divide this referenced measure by a stored factor before further aggregation. This changes materialised measure values and preserves the source table.',
+  'Conversion factor':
+    'Select a factor uniquely determined by every native row. Daily FX rates require daily amounts before weekly aggregation; product-specific pack sizes require Product lineage.',
+  'Conversion operation':
+    'Multiply when 1 source unit equals factor target units. Divide for the reverse direction. A price conversion may require separate currency and quantity factors in a formula.',
+  'Target unit or currency':
+    'The canonical unit of the converted stored values, such as EA, kg or INR. Editable values use this unit. Source-backed edits are converted back to source units before writing.',
+
   Aggregation:
     'For String, Date and Boolean values, one policy applies across all grouped rows, including Time. String None returns the single distinct value; conflicting values show Mixed. Date can select earliest/latest, and Boolean can select any true/all true.',
 
@@ -31,15 +52,15 @@ const help: Record<string, string> = {
   'Treat empty text as absent':
     'Empty text skips this restriction. Other restrictions still apply; an unconstrained axis requires Allow all members. NULL is always absent.',
   'Transaction mapping':
-    'No Planning Level creates a planning level from distinct selected grain keys. Map to Planning Level uses an existing level. Select Resolve multi-grain data when source rows need expansion to its grain.',
+    'Grain keys only keeps the Transaction independent and creates no Dimension. Bind to a Dimension to share a population with other Transactions. Multi-grain resolution requires a target Dimension.',
   'Resolve multi-grain data':
-    'Use when rows describe different grains, such as Product/Location and Brand/Zone. Match them to the selected planning level and choose how each numeric value is split or copied. Leave unchecked for direct grain-key mapping.',
+    'Use when rows describe different grains, such as Product/Location and Brand/Zone. Match them to the selected dimension and choose how each numeric value is split or copied. Leave unchecked for direct grain-key mapping.',
   'Match using':
     'Column equals attribute matches a fixed source column. Level and value uses a selector column, such as Brand or Product ID, to interpret a second column.',
   'Match source column':
     'Contains the member to match, for example Brand A. Every supplied restriction must match the native intersection.',
   'Match native attribute':
-    'The native output or reachable dimension attribute against which this source value is matched.',
+    'A key or attribute included in the selected native Dimension. To match another attribute, add it to that Dimension first.',
   'Level column':
     'Identifies which attribute each row uses, such as id or brand. Selecting this column discovers its values; map each one to an attribute below.',
   'Matching value column':
@@ -53,21 +74,20 @@ const help: Record<string, string> = {
   'Additional columns to retain':
     'Carry these fields from the winning assignment. Numeric fields retained here are not split or copied as measure values.',
 
-  'Planning View rows':
-    'Dimension or planning-level fields that group records down the pivot. Example: Brand then Zone gives one row for each Brand/Zone combination. Use the arrows to change their order.',
-  'Planning View columns':
-    'Dimension or planning-level fields whose values become column groups. Example: Month compares January and February side by side. Keep this list short for a readable pivot.',
-  'Planning View values':
+  'Decision View rows':
+    'Dimension or dimension fields that group records down the pivot. Example: Brand then Zone gives one row for each Brand/Zone combination. Use the arrows to change their order.',
+  'Decision View columns':
+    'Dimension or dimension fields whose values become column groups. Example: Month compares January and February side by side. Keep this list short for a readable pivot.',
+  'Decision View values':
     'Measures appear as rows at the selected dimension grain. Aggregation follows each measure’s saved Time and NonTime policies. AggregateFirst formulas use inputs resolved at this grain.',
-  'Planning View source':
+  'Decision View source':
     'The engine selects a compatible materialised level that can answer correctly. It falls back to Base when a coarser table lacks attributes, measures or safely reusable aggregates. Stored averages, for example, cannot generally be averaged again.',
 
-  'Semantic model':
-    'Groups the tables, dimensions, planning levels and measures that belong together.',
+  'Semantic model': 'Groups the tables, dimensions, dimensions and measures that belong together.',
   Revision:
     'A version of your semantic definitions. Drafts can be changed; published revisions are read-only.',
   Managed:
-    'Makes this source available for semantic modelling through a managed view. The original table stays unchanged.',
+    'Makes this source available through a managed view. Registration does not copy the table. Independent, untransformed Transactions can use it as writable measure storage.',
   'Copy the published definition':
     'Starts the new draft with the published definitions. Its managed views and planning tables must be built again.',
   'Pivot long-format columns':
@@ -97,8 +117,8 @@ const help: Record<string, string> = {
     'Defines chronological order, including which value First or Last aggregation selects.',
   'Member label column':
     'The readable label for a member. Example: show Product Name for a Product ID.',
-  'Base planning level':
-    'The finest planning level in the model. Compatible measure values flow through Base to other levels.',
+  'Base dimension':
+    'The finest dimension in the model. Compatible measure values flow through Base to other levels.',
   'Population method':
     'How planning rows are created: read one table, combine tables, or take distinct combinations from another level.',
   'Population table': 'Supplies the existing combinations used to create planning rows.',
@@ -108,7 +128,7 @@ const help: Record<string, string> = {
     'Combines every row from one table with every row from the others. Example: 20 Product–Location combinations × 12 months creates 240 rows.',
   'Population attributes':
     'Additional columns to carry into the planning table. They describe a row without becoming its grain keys.',
-  'Parent planning level':
+  'Parent dimension':
     'The existing level from which distinct key combinations and attributes are taken.',
   'Select keys from Parent keys':
     'Choose which parent keys identify rows in the new level. Example: retain Product and Time from Product–Location–Time.',
@@ -118,31 +138,34 @@ const help: Record<string, string> = {
     'Create a level identified by parent attributes. Example: use Brand instead of Product ID.',
   'Dimension bindings (optional)':
     'Connect planning columns to dimension members for validation, enrichment and hierarchy traversal. Explicit key projections can work without bindings.',
-  'Planning-level column':
-    'Choose the planning column used for the dimension lookup. Example: planning product_id matches the Product dimension’s product_id.',
+  'Population column': 'Choose the populated field used to match this related Dimension.',
   'Dimension column':
     'Choose the matching dimension column. The mapping checks that values exist. If you select extra attributes, the mapped values must determine one distinct combination of those attributes.',
   'Dimension attributes':
     'Choose dimension attributes to include in the planning table. Example: bring Brand from Product.',
-  'Native planning level':
+  'Native dimension':
     'The level where a measure is originally loaded or its calculation is defined. Transactions are first grouped and matched at their native level.',
   'Transaction grain columns':
-    'Columns identifying one planning intersection, such as Product, Location and Time. The planning population takes distinct combinations; repeated fact records remain available for measure aggregation.',
+    'Columns identifying one planning intersection, such as Product, Location and Time. Measure values group by these keys; duplicate detail records are allowed. No Dimension is created.',
   'Map every grain key':
     'Match each native planning key to its transaction column. Transactions are aggregated by all these keys before the left join.',
-  'Output Planning Level':
-    'The planning level where this measure is defined. Reference measures inherit it from their transaction; calculated measures use the selected level.',
+  'Output grain':
+    'The Transaction or Dimension where the calculation is evaluated. Referenced measures inherit their Transaction grain. A Transaction-scoped formula follows its later Dimension binding.',
+  'Time key (optional)':
+    'Identify which grain key represents ordered time, for example a date or sortable week ID. Time aggregation applies when this key is removed from a view. Column names do not imply Time semantics.',
+  'Output Dimension':
+    'The dimension where this measure is defined. Reference measures inherit it from their transaction; calculated measures use the selected level.',
   'Measure type':
     'Referenced measures read a transaction column. Calculated measures evaluate a formula using other measures.',
   Transaction: 'The transaction definition supplying this measure’s records and native grain.',
   'Missing transaction value':
     'What to show when a planning row has no matching transaction group: NULL or zero.',
   'Editable measure':
-    'Declares that this measure may be edited at its native or a supported coarser level. Planning View permits edits at native or proven coarser grains. Changes go to Base where reachable, otherwise native, and compatible coarser values are recomputed.',
+    'Declares that this measure may be edited at its native or a supported coarser level. Decision View permits edits at native or proven coarser grains. Changes go to Base where reachable, otherwise native, and compatible coarser values are recomputed. Independent untransformed Transactions write edits into their source table.',
   'Calculation type':
     'AggregateFirst recalculates the formula from inputs at each requested level. CalculateFirst calculates at native grain, then aggregates its result. Only numeric results can be distributed to finer grains.',
   Formula:
-    'Type an expression or search Measures, Columns and Functions in the input library. Click an item to insert it at the cursor; functions show syntax and examples. Types are inferred. Mixed inputs stay Mixed; missing inputs stay NULL unless explicitly handled.',
+    'Start with Name = expression, for example Absolute Error = ABS([Forecast] - [Sales]). Search Measures, Columns and Functions in the input library. Click an item to insert it at the cursor; functions show syntax and examples. Types are inferred. Mixed inputs stay Mixed; missing inputs stay NULL unless explicitly handled.',
   'Nullable result':
     'Allows the calculated result to be missing or unknown. NULL is different from zero.',
   'Non-time aggregation':
@@ -161,10 +184,10 @@ const help: Record<string, string> = {
     'The measure supplying proportional weights. Example: weights 30 and 70 split a value of 200 into 60 and 140. Missing weights or a zero total fail the build.',
   'Build Semantic Network':
     'Builds new or changed measure representations and dependent formulas. Unchanged values, including manual edits, are reused. If nothing changed, the current generation is kept. The preview selection does not restrict the build.',
-  'Full Refresh':
-    'Recomputes every measure from its source data and replaces manual edits. Use after direct external source-data changes or when a complete source reload is required.',
+  'Full Semantic Refresh':
+    'Recomputes from current sources. Edits in separate materialised outputs are replaced; source-backed edits remain in the source. Use after external source changes or for a complete rebuild.',
 
-  'Preview planning level':
+  'Preview dimension':
     'Choose the built table to inspect. Shows at most 50 rows and does not trigger a build.',
   'Network status':
     'Ready means built values are available. Building means work is in progress. Needs rebuild means inputs changed. Failed means the latest build could not finish; any previous generation stays intact.',
@@ -174,7 +197,14 @@ const help: Record<string, string> = {
     'This measure could not be represented at this level. The accompanying reason explains what is missing.',
 }
 export function fieldHelp(label: string): string | undefined {
-  if (help[label]) return help[label]
+  const aliases: Record<string, string> = {
+    'Base Dimension': 'Base dimension',
+    'Output Dimension': 'Output Dimension',
+    'Parent Dimension': 'Parent dimension',
+    'Preview Dimension': 'Preview dimension',
+  }
+  const text = help[aliases[label] ?? label]
+  if (text) return text
   if (label.startsWith('Time resolution for ')) return help['Time resolution']
   if (label.startsWith('Calendar column for ')) return help['Calendar column']
   if (label.startsWith('Allow all ')) return help['Allow all members']
@@ -184,7 +214,7 @@ export function fieldHelp(label: string): string | undefined {
   if (label.startsWith('Include ')) return help['Cartesian product']
   if (label.startsWith('Population attributes from ')) return help['Population attributes']
   if (label.startsWith('Attributes from ')) return help['Dimension attributes']
-  if (/ planning-level column \d+$/.test(label)) return help['Planning-level column']
+  if (/ dimension column \d+$/.test(label)) return help['Dimension column']
   if (/ dimension column \d+$/.test(label)) return help['Dimension column']
   return undefined
 }

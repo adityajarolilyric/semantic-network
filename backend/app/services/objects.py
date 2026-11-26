@@ -1,3 +1,5 @@
+from ..core.errors import Conflict, MetadataError
+from ..domain.grains import transaction_grain_id
 from ..repositories.metadata import metadata_repositories
 from ..repositories.metadata.criteria import (
     BindingLookup,
@@ -5,12 +7,12 @@ from ..repositories.metadata.criteria import (
     ObjectLookup,
     RevisionLookup,
 )
-from ..core.errors import Conflict, MetadataError
 from .base import Service, now, scope
 
 
 class ObjectService(Service):
     kind: str
+    object_views = None
 
     async def get(self, model_id, revision_id, object_id):
         return await metadata_repositories(self.store.repository).objects.require(
@@ -21,6 +23,14 @@ class ObjectService(Service):
                 kind=self.kind,
             ),
             self.kind,
+        )
+
+    async def preview_saved(self, model_id, revision_id, object_id, sql_only=False):
+        await self.get(model_id, revision_id, object_id)
+        if not self.object_views:
+            raise Conflict("Save the object before Preview.")
+        return await self.object_views.preview(
+            model_id, revision_id, object_id, sql_only
         )
 
     async def list(self, model_id, revision_id, cursor, limit):
@@ -42,13 +52,20 @@ class ObjectService(Service):
     def additional_create_documents(self, payload, document, objects):
         return []
 
-    async def create(self, model_id, revision_id, payload):
+    def related_update_documents(self, previous, updated, objects):
+        return []
+
+    async def create(self, model_id, revision_id, payload, *, allow_existing=False):
         async def operation(repo):
-            revision = await self.touch_revision(repo, model_id, revision_id)
-            objects = await self.objects(repo, model_id, revision_id)
+            revision = await metadata_repositories(repo).revisions.require(
+                RevisionLookup(model_id=model_id, revision_id=revision_id), "Revision"
+            )
+            objects = await self.definitions(repo, model_id, revision_id)
             if len(objects) >= self.max_objects:
                 raise Conflict("The revision has reached its metadata object limit.")
-            if any(obj["objectId"] == payload.objectId for obj in objects):
+            if not allow_existing and any(
+                obj["objectId"] == payload.objectId for obj in objects
+            ):
                 raise Conflict("An object with this ID already exists in the revision.")
             timestamp = now()
             document = {
@@ -72,6 +89,27 @@ class ObjectService(Service):
                 document,
                 await self.effective(repo, model_id, revision_id, [*objects, document]),
             )
+            existing = {obj["objectId"]: obj for obj in objects}
+            if allow_existing and document["objectId"] in existing:
+                candidates = [document, *related]
+
+                def content(obj):
+                    return {
+                        k: v
+                        for k, v in obj.items()
+                        if k not in {"version", "createdAt", "updatedAt", "_id"}
+                    }
+
+                if all(
+                    item["objectId"] in existing
+                    and content(existing[item["objectId"]]) == content(item)
+                    for item in candidates
+                ):
+                    return existing[document["objectId"]]
+                raise Conflict(
+                    "The Transaction or selected Measures already exist with different metadata."
+                )
+            revision = await self.touch_revision(repo, model_id, revision_id)
             if len(objects) + 1 + len(related) > self.max_objects:
                 raise Conflict("The revision has reached its metadata object limit.")
             existing_ids = {item["objectId"] for item in [*objects, document]}
@@ -85,13 +123,17 @@ class ObjectService(Service):
                 await self.effective(
                     repo, model_id, revision_id, [*objects, document, *related]
                 ),
-                revision["basePlanningLevelId"],
+                revision["baseDimensionId"],
             )
             await metadata_repositories(repo).objects.insert(document)
             for item in related:
                 await metadata_repositories(repo).objects.insert(item)
             return document
 
+        if self.object_views:
+            return await self.object_views.save(
+                self, model_id, revision_id, payload, None, operation
+            )
         return await self.store.transaction(operation)
 
     async def update(self, model_id, revision_id, object_id, payload, expected):
@@ -134,22 +176,28 @@ class ObjectService(Service):
                 "version": expected + 1,
                 "updatedAt": now(),
             }
-            objects = await self.objects(repo, model_id, revision_id)
+            objects = await self.definitions(repo, model_id, revision_id)
             updated = self.prepare_document(
                 updated, await self.effective(repo, model_id, revision_id, objects)
             )
-            self.validate(
-                await self.effective(
+            candidates = [
+                updated if obj["objectId"] == object_id else obj for obj in objects
+            ]
+            effective_candidates = await self.effective(
+                repo, model_id, revision_id, candidates
+            )
+            related = self.related_update_documents(
+                document, updated, effective_candidates
+            )
+            if related:
+                replacements = {item["objectId"]: item for item in related}
+                effective_candidates = await self.effective(
                     repo,
                     model_id,
                     revision_id,
-                    [
-                        updated if obj["objectId"] == object_id else obj
-                        for obj in objects
-                    ],
-                ),
-                revision["basePlanningLevelId"],
-            )
+                    [replacements.get(obj["objectId"], obj) for obj in candidates],
+                )
+            self.validate(effective_candidates, revision["baseDimensionId"])
             if not await metadata_repositories(repo).objects.replace(
                 ObjectLookup(
                     model_id=model_id,
@@ -161,8 +209,26 @@ class ObjectService(Service):
                 updated,
             ):
                 raise Conflict()
+            for item in related:
+                if not await metadata_repositories(repo).objects.replace(
+                    ObjectLookup(
+                        model_id=model_id,
+                        revision_id=revision_id,
+                        object_id=item["objectId"],
+                        kind=item["kind"],
+                        version=item["version"] - 1,
+                    ),
+                    item,
+                ):
+                    raise Conflict(
+                        "A related measure changed. Reload metadata and retry."
+                    )
             return updated
 
+        if self.object_views:
+            return await self.object_views.save(
+                self, model_id, revision_id, payload, expected, operation
+            )
         return await self.store.transaction(operation)
 
     async def delete(self, model_id, revision_id, object_id, expected):
@@ -188,9 +254,9 @@ class ObjectService(Service):
                 raise Conflict(
                     "A managed source cannot be deleted; disable it to retain its revision history."
                 )
-            if object_id == revision["basePlanningLevelId"]:
+            if object_id == revision["baseDimensionId"]:
                 raise Conflict(
-                    "Choose or clear the revision's base planning level before deleting this level."
+                    "Choose or clear the revision's base dimension before deleting this level."
                 )
             await metadata_repositories(repo).ensure_object_unreferenced(
                 model_id,
@@ -198,22 +264,50 @@ class ObjectService(Service):
                 object_id,
                 "This object is referenced by evidence or examples.",
             )
-            objects = await self.objects(repo, model_id, revision_id)
+            objects = await self.definitions(repo, model_id, revision_id)
             self.validate(
                 await self.effective(
                     repo,
                     model_id,
                     revision_id,
-                    [obj for obj in objects if obj["objectId"] != object_id],
+                    [
+                        obj
+                        for obj in objects
+                        if obj["objectId"]
+                        not in {
+                            object_id,
+                            document.get("memberCatalogId"),
+                        }
+                    ],
                 ),
-                revision["basePlanningLevelId"],
+                revision["baseDimensionId"],
             )
-            if self.kind == "planningLevel":
+            if self.kind == "transaction" and not document["definition"].get(
+                "dimensionId"
+            ):
                 await metadata_repositories(repo).bindings.delete(
                     BindingLookup(
                         model_id=model_id,
                         revision_id=revision_id,
-                        resource_kind="planningLevel",
+                        resource_kind="measureValues",
+                        resource_id=transaction_grain_id(object_id),
+                    )
+                )
+            if self.kind in {"dimension", "transaction"}:
+                await metadata_repositories(repo).bindings.delete(
+                    BindingLookup(
+                        model_id=model_id,
+                        revision_id=revision_id,
+                        resource_kind="objectView",
+                        resource_id=object_id,
+                    )
+                )
+            if self.kind == "dimension":
+                await metadata_repositories(repo).bindings.delete(
+                    BindingLookup(
+                        model_id=model_id,
+                        revision_id=revision_id,
+                        resource_kind="dimension",
                         resource_id=object_id,
                     )
                 )

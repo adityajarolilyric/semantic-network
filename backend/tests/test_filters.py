@@ -2,7 +2,7 @@ import pytest
 from pydantic import ValidationError
 
 from backend.app.core.errors import MetadataError
-from backend.app.engine.filters import FilterCompiler
+from backend.app.engine.transformations.filters import FilterCompiler
 from backend.app.schemas.filters import FilterDefinition
 from backend.app.schemas.transactions import TransactionDefinition
 
@@ -108,7 +108,7 @@ def test_invalid_columns_arity_and_tree_limits():
 def test_absent_transaction_filters_preserve_old_serialization():
     old = {
         "sourceId": "source",
-        "planningLevelId": "level",
+        "dimensionId": "level",
         "keyMappings": [{"sourceColumnId": "key", "grainColumnId": "key"}],
     }
     result = TransactionDefinition.model_validate(old).model_dump()

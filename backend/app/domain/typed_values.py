@@ -1,11 +1,12 @@
 """Shared value capabilities; no database or execution state."""
 
 import re
+
 from .measure_policies import referenced_result_type
 
 NUMERIC = {"number", "integer", "decimal"}
 METHODS = {
-    "number": {"sum", "avg", "min", "max", "count", "count_distinct"},
+    "number": {"sum", "avg", "min", "max", "count", "count_distinct", "single_value"},
     "string": {"single_value"},
     "date": {"single_value", "min", "max"},
     "boolean": {"single_value", "any_true", "all_true"},

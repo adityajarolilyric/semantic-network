@@ -1,11 +1,11 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { expect, it } from 'vitest'
-import { TransactionTransformations } from '../src/metadata/editors/TransactionTransformations'
+import { TransformationsPanel } from '../src/metadata/editors/TransformationsPanel'
 
 it('keeps tab drafts mounted and supports keyboard navigation', async () => {
   const { container } = render(
-    <TransactionTransformations
+    <TransformationsPanel
       tabs={[
         { label: 'Filters', configured: false, content: <input aria-label="Filter draft" /> },
         { label: 'Pivot Data', configured: true, content: <input aria-label="Pivot draft" /> },

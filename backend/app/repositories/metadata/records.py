@@ -1,6 +1,7 @@
 """Evidence and examples share record mechanics, not physical names in services."""
 
 from enum import StrEnum
+
 from .collection import CollectionRepository
 from .criteria import RecordLookup
 

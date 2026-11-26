@@ -3,8 +3,8 @@ from typing import Annotated
 from fastapi import APIRouter, File, Form, Header, Query, Request, UploadFile
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
-from ..schemas.common import Identifier
 from ..core.errors import MetadataError
+from ..schemas.common import Identifier
 from ..warehouse.schemas import (
     CsvImportResult,
     TableCatalog,

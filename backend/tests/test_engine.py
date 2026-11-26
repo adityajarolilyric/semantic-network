@@ -2,12 +2,16 @@ from copy import deepcopy
 from datetime import timedelta
 
 import pytest
+import asyncio
+from unittest.mock import AsyncMock
 
 from backend.app.core.config import Settings
 from backend.app.core.errors import Conflict, MetadataError
-from backend.app.engine.compiler import ClickHouseCompiler
-from backend.app.engine.planner import ManagedTablePlanner
-from backend.app.engine.worker import EngineWorker
+from backend.app.engine.transformations.pivot.compiler import ClickHouseCompiler
+from backend.app.engine.transformations.pivot.planner import ManagedTablePlanner
+from backend.app.engine.execution.worker import EngineWorker
+from backend.app.warehouse.retention import ArtifactCollector
+from backend.app.engine.execution.builds.managed import ManagedTableBuildHandler
 from backend.app.schemas.managed_tables import ManagedDefinition
 from backend.app.schemas.sources import SourceInput
 from backend.app.services.base import now, scope
@@ -126,7 +130,15 @@ async def context():
     )
     service = ManagedTableService(store, Settings(_env_file=None), None, None)
     service.executor = FakeExecutor()
-    return store, service, EngineWorker(service)
+    return (
+        store,
+        service,
+        EngineWorker(
+            store,
+            handlers={"managedTable": ManagedTableBuildHandler(service)},
+            collector=ArtifactCollector(service),
+        ),
+    )
 
 
 async def submit(service, spec=None, expected=0, key="request_key"):
@@ -151,7 +163,9 @@ async def test_idempotency_stale_inputs_cancel_and_recovery():
     assert await worker.claim() is None
     expired = {**claimed, "leaseUntil": now() - timedelta(seconds=1)}
     await store.repository.replace("engine_runs", {"runId": run["runId"]}, expired)
-    second_worker = EngineWorker(service)
+    second_worker = EngineWorker(
+        store, handlers=worker.handlers, collector=worker.collector
+    )
     recovered = await second_worker.claim()
     assert recovered["fence"] == claimed["fence"] + 1
     with pytest.raises(Conflict):
@@ -202,10 +216,10 @@ async def test_stale_revision_and_duplicate_failure_preserve_binding():
 
 @pytest.mark.asyncio
 async def test_collection_retains_bound_published_artifact_and_drops_only_owned_unbound():
-    from backend.app.engine.artifacts import ArtifactCollector
+    from backend.app.warehouse.retention import ArtifactCollector
 
     store, service, worker = await context()
-    await submit(service)
+    await submit(service, SPEC)
     await worker.execute(await worker.claim())
     await submit(service, SPEC, 1, "next_definition")
     await worker.execute(await worker.claim())
@@ -243,7 +257,7 @@ async def test_step_durations_use_the_current_attempt_and_restart_on_retry(monke
     await submit(service)
     run = await worker.claim()
     clock = [now()]
-    monkeypatch.setattr("backend.app.engine.worker.now", lambda: clock[0])
+    monkeypatch.setattr("backend.app.engine.execution.worker.now", lambda: clock[0])
     await worker.step(run, "timed", "running")
     clock[0] += timedelta(milliseconds=1250)
     await worker.step(run, "timed", "succeeded")
@@ -265,3 +279,24 @@ async def test_step_durations_use_the_current_attempt_and_restart_on_retry(monke
     )
     assert step["durationMs"] == 500
     assert step["attempt"] == retried["fence"]
+
+
+@pytest.mark.asyncio
+async def test_worker_stops_even_if_handler_cleanup_swallows_cancellation():
+    _, _, worker = await context()
+    entered = asyncio.Event()
+    worker.claim = AsyncMock(return_value={"runId": "test_shutdown"})
+
+    async def execute(_run):
+        entered.set()
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            # Heartbeat cleanup can consume the cancellation at an await boundary.
+            return
+
+    worker.execute = execute
+    worker.start()
+    await entered.wait()
+    await asyncio.wait_for(worker.stop(), timeout=1)
+    assert worker.task.done()

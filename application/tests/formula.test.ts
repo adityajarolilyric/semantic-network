@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { formatFormula, parseFormula, formulaUnit } from '../src/metadata/formula'
+import {
+  formatFormula,
+  parseFormula,
+  formulaUnit,
+  namedFormula,
+  formulaReference,
+} from '../src/metadata/formula'
 const measures = [
   { objectId: 'm_fqty', name: 'FQTY' },
   { objectId: 'm_sqty', name: 'SQTY' },
@@ -59,4 +65,16 @@ it('infers hidden units from existing dependencies, including coalesce after a c
   expect(formulaUnit(parseFormula('ABS(FQTY-SQTY)', inputs), inputs)).toBe('EA')
   expect(formulaUnit(parseFormula('COALESCE(0,FQTY)', inputs), inputs)).toBe('EA')
   expect(formulaUnit(parseFormula('FQTY/SQTY', inputs), inputs)).toBe('1')
+})
+
+it('serializes named definitions without losing spaces or special characters', () => {
+  expect(namedFormula('  Absolute Error  ', 'abs(1)')).toBe('Absolute Error = abs(1)')
+  expect(namedFormula('A = B', '1')).toBe('"A = B" = 1')
+  expect(namedFormula('Error [absolute]', '1')).toBe('"Error [absolute]" = 1')
+  expect(formulaReference('Error [absolute]')).toBe('[Error [absolute]]]')
+  expect(
+    formatFormula({ type: 'measureRef', measureId: 'm' }, [
+      { objectId: 'm', name: 'Error [absolute]' },
+    ]),
+  ).toBe('[Error [absolute]]]')
 })

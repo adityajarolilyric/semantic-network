@@ -1,28 +1,28 @@
 import { useEffect, useId, useState } from 'react'
 import { metadataApi } from './api'
-import type { ViewRef } from './planningViewPreferences'
+import type { ViewRef } from './decisionViewPreferences'
 
 type Status = 'ready' | 'needs_materialisation' | 'unavailable'
 type Verdict = {
   status: Status
   reason: string
   operation?: string
-  sourcePlanningLevelName?: string
+  sourceDimensionName?: string
 }
-type Connection = Verdict & { planningLevelId: string }
+type Connection = Verdict & { dimensionId: string }
 type MeasureNode = {
   measureId: string
   name: string
-  nativePlanningLevelId: string
-  nativePlanningLevelName: string
+  nativeGrainId: string
+  nativeDimensionName: string
   connections: Connection[]
 }
 export type CompatibilityGraph = {
   revisionVersion: number
   generationId: string | null
   measures: MeasureNode[]
-  levels: { planningLevelId: string; name: string }[]
-  contexts: { planningLevelId: string; name: string; selection: Verdict | null }[]
+  levels: { dimensionId: string; name: string }[]
+  contexts: { dimensionId: string; name: string; selection: Verdict | null }[]
   selection: { measureId: string; name: string }[]
   totalMeasures: number
   hasMoreMeasures: boolean
@@ -45,7 +45,7 @@ function bestStatus(connections: Verdict[]): Status {
 export function CompatibilityGraphPanel({
   base,
   revisionVersion,
-  planningLevelId,
+  dimensionId,
   measureIds = [],
   view,
   refreshKey,
@@ -54,7 +54,7 @@ export function CompatibilityGraphPanel({
 }: {
   base: string
   revisionVersion?: number
-  planningLevelId?: string
+  dimensionId?: string
   measureIds?: string[]
   view?: { rows: ViewRef[]; columns: ViewRef[] }
   refreshKey?: string | null
@@ -62,7 +62,7 @@ export function CompatibilityGraphPanel({
   selectionDisabled?: boolean
 }) {
   const [selected, setSelected] = useState<string[]>(measureIds)
-  const [level, setLevel] = useState(planningLevelId ?? '')
+  const [level, setLevel] = useState(dimensionId ?? '')
   const [search, setSearch] = useState('')
   const [measureOffset, setMeasureOffset] = useState(0)
   const [levelOffset, setLevelOffset] = useState(0)
@@ -76,13 +76,13 @@ export function CompatibilityGraphPanel({
   const viewKey = JSON.stringify(view)
   useEffect(() => {
     setSelected(measureIds)
-    setLevel(planningLevelId ?? '')
+    setLevel(dimensionId ?? '')
     setMeasureOffset(0)
     setLevelOffset(0)
     inspect(null)
     setGraph(null)
     setError('')
-  }, [base, planningLevelId])
+  }, [base, dimensionId])
   useEffect(() => {
     setSelected(measureIds)
   }, [selectionKey])
@@ -102,7 +102,7 @@ export function CompatibilityGraphPanel({
           'POST',
           {
             measures: selected,
-            planningLevelId: view ? null : level || null,
+            dimensionId: view ? null : level || null,
             view: view ? { ...view, measures: selected } : null,
             search,
             measureOffset,
@@ -200,7 +200,7 @@ export function CompatibilityGraphPanel({
             }}
           />
         </label>
-        {!view && !planningLevelId && (
+        {!view && !dimensionId && (
           <label>
             Plotting context
             <select
@@ -210,20 +210,20 @@ export function CompatibilityGraphPanel({
                 setLevelOffset(0)
               }}
             >
-              <option value="">Browse planning levels</option>
+              <option value="">Browse Dimensions</option>
               {graph?.levels.map((item) => (
-                <option key={item.planningLevelId} value={item.planningLevelId}>
+                <option key={item.dimensionId} value={item.dimensionId}>
                   {item.name}
                 </option>
               ))}
             </select>
           </label>
         )}
-        {(view || planningLevelId) && (
+        {(view || dimensionId) && (
           <p className="meta-hint">
             {view
-              ? 'Using the current pivot dimensions.'
-              : 'Using the formula’s Output Planning Level.'}
+              ? 'Using the current pivot dimensionMembers.'
+              : 'Using the formula’s Output Dimension.'}
           </p>
         )}
       </div>
@@ -283,7 +283,7 @@ export function CompatibilityGraphPanel({
                 : 'Create measures to explore their compatibility.'}
             </p>
           ) : !contexts.length ? (
-            <p className="meta-hint">Create a planning level to explore plotting contexts.</p>
+            <p className="meta-hint">Create a DimensionMembers to explore plotting contexts.</p>
           ) : (
             <div className="compatibility-body">
               <div
@@ -293,7 +293,7 @@ export function CompatibilityGraphPanel({
               >
                 <div className="compatibility-lane-labels">
                   <strong>Measures</strong>
-                  <strong>Planning levels</strong>
+                  <strong>Dimensions</strong>
                 </div>
                 <div className="compatibility-canvas" style={{ height }}>
                   <svg viewBox={`0 0 720 ${height}`} preserveAspectRatio="none" aria-hidden="true">
@@ -304,16 +304,16 @@ export function CompatibilityGraphPanel({
                             connection.status !== 'unavailable' &&
                             (selected.includes(measure.measureId) ||
                               inspected === measure.measureId ||
-                              connection.planningLevelId === measure.nativePlanningLevelId),
+                              connection.dimensionId === measure.nativeGrainId),
                         )
                         .map((connection) => {
                           const target = contexts.findIndex(
-                            (context) => context.planningLevelId === connection.planningLevelId,
+                            (context) => context.dimensionId === connection.dimensionId,
                           )
                           if (target < 0) return null
                           return (
                             <path
-                              key={measure.measureId + connection.planningLevelId}
+                              key={measure.measureId + connection.dimensionId}
                               className={connection.status}
                               d={`M 238 ${nodeY(index)} C 350 ${nodeY(index)}, 370 ${hubY(target)}, 482 ${hubY(target)}`}
                             />
@@ -336,23 +336,23 @@ export function CompatibilityGraphPanel({
                       title={measure.name}
                     >
                       <strong>{measure.name}</strong>
-                      <small>{measure.nativePlanningLevelName}</small>
+                      <small>{measure.nativeDimensionName}</small>
                     </button>
                   ))}
                   {contexts.map((context, index) => (
                     <button
-                      key={context.planningLevelId}
+                      key={context.dimensionId}
                       type="button"
                       className={`compatibility-hub ${context.selection?.status ?? ''}`}
                       style={{ top: hubY(index) }}
                       onClick={() => {
-                        if (!view && !planningLevelId) {
-                          setLevel(context.planningLevelId)
+                        if (!view && !dimensionId) {
+                          setLevel(context.dimensionId)
                           setLevelOffset(0)
                         }
                       }}
                       title={context.name}
-                      aria-label={'Inspect planning level ' + context.name}
+                      aria-label={'Inspect Dimension ' + context.name}
                     >
                       <strong>{context.name}</strong>
                       <small>
@@ -376,14 +376,14 @@ export function CompatibilityGraphPanel({
                 ) : (
                   <>
                     <p>
-                      Output level: <strong>{active.nativePlanningLevelName}</strong>
+                      Output level: <strong>{active.nativeDimensionName}</strong>
                     </p>
                     {active.connections.map((connection) => (
-                      <div key={connection.planningLevelId} className="compatibility-reason">
+                      <div key={connection.dimensionId} className="compatibility-reason">
                         <strong>
                           {
                             contexts.find(
-                              (context) => context.planningLevelId === connection.planningLevelId,
+                              (context) => context.dimensionId === connection.dimensionId,
                             )?.name
                           }
                         </strong>
@@ -391,8 +391,8 @@ export function CompatibilityGraphPanel({
                           {labels[connection.status]}
                         </span>
                         <p>{connection.reason}</p>
-                        {connection.sourcePlanningLevelName && (
-                          <small>Source: {connection.sourcePlanningLevelName}</small>
+                        {connection.sourceDimensionName && (
+                          <small>Source: {connection.sourceDimensionName}</small>
                         )}
                       </div>
                     ))}
@@ -424,7 +424,7 @@ export function CompatibilityGraphPanel({
                 Next measures
               </button>
             </div>
-            {!view && !level && !planningLevelId && (
+            {!view && !level && !dimensionId && (
               <div>
                 <button
                   type="button"

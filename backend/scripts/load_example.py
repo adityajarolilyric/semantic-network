@@ -51,14 +51,14 @@ def main():
         {
             "revisionId": revision["_id"],
             "expectedModelVersion": model["version"],
-            "basePlanningLevelId": revision["basePlanningLevelId"],
+            "baseDimensionId": revision["baseDimensionId"],
         },
     )
     root = model_path + "/revisions/" + created["revisionId"]
     resources = {
         "source": "sources",
+        "dimensionMembers": "dimension-members",
         "dimension": "dimensions",
-        "planningLevel": "planning-levels",
         "transaction": "transactions",
         "measure": "measures",
     }

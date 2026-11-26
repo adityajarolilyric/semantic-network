@@ -1,3 +1,4 @@
+from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from .errors import MetadataError
@@ -21,8 +22,6 @@ class WorkspaceMiddleware:
             async with self.gate.shared():
                 await self.app(scope, receive, send)
         except MetadataError as exc:
-            from starlette.requests import Request
-
             response = JSONResponse(
                 error_payload(Request(scope), exc.code, exc.message, exc.details),
                 status_code=exc.status,

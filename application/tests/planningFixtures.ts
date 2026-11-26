@@ -1,9 +1,9 @@
-import type { Envelope, PlanningLevel } from '../src/metadata/types'
+import type { Envelope, Dimension } from '../src/metadata/types'
 
-export function savedLevel(id: string, parent?: string): PlanningLevel & Envelope {
+export function savedLevel(id: string, parent?: string): Dimension & Envelope {
   return {
     objectId: id,
-    kind: 'planningLevel',
+    kind: 'dimension',
     name: id.toUpperCase(),
     displayName: id.toUpperCase(),
     description: '',
@@ -14,7 +14,7 @@ export function savedLevel(id: string, parent?: string): PlanningLevel & Envelop
     updatedAt: '',
     definition: {
       population: parent
-        ? { operation: 'distinct_projection', sourcePlanningLevelId: parent }
+        ? { operation: 'distinct_projection', sourceDimensionId: parent }
         : { operation: 'source', sourceId: 'source' },
       grain: {
         keyIds: ['product'],
@@ -22,7 +22,7 @@ export function savedLevel(id: string, parent?: string): PlanningLevel & Envelop
           { grainColumnId: 'product', name: 'product', populationRef: { columnId: 'product' } },
         ],
       },
-      dimensionBindings: [],
+      memberBindings: [],
     },
   }
 }

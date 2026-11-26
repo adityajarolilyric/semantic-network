@@ -7,11 +7,12 @@ names come exclusively from the registry, never from user-provided SQL.
 from sqlglot import exp
 
 from ..core.errors import MetadataError
-from .expressions import count_key
-
-
-def function(name, *arguments):
-    return exp.Anonymous(this=name, expressions=list(arguments))
+from ..engine.measures.contracts import COMPLETE, VALUE
+from ..engine.sql.typed_formulas import attribute_alias
+from .expressions import count_key, temporal_key
+from .temporal import is_temporal
+from .arithmetic import compile_arithmetic
+from .sql_nodes import function
 
 
 class FormulaSqlCompiler:
@@ -27,17 +28,16 @@ class FormulaSqlCompiler:
         return exp.column(name, table=table, quoted=True)
 
     def compile(self, node):
+        if is_temporal(node):
+            return self.column(VALUE, self.references[temporal_key(node)])
         kind = node["type"]
         if kind == "literal":
             return exp.convert(node["value"])
         if kind in {"measureRef", "count"}:
             key = node["measureId"] if kind == "measureRef" else count_key(node)
-            from ..engine.measure_compiler import VALUE
 
             value = self.column(VALUE, self.references[key])
             if kind == "count":
-                from ..engine.measure_compiler import COMPLETE
-
                 # An absent group is a known zero; a present unknown/Mixed count stays NULL.
                 return function(
                     "if",
@@ -47,12 +47,10 @@ class FormulaSqlCompiler:
                 )
             return value
         if kind == "attributeRef":
-            from ..engine.typed_formulas import attribute_alias
-
             return self.column(attribute_alias(node), "p")
         if kind == "grainRef":
             coordinate = self.host.relationships.outputs(
-                self.measure["definition"]["nativePlanningLevelId"]
+                self.measure["definition"]["nativeGrainId"]
             ).get(node["grainColumnId"])
             resolved = (
                 self.host.relationships.resolve(self.target, coordinate)
@@ -152,7 +150,11 @@ class FormulaSqlCompiler:
                 function("addDays", args[0], function("toInt64", days.copy())),
                 null,
             )
+        if fn in {"sqrt", "root", "power"}:
+            return compile_arithmetic(fn, args)
         names = {
+            "ceil": "ceil",
+            "floor": "floor",
             "abs": "abs",
             "round": "roundBankers",
             "coalesce": "coalesce",

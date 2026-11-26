@@ -71,7 +71,7 @@ it('keeps saved legacy rules readable but offers only Column equals attribute fo
     overlapPolicy: 'last_applied_wins',
   }
   const level = {
-    kind: 'planningLevel' as const,
+    kind: 'dimension' as const,
     name: 'Product',
     displayName: 'Product',
     description: '',
@@ -84,7 +84,7 @@ it('keeps saved legacy rules readable but offers only Column equals attribute fo
         ],
       },
       population: { operation: 'source' as const, sourceId: 's' },
-      dimensionBindings: [],
+      memberBindings: [],
     },
   }
   function Harness() {
@@ -124,7 +124,7 @@ it('requires complete date-range metadata and an explicit time distribution poli
         allowAll: false,
         rules: [],
         dateRange: {
-          dimensionId: 'time',
+          memberCatalogId: 'time',
           calendarKeyColumnId: 'week',
           startColumnId: 'start',
           endColumnId: '',
@@ -162,14 +162,14 @@ it('shows retained columns above order and allows retained text as application o
         sourceId="s"
         level={{
           objectId: 'pl',
-          kind: 'planningLevel',
+          kind: 'dimension',
           name: 'P',
           displayName: 'P',
           description: '',
           definition: {
             population: { operation: 'source', sourceId: 's' },
             grain: { keyIds: [], columns: [] },
-            dimensionBindings: [],
+            memberBindings: [],
           },
         }}
         columns={[
@@ -189,4 +189,79 @@ it('shows retained columns above order and allows retained text as application o
   expect(order).toHaveValue('promo')
   expect(screen.getByRole('checkbox', { name: 'promo_id' })).toBeChecked()
   expect(order.querySelector('option[value="quantity"]')).toBeNull()
+})
+
+it('shows only native output choices and recognises a saved related-column alias', async () => {
+  const request = vi.spyOn(metadataApi, 'request').mockResolvedValue({
+    targets: [
+      { target: { memberCatalogId: null, columnId: 'product' }, label: 'Native · Product ID' },
+      {
+        target: { memberCatalogId: null, columnId: 'native_brand' },
+        label: 'Native · Brand',
+        aliases: [{ memberCatalogId: 'Product', columnId: 'brand' }],
+      },
+    ],
+  } as never)
+  const config: GrainResolution = {
+    axes: [
+      {
+        grainColumnId: 'product',
+        allowAll: false,
+        rules: [
+          {
+            ruleId: 'r',
+            kind: 'column',
+            sourceColumnId: 'brand',
+            target: { memberCatalogId: 'Product', columnId: 'brand' },
+            selectors: [],
+          },
+        ],
+      },
+    ],
+    values: [],
+    orderColumnIds: [],
+    partitionColumnIds: [],
+    passthroughColumnIds: [],
+    overlapPolicy: 'last_applied_wins',
+  }
+  const change = vi.fn()
+  render(
+    <TransactionResolutionEditor
+      base="/models/m/revisions/r"
+      sourceId="s"
+      value={config}
+      onChange={change}
+      columns={[{ columnId: 'brand', name: 'brand', physicalType: 'String', nullable: false }]}
+      level={{
+        objectId: 'native',
+        kind: 'dimension',
+        name: 'PLT',
+        displayName: 'PLT',
+        description: '',
+        definition: {
+          population: { operation: 'source', sourceId: 's' },
+          grain: {
+            keyIds: ['product'],
+            columns: [
+              { grainColumnId: 'product', name: 'product', populationRef: { columnId: 'product' } },
+            ],
+          },
+          memberBindings: [],
+        },
+      }}
+    />,
+  )
+  const selector = await screen.findByRole('option', { name: 'Native · Brand' })
+  expect(selector).toBeVisible()
+  expect(screen.getByLabelText('Match native attribute')).toHaveValue('[null,"native_brand"]')
+  expect(screen.queryByRole('option', { name: 'Product · Brand' })).not.toBeInTheDocument()
+  expect(screen.getByLabelText('Match native attribute').querySelectorAll('option')).toHaveLength(3)
+  expect(change).not.toHaveBeenCalled()
+  expect(request).toHaveBeenCalledWith(
+    '/models/m/revisions/r/transactions/resolution/options?dimensionId=native',
+    'GET',
+    undefined,
+    undefined,
+    expect.any(AbortSignal),
+  )
 })

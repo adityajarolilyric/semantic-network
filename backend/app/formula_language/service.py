@@ -1,13 +1,20 @@
 """Stateless language facade. Parsing/resolution never accesses persistence."""
 
+from collections import defaultdict
 from dataclasses import asdict
 
 from ..core.errors import MetadataError
-from ..domain.formula_types import infer, attribute_physical_type
+from ..domain.formula_types import attribute_physical_type, infer
 from ..validation.graph import SemanticGraphValidator
+from ..engine.graph.temporal_context import TemporalContextResolver
 from . import AST_VERSION, LANGUAGE_VERSION
 from .catalog import FUNCTION_CATALOG
-from .expressions import contains_counts, walk
+from .expressions import (
+    contains_counts,
+    contains_temporal,
+    definition_references,
+    conversion_factor_references,
+)
 from .parser import formula_parser
 from .resolver import FormulaResolver
 
@@ -19,7 +26,7 @@ class FormulaLanguage:
             "languageVersion": LANGUAGE_VERSION,
             "astVersion": AST_VERSION,
             "functions": [
-                asdict(item)
+                {**asdict(item), "group": item.group}
                 for item in FUNCTION_CATALOG
                 if item.category != "reference"
             ],
@@ -38,37 +45,60 @@ class FormulaLanguage:
             "astVersion": AST_VERSION,
             "diagnostics": [],
             "containsCounts": False,
+            "containsTemporal": False,
         }
         try:
-            expression = cls.resolve(
-                payload.displayText,
-                objects,
-                payload.nativePlanningLevelId,
-            )
+            name = payload.name
+            if payload.requireAssignment:
+                parsed = formula_parser().parse_definition(payload.displayText)
+                name = parsed.name
+                expression = FormulaResolver(objects, payload.nativeGrainId).resolve(
+                    parsed.expression
+                )
+                result.update(name=name, expressionText=parsed.expression_text)
+            else:
+                expression = cls.resolve(
+                    payload.displayText, objects, payload.nativeGrainId
+                )
             result.update(
-                expression=expression, containsCounts=contains_counts(expression)
+                expression=expression,
+                containsCounts=contains_counts(expression),
+                containsTemporal=contains_temporal(expression),
+                containsConversionFactors=bool(
+                    conversion_factor_references(
+                        expression, {obj["objectId"]: obj for obj in objects}
+                    )
+                ),
             )
             owner = {
                 "objectId": payload.objectId,
                 "kind": "measure",
-                "name": payload.name,
+                "name": name,
                 "business": {"unit": None},
                 "definition": {
                     "measureType": "calculated",
-                    "nativePlanningLevelId": payload.nativePlanningLevelId,
+                    "nativeGrainId": payload.nativeGrainId,
                     "calculationType": payload.calculationType,
+                    "temporal": payload.temporal.model_dump()
+                    if payload.temporal
+                    else None,
                     "formula": {"expression": expression},
                     "resultType": {"type": "number", "nullable": True},
                 },
             }
             context = SemanticGraphValidator([*objects, owner])
             context.base = base_level
-            from collections import defaultdict
 
             context.edges = defaultdict(set)
-            level = context.objects.get(payload.nativePlanningLevelId)
-            if not level or level["kind"] != "planningLevel":
-                raise MetadataError("formula_level", "Choose an output planning level.")
+            level = context.objects.get(payload.nativeGrainId)
+            if not level or level["kind"] not in {"dimension", "grain"}:
+                raise MetadataError("formula_level", "Choose an output dimension.")
+            if contains_temporal(expression):
+                resolution = TemporalContextResolver(context).resolve(
+                    level, owner["definition"]["temporal"]
+                )
+                owner["definition"]["temporal"] = resolution["context"]
+                result["temporalResolution"] = resolution
             kind = infer(
                 expression,
                 lambda mid: context.objects[mid]["definition"]["resultType"]["type"],
@@ -82,9 +112,8 @@ class FormulaLanguage:
                 if obj["kind"] != "measure" or obj["objectId"] == owner["objectId"]:
                     continue
                 definition = obj["definition"]
-                for node in walk((definition.get("formula") or {}).get("expression")):
-                    if node["type"] == "measureRef":
-                        context.edges[obj["objectId"]].add(node["measureId"])
+                for dependency in definition_references(definition):
+                    context.edges[obj["objectId"]].add(dependency)
                 basis = (definition.get("allocation") or {}).get("basisMeasureId")
                 if basis:
                     context.edges[obj["objectId"]].add(basis)

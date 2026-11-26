@@ -1,11 +1,12 @@
 from typing import Literal
 
-from pydantic import Field, model_validator, model_serializer
+from pydantic import Field, computed_field, model_serializer, model_validator
 
-from .managed_tables import PivotStage
-from .filters import FilterDefinition
-from .measures import Aggregation, Allocation
+from ..domain.grains import transaction_grain_id
 from .common import DocumentMetadata, Identifier, Name, Schema, SemanticInput, unique
+from .filters import FilterDefinition
+from .managed_tables import PivotStage
+from .measures import Aggregation, Allocation
 
 
 class TransactionKeyMapping(Schema):
@@ -14,7 +15,7 @@ class TransactionKeyMapping(Schema):
 
 
 class ResolutionTarget(Schema):
-    dimensionId: Identifier | None = None
+    memberCatalogId: Identifier | None = None
     columnId: Identifier
 
 
@@ -61,14 +62,14 @@ class ResolutionRule(Schema):
 
 
 class ResolutionDateRange(Schema):
-    dimensionId: Identifier
+    memberCatalogId: Identifier
     calendarKeyColumnId: Identifier
     startColumnId: Identifier
     endColumnId: Identifier
 
 
 class CalendarResolution(Schema):
-    dimensionId: Identifier
+    memberCatalogId: Identifier
     startColumnId: Identifier
     endColumnId: Identifier
     selectedColumnIds: list[Identifier] = Field(min_length=1, max_length=32)
@@ -146,7 +147,9 @@ class TransactionDefinition(Schema):
     filters: FilterDefinition | None = None
     sourceId: Identifier
     pivot: PivotStage | None = None
-    planningLevelId: Identifier
+    dimensionId: Identifier | None = None
+    grainColumnIds: list[Identifier] = Field(default_factory=list, max_length=32)
+    timeColumnId: Identifier | None = None
     mappingMode: Literal["direct", "resolve_multi_grain"] = "direct"
     resolution: GrainResolution | None = None
     calendarResolution: CalendarResolution | None = None
@@ -158,17 +161,32 @@ class TransactionDefinition(Schema):
 
     @model_validator(mode="after")
     def validate_mapping(self):
-        if self.mappingMode == "direct" and (
+        unique(self.grainColumnIds, "transaction grain columns")
+        if self.dimensionId is None:
+            if (
+                not self.grainColumnIds
+                or self.mappingMode != "direct"
+                or self.resolution
+                or self.keyMappings
+            ):
+                raise ValueError(
+                    "Standalone Transactions require grain columns and no Dimension mappings or multi-grain resolution"
+                )
+            if self.timeColumnId and self.timeColumnId not in self.grainColumnIds:
+                raise ValueError(
+                    "The Time key must be one of the selected grain columns"
+                )
+        elif self.mappingMode == "direct" and (
             not self.keyMappings or self.resolution is not None
         ):
             raise ValueError(
-                "Direct transactions require key mappings and no grain resolution"
+                "Connected Transactions require complete key mappings and no grain resolution"
             )
-        if self.mappingMode == "resolve_multi_grain" and (
+        elif self.mappingMode == "resolve_multi_grain" and (
             self.resolution is None or self.keyMappings
         ):
             raise ValueError(
-                "Multi-grain transactions require resolution metadata; native keys are generated"
+                "Multi-grain resolution requires a target Dimension and resolution metadata"
             )
         if self.calendarResolution and self.resolution:
             if any(a.dateRange for a in self.resolution.axes):
@@ -206,6 +224,15 @@ class TransactionInput(SemanticInput):
     kind: Literal["transaction"] = "transaction"
     definition: TransactionDefinition
 
+    @model_validator(mode="before")
+    @classmethod
+    def strip_computed_context(cls, value):
+        if isinstance(value, dict) and "effectiveGrainId" in value:
+            return {
+                key: item for key, item in value.items() if key != "effectiveGrainId"
+            }
+        return value
+
 
 class TransactionCreateInput(TransactionInput):
     measures: list[TransactionMeasureSelection] = Field(
@@ -219,7 +246,10 @@ class TransactionCreateInput(TransactionInput):
 
 
 class TransactionDocument(TransactionInput, DocumentMetadata):
-    pass
+    @computed_field
+    @property
+    def effectiveGrainId(self) -> str:
+        return self.definition.dimensionId or transaction_grain_id(self.objectId)
 
 
 class TransactionFromGrainInput(SemanticInput):
@@ -228,7 +258,7 @@ class TransactionFromGrainInput(SemanticInput):
     kind: Literal["transaction"] = "transaction"
     sourceId: Identifier
     grainColumnIds: list[Identifier] = Field(min_length=1, max_length=32)
-    planningLevelName: Name | None = None
+    dimensionName: Name | None = None
     measures: list[TransactionMeasureSelection] = Field(
         default_factory=list, max_length=128
     )

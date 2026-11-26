@@ -1,12 +1,14 @@
+import { ViewSqlButton } from '../../components/ViewSqlButton'
 import { useEffect, useState } from 'react'
 import { metadataApi } from '../api'
 import type { CalendarResolution, SourceColumn, PivotStage } from '../types'
 import type { ResolutionCalendar } from './TransactionDateRangeEditor'
 import { Checks, Select } from './Fields'
-import { PlanningResult, type PlanningTableStatus } from '../PlanningTablePanel'
+import { PlanningResult, type DimensionTableStatus } from '../DimensionTablePanel'
 
 export function TransactionCalendarEditor({
   value,
+  configured = true,
   onChange,
   columns,
   onColumns,
@@ -16,6 +18,7 @@ export function TransactionCalendarEditor({
   levelId,
   pivot,
 }: {
+  configured?: boolean
   value: CalendarResolution
   onChange: (value: CalendarResolution) => void
   columns: SourceColumn[]
@@ -29,7 +32,7 @@ export function TransactionCalendarEditor({
   const [calendars, setCalendars] = useState<ResolutionCalendar[]>([])
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
-  const [preview, setPreview] = useState<PlanningTableStatus | null>(null)
+  const [preview, setPreview] = useState<DimensionTableStatus | null>(null)
   const serialized = JSON.stringify(value)
   const pivotSignature = JSON.stringify(pivot ?? null)
   useEffect(() => {
@@ -39,7 +42,7 @@ export function TransactionCalendarEditor({
       .request<{ calendars: ResolutionCalendar[] }>(
         base +
           '/transactions/resolution/options' +
-          (levelId ? '?planningLevelId=' + encodeURIComponent(levelId) : ''),
+          (levelId ? '?dimensionId=' + encodeURIComponent(levelId) : ''),
         'GET',
         undefined,
         undefined,
@@ -60,7 +63,7 @@ export function TransactionCalendarEditor({
     if (
       !base ||
       !sourceId ||
-      !value.dimensionId ||
+      !value.memberCatalogId ||
       !value.startColumnId ||
       !value.endColumnId ||
       !value.selectedColumnIds.length
@@ -90,7 +93,7 @@ export function TransactionCalendarEditor({
     // The serialized configuration keeps requests independent of parent renders.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [base, sourceId, transactionId, serialized, pivotSignature, onColumns])
-  const calendar = calendars.find((c) => c.dimensionId === value.dimensionId)
+  const calendar = calendars.find((c) => c.memberCatalogId === value.memberCatalogId)
   const dateColumns = columns
     .filter((c) => /String|^(Date|Date32)$/.test(c.physicalType))
     .map((c) => ({ value: c.columnId, label: c.name }))
@@ -105,21 +108,26 @@ export function TransactionCalendarEditor({
       <div className="meta-grid">
         <Select
           label="Start date column"
+          required={configured}
           value={value.startColumnId}
           items={dateColumns}
           onChange={(startColumnId) => onChange({ ...value, startColumnId })}
         />
         <Select
           label="End date column"
+          required={configured}
           value={value.endColumnId}
           items={dateColumns}
           onChange={(endColumnId) => onChange({ ...value, endColumnId })}
         />
         <Select
           label="Daily Time dimension"
-          value={value.dimensionId}
-          items={calendars.map((c) => ({ value: c.dimensionId, label: c.name }))}
-          onChange={(dimensionId) => onChange({ ...value, dimensionId, selectedColumnIds: [] })}
+          required={configured}
+          value={value.memberCatalogId}
+          items={calendars.map((c) => ({ value: c.memberCatalogId, label: c.name }))}
+          onChange={(memberCatalogId) =>
+            onChange({ ...value, memberCatalogId, selectedColumnIds: [] })
+          }
         />
         {calendar && (
           <p className="meta-hint">
@@ -135,40 +143,62 @@ export function TransactionCalendarEditor({
           onChange={(selectedColumnIds) => onChange({ ...value, selectedColumnIds })}
         />
       )}
-      <button
-        type="button"
-        className="secondary-button"
-        disabled={
-          busy ||
-          !base ||
-          !sourceId ||
-          !value.dimensionId ||
-          !value.startColumnId ||
-          !value.endColumnId ||
-          !value.selectedColumnIds.length
-        }
-        onClick={async () => {
-          setBusy(true)
-          setPreview(null)
-          setError('')
-          try {
-            setPreview(
-              await metadataApi.request(base + '/transactions/calendar/preview', 'POST', {
-                transactionId,
-                sourceId,
-                calendarResolution: value,
-                pivot,
-              }),
-            )
-          } catch (e) {
-            setError(e instanceof Error ? e.message : 'Calendar resolution failed.')
-          } finally {
-            setBusy(false)
+      <div className="meta-toolbar">
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={
+            busy ||
+            !base ||
+            !sourceId ||
+            !value.memberCatalogId ||
+            !value.startColumnId ||
+            !value.endColumnId ||
+            !value.selectedColumnIds.length
           }
-        }}
-      >
-        {busy ? 'Resolving dates…' : 'Preview calendar data'}
-      </button>
+          onClick={async () => {
+            setBusy(true)
+            setPreview(null)
+            setError('')
+            try {
+              setPreview(
+                await metadataApi.request(base + '/transactions/calendar/preview', 'POST', {
+                  transactionId,
+                  sourceId,
+                  calendarResolution: value,
+                  pivot,
+                }),
+              )
+            } catch (e) {
+              setError(e instanceof Error ? e.message : 'Calendar resolution failed.')
+            } finally {
+              setBusy(false)
+            }
+          }}
+        >
+          {busy ? 'Resolving dates…' : 'Preview calendar data'}
+        </button>
+        <ViewSqlButton
+          disabled={
+            busy ||
+            !base ||
+            !sourceId ||
+            !value.memberCatalogId ||
+            !value.startColumnId ||
+            !value.endColumnId ||
+            !value.selectedColumnIds.length
+          }
+          loadSql={(signal) =>
+            metadataApi.request(
+              base + '/transactions/calendar/preview?sql_only=true',
+              'POST',
+              { transactionId, sourceId, calendarResolution: value, pivot },
+              undefined,
+              signal,
+            )
+          }
+        />
+      </div>
       {error && (
         <p role="alert" className="meta-error">
           {error}

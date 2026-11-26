@@ -1,5 +1,12 @@
 """One physical table per revision/level/role, with isolated row generations."""
 
+import re
+
+from ..core.errors import Conflict
+from ..core.metadata import revision_scope as scope
+from ..core.metadata import utc_now as now
+from ..engine.sql.contracts import digest
+from ..engine.sql.storage import GENERATION, owner, token
 from ..repositories.metadata import metadata_repositories
 from ..repositories.metadata.criteria import (
     ArtifactLookup,
@@ -9,43 +16,26 @@ from ..repositories.metadata.criteria import (
     RunLookup,
     TableResourceLookup,
 )
+from .sql import quote_identifier as q
+from .sql import quote_literal as lit
 
-import re
-
-from ..core.errors import Conflict
-from ..core.metadata import revision_scope as scope
-from ..core.metadata import utc_now as now
-from ..warehouse.repository import quote_identifier as q
-from ..warehouse.repository import quote_literal as lit
-from ..engine.contracts import digest
-
-GENERATION = "__semantic_generation"
 STORAGE_POLICY = "stable-row-generations-v1"
-
-
-def token(artifact):
-    return artifact.get("generationToken", artifact["artifactId"])
-
-
-def owner(artifact):
-    return artifact.get("storageOwner", "semanticArtifact:" + artifact["artifactId"])
-
-
-def column_sql(column):
-    expression = q(column.get("storageName", column["name"]))
-    return f"assumeNotNull({expression})" if not column["nullable"] else expression
-
-
-def relation_sql(warehouse, artifact):
-    columns = ", ".join(
-        column_sql(c) + " AS " + q(c["name"]) for c in artifact["columns"]
-    )
-    return f"SELECT {columns} FROM {warehouse.qualify(artifact['physicalName'])} WHERE {q(GENERATION)}={lit(token(artifact))}"
 
 
 class TableStorage:
     def __init__(self, store, warehouse):
         self.store, self.warehouse = store, warehouse
+
+    async def require_running(self, artifact):
+        run = await metadata_repositories(self.store.repository).runs.require(
+            RunLookup(run_id=artifact["runId"]), "Value build"
+        )
+        if (
+            run["state"] != "running"
+            or run["fence"] != artifact["attempt"]
+            or run["leaseUntil"] <= now()
+        ):
+            raise Conflict("The value build was cancelled or its write lease expired.")
 
     @staticmethod
     def identity(artifact):
@@ -71,8 +61,7 @@ class TableStorage:
         # Keep names readable while bounding the identifier and preserving a unique
         # resource incarnation across revisions and deletion/recreation.
         label = (
-            re.sub(r"[^A-Za-z0-9_]+", "_", level_name).strip("_")[:80]
-            or "planning_level"
+            re.sub(r"[^A-Za-z0-9_]+", "_", level_name).strip("_")[:80] or "dimension"
         )
         suffix = digest([identity, allocation_id])[:28]
         role = "_mat" if identity["resourceKind"] == "measureValues" else ""
@@ -214,7 +203,7 @@ class TableStorage:
                     )
                     if (
                         bound
-                        or (run and run["state"] in ("queued", "running"))
+                        or (run and run["state"] in ("queued", "running", "waiting"))
                         or len(pins) > 10000
                     ):
                         raise Conflict(
@@ -224,7 +213,11 @@ class TableStorage:
                         pinned = await metadata_repositories(repo).runs.find(
                             RunLookup(run_id=pin["runId"])
                         )
-                        if pinned and pinned["state"] in ("queued", "running"):
+                        if pinned and pinned["state"] in (
+                            "queued",
+                            "running",
+                            "waiting",
+                        ):
                             raise Conflict(
                                 "A legacy planning table is pinned by a build. Retry after that build finishes."
                             )

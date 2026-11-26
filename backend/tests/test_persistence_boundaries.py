@@ -229,11 +229,11 @@ def test_stateless_warehouse_query_adapter_is_reused():
     assert warehouse.queries is warehouse.queries
 
 
-def test_shared_planning_compiler_does_not_keep_request_check_state():
-    from backend.app.engine.planning_compiler import PlanningCompiler
-    from backend.app.engine.contracts import RelationScan
+def test_shared_dimension_compiler_does_not_keep_request_check_state():
+    from backend.app.engine.populations.compiler import DimensionCompiler
+    from backend.app.engine.sql.contracts import RelationScan
 
-    compiler = PlanningCompiler("warehouse")
+    compiler = DimensionCompiler("warehouse")
     scan = RelationScan("source", (("key", "source_key"),))
     first = compiler.render(scan)
     assert first == compiler.render(scan)

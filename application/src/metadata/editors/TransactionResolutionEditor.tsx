@@ -3,7 +3,7 @@ import { FieldHelp } from '../../components/FieldHelp'
 import { metadataApi } from '../api'
 import type {
   GrainResolution,
-  PlanningLevel,
+  Dimension,
   ResolutionRule,
   ResolutionTarget,
   SourceColumn,
@@ -15,10 +15,10 @@ import {
 } from './TransactionDateRangeEditor'
 import { Check, Checks, Select } from './Fields'
 
-type TargetOption = { target: ResolutionTarget; label: string }
+type TargetOption = { target: ResolutionTarget; label: string; aliases?: ResolutionTarget[] }
 const targetKey = (target?: ResolutionTarget | null) =>
-  target?.columnId ? JSON.stringify([target.dimensionId ?? null, target.columnId]) : ''
-export function newResolution(level: PlanningLevel): GrainResolution {
+  target?.columnId ? JSON.stringify([target.memberCatalogId ?? null, target.columnId]) : ''
+export function newResolution(level: Dimension): GrainResolution {
   return {
     axes: level.definition.grain.keyIds.map((grainColumnId) => ({
       grainColumnId,
@@ -42,7 +42,7 @@ export function resolutionComplete(value: GrainResolution | null | undefined) {
     value.axes.every(
       (axis) =>
         (axis.dateRange
-          ? !!axis.dateRange.dimensionId &&
+          ? !!axis.dateRange.memberCatalogId &&
             !!axis.dateRange.calendarKeyColumnId &&
             !!axis.dateRange.startColumnId &&
             !!axis.dateRange.endColumnId
@@ -80,19 +80,21 @@ export function TransactionResolutionEditor({
   value: GrainResolution
   onChange: (value: GrainResolution) => void
   columns: SourceColumn[]
-  level: PlanningLevel
+  level: Dimension
   base?: string
   sourceId: string
   calendarResolved?: boolean
 }) {
   const [targets, setTargets] = useState<TargetOption[]>([])
   const [error, setError] = useState('')
+  const [targetsLoading, setTargetsLoading] = useState(false)
   const [calendars, setCalendars] = useState<ResolutionCalendar[]>([])
   const [timeGrainIds, setTimeGrainIds] = useState<string[]>([])
   useEffect(() => {
     if (!base) return
     const controller = new AbortController()
     setTargets([])
+    setTargetsLoading(true)
     setError('')
     void metadataApi
       .request<{
@@ -100,9 +102,7 @@ export function TransactionResolutionEditor({
         calendars?: ResolutionCalendar[]
         timeGrainIds?: string[]
       }>(
-        base +
-          '/transactions/resolution/options?planningLevelId=' +
-          encodeURIComponent(level.objectId),
+        base + '/transactions/resolution/options?dimensionId=' + encodeURIComponent(level.objectId),
         'GET',
         undefined,
         undefined,
@@ -118,11 +118,20 @@ export function TransactionResolutionEditor({
       .catch((error) => {
         if (!controller.signal.aborted) setError(error.message)
       })
+      .finally(() => {
+        if (!controller.signal.aborted) setTargetsLoading(false)
+      })
     return () => controller.abort()
   }, [base, level.objectId])
   const update = (patch: Partial<GrainResolution>) => onChange({ ...value, ...patch })
   const sourceOptions = columns.map((c) => ({ value: c.columnId, label: c.name }))
   const targetOptions = targets.map((t) => ({ value: targetKey(t.target), label: t.label }))
+  const targetOption = (target: ResolutionTarget | null | undefined) =>
+    targets.find(
+      (option) =>
+        targetKey(option.target) === targetKey(target) ||
+        option.aliases?.some((alias) => targetKey(alias) === targetKey(target)),
+    )
   const selectTarget = (key: string) =>
     targets.find((t) => targetKey(t.target) === key)?.target ?? null
   const hasRange = calendarResolved || value.axes.some((a) => !!a.dateRange)
@@ -227,8 +236,9 @@ export function TransactionResolutionEditor({
                           />
                           <Select
                             label="Match native attribute"
-                            value={targetKey(rule.target)}
+                            value={targetKey(targetOption(rule.target)?.target ?? rule.target)}
                             items={targetOptions}
+                            disabled={targetsLoading}
                             onChange={(key) => setRule(ri, { ...rule, target: selectTarget(key) })}
                           />
                         </div>
@@ -243,6 +253,18 @@ export function TransactionResolutionEditor({
                           first, then remove this rule and add Column equals attribute rules.
                         </p>
                       )}
+                      {!targetsLoading &&
+                        !error &&
+                        base &&
+                        rule.kind === 'column' &&
+                        rule.target?.columnId &&
+                        !targetOption(rule.target) && (
+                          <p className="meta-hint">
+                            The saved match is not an output attribute of this native Dimension.
+                            Select a native attribute, or add the required attribute to the
+                            Dimension first.
+                          </p>
+                        )}
                       <div className="resolution-rule-footer">
                         <Check
                           label="Treat empty text as absent"

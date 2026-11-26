@@ -1,11 +1,11 @@
-import type { PlanningTableStatus } from './PlanningTablePanel'
-import type { Dimension, PlanningLevel } from './types'
+import type { DimensionTableStatus } from './DimensionTablePanel'
+import type { DimensionMembers, Dimension } from './types'
 
 /** Show business attributes, not physical grain aliases or measure columns. */
 export function projectionAttributes(
-  parent: PlanningLevel | undefined,
-  columns: PlanningTableStatus['columns'],
-  dimensions: Dimension[],
+  parent: Dimension | undefined,
+  columns: DimensionTableStatus['columns'],
+  dimensionMembers: DimensionMembers[],
 ) {
   const keys = new Set(parent?.definition.grain.keyIds ?? [])
   const attributes = columns.filter(
@@ -14,9 +14,9 @@ export function projectionAttributes(
   const named = attributes.map((column) => {
     const origin = column.lineage
     const dimColumn =
-      origin?.kind === 'dimension'
-        ? dimensions
-            .find((d) => d.objectId === origin.dimensionId)
+      origin?.kind === 'dimensionMembers'
+        ? dimensionMembers
+            .find((d) => d.objectId === origin.memberCatalogId)
             ?.definition.columns.find((c) => c.columnId === origin.columnId)
         : undefined
     const label =

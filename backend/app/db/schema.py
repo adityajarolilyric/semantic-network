@@ -134,6 +134,7 @@ class CollectionSchemas:
                 "enum": [
                     "queued",
                     "running",
+                    "waiting",
                     "succeeded",
                     "failed",
                     "cancelled",
@@ -155,7 +156,6 @@ class CollectionSchemas:
                 "enum": [
                     "source",
                     "dimension",
-                    "planningLevel",
                     "transaction",
                     "measure",
                 ]

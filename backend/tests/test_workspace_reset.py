@@ -29,7 +29,7 @@ def test_reset_clears_published_models_data_and_engine_state(settings):
         revisions = client.get("/api/v1/models/default_model/revisions").json()["items"]
         assert len(revisions) == 1 and revisions[0]["approvalStatus"] == "draft"
         assert revisions[0]["parentRevisionId"] is None
-        assert revisions[0]["basePlanningLevelId"] is None
+        assert revisions[0]["baseDimensionId"] is None
         assert not store.documents.get("semantic_objects")
         assert not store.documents.get("engine_artifacts")
         assert not store.documents.get("engine_runs")

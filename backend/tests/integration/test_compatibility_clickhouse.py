@@ -1,7 +1,7 @@
 # ruff: noqa: F811
 import pytest
 from .test_csv_clickhouse import clickhouse_app  # noqa: F401
-from .test_planning_view_clickhouse import seed_view, field, query_view
+from .test_decision_view_clickhouse import seed_view, field, query_view
 from .test_measures_clickhouse import BASE, update_measure, build_values
 
 pytestmark = pytest.mark.integration
@@ -32,7 +32,7 @@ def test_ready_graph_uses_the_same_source_as_pivot_and_invalidates_on_change(
         measures=request["measures"],
     )
     assert pivot.status_code == 200, pivot.text
-    assert context["sourcePlanningLevelId"] == pivot.json()["plan"]["planningLevelId"]
+    assert context["sourceDimensionId"] == pivot.json()["plan"]["dimensionId"]
     rebuilt = build_values(client)
     assert rebuilt["state"] == "succeeded", rebuilt
     fresh = client.post(BASE + "/compatibility", json=request).json()

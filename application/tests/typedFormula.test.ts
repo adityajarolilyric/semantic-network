@@ -6,7 +6,7 @@ const attributes: FormulaAttribute[] = [
   {
     label: 'Product.Brand',
     key: 'product.brand',
-    reference: { type: 'attributeRef', dimensionId: 'product', columnId: 'brand' },
+    reference: { type: 'attributeRef', memberCatalogId: 'product', columnId: 'brand' },
     valueType: 'string',
   },
 ]

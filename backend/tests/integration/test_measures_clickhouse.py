@@ -34,7 +34,7 @@ def transaction(client, oid, source, level, keys):
             "displayName": oid,
             "definition": {
                 "sourceId": source,
-                "planningLevelId": level,
+                "dimensionId": level,
                 "keyMappings": [
                     {"sourceColumnId": col, "grainColumnId": key} for key, col in keys
                 ],
@@ -57,7 +57,7 @@ def measure(client, oid, tx, native, value, *, agg=None, mode="none", basis=None
                 "measureType": "referenced",
                 "transactionId": tx,
                 "valueColumnId": value,
-                "nativePlanningLevelId": native,
+                "nativeDimensionId": native,
                 "resultType": {
                     "type": "decimal",
                     "precision": 38,
@@ -85,7 +85,7 @@ def setup(
     pop = managed(client, "Population", b"product,location\nP1,L1\nP1,L2\n")
     level = {
         "objectId": "base",
-        "kind": "planningLevel",
+        "kind": "dimension",
         "name": "Base",
         "displayName": "Base",
         "definition": {
@@ -112,13 +112,13 @@ def setup(
         client,
         {
             "objectId": "pt",
-            "kind": "planningLevel",
+            "kind": "dimension",
             "name": "Product",
             "displayName": "Product",
             "definition": {
                 "population": {
                     "operation": "distinct_projection",
-                    "sourcePlanningLevelId": "base",
+                    "sourceDimensionId": "base",
                 },
                 "grain": {
                     "keyIds": ["product"],
@@ -136,7 +136,7 @@ def setup(
     rev = client.get(BASE).json()
     response = client.put(
         BASE,
-        json={"basePlanningLevelId": "base", "changeReason": ""},
+        json={"baseDimensionId": "base", "changeReason": ""},
         headers={"If-Match": str(rev["version"])},
     )
     assert response.status_code == 200, response.text
@@ -203,7 +203,7 @@ def test_native_independent_aggregation_repeat_and_formula_recalculation(
         "business": {},
         "definition": {
             "measureType": "calculated",
-            "nativePlanningLevelId": "pt",
+            "nativeDimensionId": "pt",
             "calculationType": "AggregateFirst",
             "formula": {
                 "displayText": "ABS(FQTY-SQTY)",
@@ -285,13 +285,13 @@ def test_initialisation_reconstructs_sum_and_average_on_other_levels(clickhouse_
         client,
         {
             "objectId": "pt_report",
-            "kind": "planningLevel",
+            "kind": "dimension",
             "name": "Report",
             "displayName": "Report",
             "definition": {
                 "population": {
                     "operation": "distinct_projection",
-                    "sourcePlanningLevelId": "base",
+                    "sourceDimensionId": "base",
                 },
                 "grain": {
                     "keyIds": ["report_product"],
@@ -334,7 +334,7 @@ def test_failed_generation_keeps_all_previous_bindings(clickhouse_app):
         "business": {},
         "definition": {
             "measureType": "calculated",
-            "nativePlanningLevelId": "base",
+            "nativeDimensionId": "base",
             "calculationType": "CalculateFirst",
             "aggregation": AGG,
             "formula": {
@@ -437,7 +437,7 @@ def test_time_and_non_time_policies_and_order(
     )
     dim = {
         "objectId": "dim_time",
-        "kind": "dimension",
+        "kind": "dimensionMembers",
         "name": "Time",
         "displayName": "Time",
         "isTimeDim": True,
@@ -467,10 +467,10 @@ def test_time_and_non_time_policies_and_order(
             },
         },
     }
-    assert_post(client, "/dimensions", dim)
+    assert_post(client, "/dimension-members", dim)
     base = {
         "objectId": "base",
-        "kind": "planningLevel",
+        "kind": "dimension",
         "name": "Base",
         "displayName": "Base",
         "definition": {
@@ -486,11 +486,11 @@ def test_time_and_non_time_policies_and_order(
                     for i, key in enumerate(["product", "location", "date"], 1)
                 ],
             },
-            "dimensionBindings": [
+            "memberBindings": [
                 {
-                    "dimensionId": "dim_time",
+                    "memberCatalogId": "dim_time",
                     "keyMappings": [
-                        {"grainColumnId": "date", "dimensionColumnId": "date"}
+                        {"grainColumnId": "date", "memberColumnId": "date"}
                     ],
                     "selectedAttributeColumnIds": [],
                 }
@@ -502,13 +502,13 @@ def test_time_and_non_time_policies_and_order(
         client,
         {
             "objectId": "product",
-            "kind": "planningLevel",
+            "kind": "dimension",
             "name": "Product",
             "displayName": "Product",
             "definition": {
                 "population": {
                     "operation": "distinct_projection",
-                    "sourcePlanningLevelId": "base",
+                    "sourceDimensionId": "base",
                 },
                 "grain": {
                     "keyIds": ["product"],
@@ -527,7 +527,7 @@ def test_time_and_non_time_policies_and_order(
     assert (
         client.put(
             BASE,
-            json={"basePlanningLevelId": "base", "changeReason": ""},
+            json={"baseDimensionId": "base", "changeReason": ""},
             headers={"If-Match": str(rev["version"])},
         ).status_code
         == 200
@@ -552,6 +552,9 @@ def test_time_and_non_time_policies_and_order(
         "col_4",
         agg={**AGG, "nonTime": non_time, "time": time_method, "order": order},
     )
+    # Product is an intentional reporting target, so make it a Transaction-native
+    # context under the current representation-placement contract.
+    transaction(client, "product_reporting", tx, "product", [("product", "col_1")])
     assert build(client, "base")["state"] == "succeeded"
     assert build(client, "product")["state"] == "succeeded"
     run = build_values(client)
@@ -564,17 +567,17 @@ def test_time_and_non_time_policies_and_order(
 def test_dimension_attribute_hierarchy_and_parent_attribute_keys(
     clickhouse_app, exposed_projection
 ):
-    from backend.app.engine.contracts import digest
+    from backend.app.engine.sql.contracts import digest
 
     client, _, _, _ = clickhouse_app
     setup(client)
     catalog = managed(client, "Products", b"product,brand\nP1,BrandA\n")
     assert_post(
         client,
-        "/dimensions",
+        "/dimension-members",
         {
             "objectId": "products_dim",
-            "kind": "dimension",
+            "kind": "dimensionMembers",
             "name": "Products",
             "displayName": "Products",
             "isTimeDim": False,
@@ -595,23 +598,21 @@ def test_dimension_attribute_hierarchy_and_parent_attribute_keys(
             },
         },
     )
-    original = client.get(BASE + "/planning-levels/base").json()
+    original = client.get(BASE + "/dimensions/base").json()
     payload = {
         k: v
         for k, v in original.items()
         if k not in ("modelId", "revisionId", "version", "createdAt", "updatedAt")
     }
-    payload["definition"]["dimensionBindings"] = [
+    payload["definition"]["memberBindings"] = [
         {
-            "dimensionId": "products_dim",
-            "keyMappings": [
-                {"grainColumnId": "product", "dimensionColumnId": "product"}
-            ],
+            "memberCatalogId": "products_dim",
+            "keyMappings": [{"grainColumnId": "product", "memberColumnId": "product"}],
             "selectedAttributeColumnIds": ["brand"] if exposed_projection else [],
         }
     ]
     result = client.put(
-        BASE + "/planning-levels/base",
+        BASE + "/dimensions/base",
         json=payload,
         headers={"If-Match": str(original["version"])},
     )
@@ -623,13 +624,13 @@ def test_dimension_attribute_hierarchy_and_parent_attribute_keys(
         client,
         {
             "objectId": "brands",
-            "kind": "planningLevel",
+            "kind": "dimension",
             "name": "Brands",
             "displayName": "Brands",
             "definition": {
                 "population": {
                     "operation": "distinct_projection",
-                    "sourcePlanningLevelId": "base",
+                    "sourceDimensionId": "base",
                 }
                 if exposed_projection
                 else {"operation": "source", "sourceId": catalog},
@@ -650,7 +651,7 @@ def test_dimension_attribute_hierarchy_and_parent_attribute_keys(
     )
     assert build(client, "brands")["state"] == "succeeded"
     paths = client.get(BASE + "/measures/FQTY/capabilities").json()
-    path = next(p for p in paths["levels"] if p["planningLevelId"] == "brands")
+    path = next(p for p in paths["levels"] if p["dimensionId"] == "brands")
     assert path["relationship"] == "roll_up" and path["readable"]
     result = build_values(client)
     assert result["state"] == "succeeded", result
@@ -722,7 +723,7 @@ def test_decimal_precision_overflow_does_not_publish_candidates(clickhouse_app):
             "business": {},
             "definition": {
                 "measureType": "calculated",
-                "nativePlanningLevelId": "base",
+                "nativeDimensionId": "base",
                 "calculationType": "CalculateFirst",
                 "aggregation": AGG,
                 "formula": {
@@ -896,7 +897,7 @@ def test_rebuilds_reuse_exactly_two_tables_per_level_and_isolate_candidates(
 
     # Status route is checked below through the service to keep this test about storage.
     async def preview_population():
-        return await container.planning_builds.status(
+        return await container.dimension_builds.status(
             "default_model", "revision_1", "pt", preview=True
         )
 
@@ -905,7 +906,7 @@ def test_rebuilds_reuse_exactly_two_tables_per_level_and_isolate_candidates(
 
 def test_generation_collection_preserves_shared_tables_and_active_rows(clickhouse_app):
     from datetime import timedelta
-    from backend.app.engine.artifacts import ArtifactCollector
+    from backend.app.warehouse.retention import ArtifactCollector
     from backend.app.services.base import now
 
     client, admin, database, _ = clickhouse_app
@@ -977,7 +978,7 @@ def test_legacy_tables_are_adopted_and_obsolete_tables_removed(clickhouse_app):
         for resource in resources:
             binding = await repo.get(
                 "engine_artifact_bindings",
-                container.planning_builds.storage.identity(resource),
+                container.dimension_builds.storage.identity(resource),
             )
             artifact = await repo.get(
                 "engine_artifacts", {"artifactId": binding["artifactId"]}
@@ -989,7 +990,7 @@ def test_legacy_tables_are_adopted_and_obsolete_tables_removed(clickhouse_app):
             )
             await repo.delete(
                 "engine_table_resources",
-                container.planning_builds.storage.identity(resource),
+                container.dimension_builds.storage.identity(resource),
             )
             artifacts.append(artifact)
         return artifacts
@@ -1053,7 +1054,7 @@ def test_removed_measure_columns_retire_and_readdition_uses_new_storage_slot(
     clickhouse_app,
 ):
     from datetime import timedelta
-    from backend.app.engine.artifacts import ArtifactCollector
+    from backend.app.warehouse.retention import ArtifactCollector
     from backend.app.services.base import now
 
     client, admin, database, _ = clickhouse_app
@@ -1124,9 +1125,9 @@ def test_removed_measure_columns_retire_and_readdition_uses_new_storage_slot(
 def test_one_time_table_rename_resumes_and_preserves_snapshots(
     clickhouse_app, monkeypatch, tmp_path
 ):
-    from backend.app.engine.contracts import digest
-    from backend.app.engine.table_storage import TableStorage
-    from backend.scripts.rename_planning_tables import PlanningTableRename
+    from backend.app.engine.sql.contracts import digest
+    from backend.app.warehouse.current_storage import TableStorage
+    from backend.scripts.rename_planning_tables import DimensionTableRename
 
     client, admin, database, _ = clickhouse_app
     naming = TableStorage.physical_name
@@ -1144,7 +1145,7 @@ def test_one_time_table_rename_resumes_and_preserves_snapshots(
     before, _ = values(client, "base")
     monkeypatch.setattr(TableStorage, "physical_name", staticmethod(naming))
     container = client.app.state.container
-    migration = PlanningTableRename(
+    migration = DimensionTableRename(
         container.store,
         container.warehouse_repository,
         container.workspace_gate,
@@ -1161,7 +1162,7 @@ def test_one_time_table_rename_resumes_and_preserves_snapshots(
     monkeypatch.setattr(migration, "rewrite_metadata", injected_failure)
     with pytest.raises(RuntimeError, match="Interrupted"):
         client.portal.call(migration.apply)
-    assert client.get(BASE + "/planning-levels").status_code == 503
+    assert client.get(BASE + "/dimensions").status_code == 503
     monkeypatch.setattr(migration, "rewrite_metadata", patch)
     journal = client.portal.call(migration.apply)
     assert journal["state"] == "complete"
@@ -1258,7 +1259,7 @@ def test_formula_inputs_materialise_without_edit_basis(
             "business": {},
             "definition": {
                 "measureType": "calculated",
-                "nativePlanningLevelId": "base",
+                "nativeDimensionId": "base",
                 "calculationType": "AggregateFirst",
                 "resultType": {"type": "number", "nullable": True},
                 "formula": {
@@ -1298,7 +1299,7 @@ def test_genuine_nonnullable_native_null_still_fails(clickhouse_app):
             "business": {},
             "definition": {
                 "measureType": "calculated",
-                "nativePlanningLevelId": "base",
+                "nativeDimensionId": "base",
                 "calculationType": "CalculateFirst",
                 "aggregation": AGG,
                 "resultType": {"type": "number", "nullable": False},
@@ -1360,10 +1361,10 @@ def test_materialisation_reverses_axes_on_irregular_intersections(
     calendar = managed(client, "Calendar", b"date\n2026-01-01\n2026-01-02\n")
     assert_post(
         client,
-        "/dimensions",
+        "/dimension-members",
         {
             "objectId": "Time",
-            "kind": "dimension",
+            "kind": "dimensionMembers",
             "name": "Time",
             "displayName": "Time",
             "isTimeDim": True,
@@ -1392,7 +1393,7 @@ def test_materialisation_reverses_axes_on_irregular_intersections(
         client,
         {
             "objectId": "base",
-            "kind": "planningLevel",
+            "kind": "dimension",
             "name": "Base",
             "displayName": "Base",
             "definition": {
@@ -1408,11 +1409,11 @@ def test_materialisation_reverses_axes_on_irregular_intersections(
                         for index, name in enumerate(["product", "location", "date"], 1)
                     ],
                 },
-                "dimensionBindings": [
+                "memberBindings": [
                     {
-                        "dimensionId": "Time",
+                        "memberCatalogId": "Time",
                         "keyMappings": [
-                            {"grainColumnId": "date", "dimensionColumnId": "date"}
+                            {"grainColumnId": "date", "memberColumnId": "date"}
                         ],
                         "selectedAttributeColumnIds": [],
                     }
@@ -1424,13 +1425,13 @@ def test_materialisation_reverses_axes_on_irregular_intersections(
         client,
         {
             "objectId": "pt",
-            "kind": "planningLevel",
+            "kind": "dimension",
             "name": "Product",
             "displayName": "Product",
             "definition": {
                 "population": {
                     "operation": "distinct_projection",
-                    "sourcePlanningLevelId": "base",
+                    "sourceDimensionId": "base",
                 },
                 "grain": {
                     "keyIds": ["product"],
@@ -1449,7 +1450,7 @@ def test_materialisation_reverses_axes_on_irregular_intersections(
     assert (
         client.put(
             BASE,
-            json={"basePlanningLevelId": "base", "changeReason": ""},
+            json={"baseDimensionId": "base", "changeReason": ""},
             headers={"If-Match": str(rev["version"])},
         ).status_code
         == 200
@@ -1482,7 +1483,7 @@ def test_materialisation_reverses_axes_on_irregular_intersections(
 def test_time_only_materialisation_uses_time_policy_and_each_parent_period(
     clickhouse_app, time_method, expected
 ):
-    from backend.app.engine.contracts import digest
+    from backend.app.engine.sql.contracts import digest
 
     client, _, _, _ = clickhouse_app
     pop = managed(
@@ -1497,10 +1498,10 @@ def test_time_only_materialisation_uses_time_policy_and_each_parent_period(
     )
     assert_post(
         client,
-        "/dimensions",
+        "/dimension-members",
         {
             "objectId": "Time",
-            "kind": "dimension",
+            "kind": "dimensionMembers",
             "name": "Time",
             "displayName": "Time",
             "isTimeDim": True,
@@ -1530,7 +1531,7 @@ def test_time_only_materialisation_uses_time_policy_and_each_parent_period(
         client,
         {
             "objectId": "base",
-            "kind": "planningLevel",
+            "kind": "dimension",
             "name": "Daily",
             "displayName": "Daily",
             "definition": {
@@ -1546,11 +1547,11 @@ def test_time_only_materialisation_uses_time_policy_and_each_parent_period(
                         for i, name in enumerate(["product", "day"], 1)
                     ],
                 },
-                "dimensionBindings": [
+                "memberBindings": [
                     {
-                        "dimensionId": "Time",
+                        "memberCatalogId": "Time",
                         "keyMappings": [
-                            {"grainColumnId": "day", "dimensionColumnId": "day"}
+                            {"grainColumnId": "day", "memberColumnId": "day"}
                         ],
                         "selectedAttributeColumnIds": ["week"],
                     }
@@ -1562,13 +1563,13 @@ def test_time_only_materialisation_uses_time_policy_and_each_parent_period(
         client,
         {
             "objectId": "pt",
-            "kind": "planningLevel",
+            "kind": "dimension",
             "name": "Weekly",
             "displayName": "Weekly",
             "definition": {
                 "population": {
                     "operation": "distinct_projection",
-                    "sourcePlanningLevelId": "base",
+                    "sourceDimensionId": "base",
                 },
                 "grain": {
                     "keyIds": ["product", "week"],
@@ -1588,11 +1589,11 @@ def test_time_only_materialisation_uses_time_policy_and_each_parent_period(
                         },
                     ],
                 },
-                "dimensionBindings": [
+                "memberBindings": [
                     {
-                        "dimensionId": "Time",
+                        "memberCatalogId": "Time",
                         "keyMappings": [
-                            {"grainColumnId": "week", "dimensionColumnId": "week"}
+                            {"grainColumnId": "week", "memberColumnId": "week"}
                         ],
                         "selectedAttributeColumnIds": [],
                     }
@@ -1604,7 +1605,7 @@ def test_time_only_materialisation_uses_time_policy_and_each_parent_period(
     assert (
         client.put(
             BASE,
-            json={"basePlanningLevelId": "base", "changeReason": ""},
+            json={"baseDimensionId": "base", "changeReason": ""},
             headers={"If-Match": str(rev["version"])},
         ).status_code
         == 200
@@ -1672,7 +1673,7 @@ def test_six_place_storage_and_coarser_values_use_rounded_base(clickhouse_app):
             "business": {},
             "definition": {
                 "measureType": "calculated",
-                "nativePlanningLevelId": "base",
+                "nativeDimensionId": "base",
                 "calculationType": "CalculateFirst",
                 "aggregation": AGG,
                 "resultType": {"type": "number", "nullable": True},
@@ -1762,7 +1763,9 @@ def test_versioned_build_discovers_each_level_schema_once_and_records_timings(
 
     async def recorded():
         return await client.app.state.container.store.repository.list(
-            "engine_run_steps", {"runId": run["runId"]}, key="stepId"
+            "engine_run_steps",
+            {"runId": run.get("measureRunId", run["runId"])},
+            key="stepId",
         )
 
     steps = client.portal.call(recorded)

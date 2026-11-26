@@ -5,10 +5,8 @@ from .criteria import BindingLookup, RunLookup
 
 
 class ActivationWriter:
-    def __init__(self, documents):
-        from . import metadata_repositories
-
-        self.repositories = metadata_repositories(documents)
+    def __init__(self, repositories):
+        self.repositories = repositories
 
     async def bind(self, identity, binding):
         lookup = BindingLookup.from_record(identity)

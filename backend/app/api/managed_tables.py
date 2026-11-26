@@ -1,15 +1,24 @@
 from fastapi import APIRouter, Depends, Header, Query, Response
+
 from ..core.http import expected_version
 from ..schemas.common import Identifier
 from ..schemas.managed_tables import ManagedDefinition, ManagedEnable
+from ..schemas.pivot_suggestions import PivotSuggestionInput, PivotSuggestionResult
 
 
 class ManagedTablesAPI:
-    def __init__(self, service):
+    def __init__(self, service, suggestions=None):
         self.service = service
+        self.suggestions = suggestions
         self.router = APIRouter(
             prefix="/models/{model_id}/revisions/{revision_id}/managed-tables",
             tags=["managed-tables"],
+        )
+        self.router.add_api_route(
+            "/pivot-suggestion",
+            self.suggest_pivot,
+            methods=["POST"],
+            response_model=PivotSuggestionResult,
         )
         for path, method, handler, status in [
             ("", "GET", self.list, 200),
@@ -36,6 +45,14 @@ class ManagedTablesAPI:
         limit: int = Query(50, ge=1, le=100),
     ):
         return await self.service.list(model_id, revision_id, cursor, limit)
+
+    async def suggest_pivot(
+        self,
+        model_id: Identifier,
+        revision_id: Identifier,
+        payload: PivotSuggestionInput,
+    ):
+        return await self.suggestions.suggest(model_id, revision_id, payload.tableId)
 
     async def get(
         self,
@@ -102,9 +119,15 @@ class ManagedTablesAPI:
         )
 
     async def preview(
-        self, model_id: Identifier, revision_id: Identifier, source_id: Identifier
+        self,
+        model_id: Identifier,
+        revision_id: Identifier,
+        source_id: Identifier,
+        sql_only: bool = False,
     ):
-        return await self.service.preview(model_id, revision_id, source_id)
+        return await self.service.preview(
+            model_id, revision_id, source_id, sql_only=sql_only
+        )
 
     async def schema(
         self,
@@ -121,8 +144,11 @@ class ManagedTablesAPI:
         revision_id: Identifier,
         source_id: Identifier,
         payload: ManagedDefinition,
+        sql_only: bool = False,
     ):
-        return await self.service.preview(model_id, revision_id, source_id, payload)
+        return await self.service.preview(
+            model_id, revision_id, source_id, payload, sql_only=sql_only
+        )
 
     async def repair(
         self,

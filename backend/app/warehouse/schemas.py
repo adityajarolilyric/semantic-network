@@ -31,6 +31,7 @@ class WarehouseStatus(Schema):
 
 
 class TablePreview(Schema):
+    sql: str | None = None
     table: str
     columns: list[WarehouseColumn]
     rows: list[list[str | None]]
@@ -44,5 +45,6 @@ class CsvImportResult(Schema):
     rowCount: int
     columns: list[WarehouseColumn]
     replayed: bool = False
+    semanticSetupComplete: bool = True
     warnings: list[str] = Field(default_factory=list)
     status: Literal["created"] = "created"

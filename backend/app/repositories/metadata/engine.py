@@ -2,12 +2,12 @@
 
 from .collection import CollectionRepository
 from .criteria import (
-    RunLookup,
     ArtifactLookup,
     BindingLookup,
-    RunInputLookup,
     PinLookup,
     ReadLeaseLookup,
+    RunInputLookup,
+    RunLookup,
     StepLookup,
     TableResourceLookup,
 )

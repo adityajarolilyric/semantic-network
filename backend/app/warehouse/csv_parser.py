@@ -1,9 +1,9 @@
 import csv
+import io
+import re
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation
-import io
-import re
 
 from ..core.errors import MetadataError
 from .schemas import WarehouseColumn

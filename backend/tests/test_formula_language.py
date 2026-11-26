@@ -51,7 +51,7 @@ def test_validate_counts_uses_output_level_and_is_read_only(populated):
         "objectId": "count_test",
         "name": "Count Test",
         "displayText": "COUNT_IF([FQTY] > 0)",
-        "nativePlanningLevelId": "pl_pt",
+        "nativeDimensionId": "pl_pt",
     }
     response = populated.post(ROOT + "/measures/formula/validate", json=request)
     assert response.status_code == 200, response.text
@@ -79,17 +79,17 @@ def test_counts_reject_separate_counting_level_and_calculate_first(populated):
     payload = {
         "objectId": "count",
         "displayText": "COUNT_ROWS()",
-        "nativePlanningLevelId": "pl_pt",
+        "nativeDimensionId": "pl_pt",
     }
     assert populated.post(ROOT + "/measures/formula/validate", json=payload).json()[
         "valid"
     ]
-    payload["countingPlanningLevelId"] = "pl_plt"
+    payload["countingDimensionId"] = "pl_plt"
     assert (
         populated.post(ROOT + "/measures/formula/validate", json=payload).status_code
         == 422
     )
-    payload.pop("countingPlanningLevelId")
+    payload.pop("countingDimensionId")
     payload["calculationType"] = "CalculateFirst"
     assert not populated.post(ROOT + "/measures/formula/validate", json=payload).json()[
         "valid"
@@ -106,14 +106,14 @@ def test_count_attributes_resolve_at_output_level(populated):
     payload = {
         "objectId": "count_attr",
         "displayText": "COUNT_DISTINCT(GRAIN([product_id]))",
-        "nativePlanningLevelId": "pl_plt",
+        "nativeDimensionId": "pl_plt",
     }
     result = populated.post(ROOT + "/measures/formula/validate", json=payload)
     assert result.status_code == 200, result.text
     assert result.json()["valid"], result.text
     ref = result.json()["expression"]["arguments"][0]
     assert ref["type"] == "attributeRef"
-    assert ref["planningLevelId"] == "pl_plt"
+    assert ref["dimensionId"] == "pl_plt"
 
 
 def test_validation_detects_indirect_formula_cycle(populated):
@@ -124,7 +124,7 @@ def test_validation_detects_indirect_formula_cycle(populated):
             "objectId": source["objectId"],
             "name": source["name"],
             "displayText": "[measure_error] + 1",
-            "nativePlanningLevelId": source["definition"]["nativePlanningLevelId"],
+            "nativeDimensionId": source["definition"]["nativeDimensionId"],
         },
     )
     assert response.status_code == 200, response.text
@@ -147,7 +147,7 @@ def test_qualified_column_references_share_one_syntax(populated, text):
         json={
             "objectId": "qualified",
             "displayText": text,
-            "nativePlanningLevelId": "pl_plt",
+            "nativeDimensionId": "pl_plt",
         },
     )
     assert response.status_code == 200, response.text
@@ -161,7 +161,7 @@ def test_qualified_reference_still_requires_grain_path(populated):
         json={
             "objectId": "qualified",
             "displayText": "[Location.location_id]",
-            "nativePlanningLevelId": "pl_pt",
+            "nativeDimensionId": "pl_pt",
         },
     )
     assert response.status_code == 200, response.text
@@ -171,7 +171,7 @@ def test_qualified_reference_still_requires_grain_path(populated):
         json={
             "objectId": "qualified",
             "displayText": "COUNT_DISTINCT([PLT.location_id])",
-            "nativePlanningLevelId": "pl_plt",
+            "nativeDimensionId": "pl_plt",
         },
     )
     assert response.json()["valid"], response.text
@@ -183,7 +183,7 @@ def test_qualified_names_do_not_bypass_transaction_measures(populated):
         json={
             "objectId": "qualified",
             "displayText": "[Forecast.forecast_qty]",
-            "nativePlanningLevelId": "pl_plt",
+            "nativeDimensionId": "pl_plt",
         },
     )
     assert not response.json()["valid"]
@@ -205,7 +205,7 @@ def test_qualified_reference_ambiguity_is_rejected(populated):
         json={
             "objectId": "qualified",
             "displayText": "[Product.product_id]",
-            "nativePlanningLevelId": "pl_plt",
+            "nativeDimensionId": "pl_plt",
         },
     ).json()
     assert not result["valid"]
@@ -214,11 +214,11 @@ def test_qualified_reference_ambiguity_is_rejected(populated):
         json={
             "objectId": "qualified",
             "displayText": "[dim_product.product_id]",
-            "nativePlanningLevelId": "pl_plt",
+            "nativeDimensionId": "pl_plt",
         },
     ).json()
     assert result["valid"]
-    assert result["expression"]["dimensionId"] == "dim_product"
+    assert result["expression"]["memberCatalogId"] == "dim_product"
 
 
 def test_saved_count_levels_normalize_without_mutating_history(populated):
@@ -226,8 +226,8 @@ def test_saved_count_levels_normalize_without_mutating_history(populated):
     from backend.app.domain.measure_policies import normalize_measure
 
     old = definition("measure_error")
-    old["definition"]["countingPlanningLevelId"] = "pl_plt"
-    old["definition"]["nativePlanningLevelId"] = "pl_pt"
+    old["definition"]["countingDimensionId"] = "pl_plt"
+    old["definition"]["nativeDimensionId"] = "pl_pt"
     old["definition"]["formula"] = {
         "displayText": 'IF(GRAIN([product_id]) = "A", COUNT_ROWS(), COUNT_ROWS())',
         "languageVersion": "planning-v1",
@@ -250,19 +250,19 @@ def test_saved_count_levels_normalize_without_mutating_history(populated):
     before = deepcopy(old)
     updated = normalize_measure(old)
     assert old == before
-    assert updated["definition"]["nativePlanningLevelId"] == "pl_plt"
-    assert "countingPlanningLevelId" not in updated["definition"]
+    assert updated["definition"]["nativeDimensionId"] == "pl_plt"
+    assert "countingDimensionId" not in updated["definition"]
     expr = updated["definition"]["formula"]["expression"]
     assert expr["arguments"][0]["left"] == {
         "type": "attributeRef",
-        "planningLevelId": "pl_pt",
+        "dimensionId": "pl_pt",
         "columnId": "pt_product",
     }
     response = populated.post(
         ROOT + "/measures/formula/validate",
         json={
             "objectId": "legacy",
-            "nativePlanningLevelId": "pl_plt",
+            "nativeDimensionId": "pl_plt",
             "displayText": updated["definition"]["formula"]["displayText"],
         },
     )
@@ -286,17 +286,17 @@ def test_unavailable_formula_measures_use_names_instead_of_ids(populated):
                     }
                 ],
             },
-            "dimensionBindings": [],
+            "memberBindings": [],
         },
     }
-    response = populated.post(ROOT + "/planning-levels", json=level)
+    response = populated.post(ROOT + "/dimensions", json=level)
     assert response.status_code == 201, response.text
     response = populated.post(
         ROOT + "/measures/formula/validate",
         json={
             "objectId": "unavailable_formula",
             "displayText": "[FQTY] + [SQTY]",
-            "nativePlanningLevelId": "independent_qty",
+            "nativeDimensionId": "independent_qty",
         },
     )
     assert response.status_code == 200, response.text

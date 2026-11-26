@@ -1,145 +1,341 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { expect, it, vi } from 'vitest'
 import { DimensionEditor } from '../src/metadata/editors/DimensionEditor'
-import { emptySnapshot, type Dimension } from '../src/metadata/types'
-const initial: Dimension = {
-  objectId: 'd_product',
-  kind: 'dimension',
-  name: 'Product',
-  displayName: 'Legacy label',
+import { projectionBindings } from '../src/metadata/projectionBindings'
+import { metadataApi } from '../src/metadata/api'
+import {
+  emptySnapshot,
+  type Binding,
+  type DimensionMembers,
+  type GrainColumn,
+  type Dimension,
+} from '../src/metadata/types'
+
+const dim = (objectId: string, keys: string[]): DimensionMembers => ({
+  objectId,
+  name: objectId,
+  displayName: objectId,
   description: '',
+  kind: 'dimensionMembers',
   isTimeDim: false,
   definition: {
-    sourceId: 'source_1',
-    columns: [],
-    keyColumnIds: [],
-    labelColumnId: '',
-    attributeColumnIds: [],
+    sourceId: 'source',
+    columns: [...keys, 'label'].map((id) => ({
+      columnId: id,
+      sourceColumnId: id,
+      name: id,
+      displayName: id,
+    })),
+    keyColumnIds: keys,
+    labelColumnId: 'label',
+    attributeColumnIds: [...keys, 'label'],
     time: null,
   },
+})
+const dimensionMembers = [
+  dim('Product', ['product']),
+  dim('Location', ['location']),
+  dim('Time', ['date']),
+  dim('Composite', ['product', 'location']),
+]
+const binding = (memberCatalogId: string, keys: string[]): Binding => ({
+  memberCatalogId,
+  keyMappings: keys.map((key) => ({ memberColumnId: key, grainColumnId: 'parent_' + key })),
+  selectedAttributeColumnIds: ['label'],
+})
+const parent: Dimension = {
+  objectId: 'plt',
+  kind: 'dimension',
+  name: 'PLT',
+  displayName: 'PLT',
+  description: '',
+  definition: {
+    population: { operation: 'source', sourceId: 'source' },
+    grain: {
+      keyIds: ['parent_product', 'parent_location', 'parent_date'],
+      columns: ['product', 'location', 'date'].map((key) => ({
+        grainColumnId: 'parent_' + key,
+        name: key,
+        populationRef: { columnId: key },
+      })),
+    },
+    memberBindings: [
+      binding('Product', ['product']),
+      binding('Location', ['location']),
+      binding('Time', ['date']),
+      binding('Composite', ['product', 'location']),
+    ],
+  },
 }
-function setup(input: Dimension = initial) {
+const projected = (...keys: string[]): GrainColumn[] =>
+  keys.map((key) => ({
+    grainColumnId: 'child_' + key,
+    name: key,
+    populationRef: { sourceGrainColumnId: 'parent_' + key },
+  }))
+it('inherits by stable lineage, remaps child keys, and excludes incomplete composite keys', () => {
+  const result = projectionBindings(parent, projected('product', 'date'), [], dimensionMembers)
+  expect(result.map((b) => b.memberCatalogId)).toEqual(['Product', 'Time'])
+  expect(result[0].keyMappings).toEqual([
+    { memberColumnId: 'product', grainColumnId: 'child_product' },
+  ])
+  expect(
+    projectionBindings(parent, projected('product', 'location'), [], dimensionMembers).map(
+      (b) => b.memberCatalogId,
+    ),
+  ).toEqual(['Product', 'Location', 'Composite'])
+  expect(parent.definition.memberBindings[0].keyMappings[0].grainColumnId).toBe('parent_product')
+})
+it('preserves deselected attributes on retained dimensionMembers and drops bindings whose keys are removed', () => {
+  const current = projectionBindings(parent, projected('product'), [], dimensionMembers)
+  current[0].selectedAttributeColumnIds = []
+  const result = projectionBindings(parent, projected('product', 'date'), current, dimensionMembers)
+  expect(result[0].selectedAttributeColumnIds).toEqual([])
+  expect(result[1].selectedAttributeColumnIds).toEqual(['label'])
+  expect(
+    projectionBindings(parent, projected('date'), result, dimensionMembers).map(
+      (b) => b.memberCatalogId,
+    ),
+  ).toEqual(['Time'])
+  expect(projectionBindings(undefined, projected('date'), result, dimensionMembers)).toEqual([])
+})
+it('populates projection bindings interactively, supports bulk attributes and offers no grain renaming', async () => {
   const data = emptySnapshot()
-  data.sources.push({
-    objectId: 'source_1',
-    kind: 'source',
-    name: 'Products',
+  const envelope = { modelId: 'm', revisionId: 'r', version: 1, createdAt: '', updatedAt: '' }
+  data.dimensionMembers = dimensionMembers.map((d) => ({ ...d, ...envelope }))
+  data.dimensions = [{ ...parent, ...envelope }]
+  const initial: Dimension = {
+    objectId: 'pt',
+    kind: 'dimension',
+    name: 'PT',
+    displayName: 'PT',
     description: '',
     definition: {
-      tableName: 'Products',
-      inScope: true,
-      keyColumns: [],
-      columns: [
-        { columnId: 'col_1', name: 'product_id', physicalType: 'String', nullable: false },
-        { columnId: 'col_2', name: 'product_name', physicalType: 'String', nullable: true },
-      ],
+      population: { operation: 'distinct_projection', sourceDimensionId: 'plt' },
+      grain: { columns: [], keyIds: [] },
+      memberBindings: [],
     },
-    modelId: 'm',
-    revisionId: 'r',
-    version: 1,
-    createdAt: '',
-    updatedAt: '',
-  })
+  }
   const save = vi.fn(async () => {})
-  const cancel = vi.fn()
   render(
     <DimensionEditor
-      initial={input}
+      initial={initial}
       data={data}
       editing={false}
-      onSave={save}
-      onCancel={cancel}
       busy={false}
+      onSave={save}
+      onCancel={() => {}}
     />,
   )
-  return { save, cancel, user: userEvent.setup() }
-}
-it('uses one column grid, exposes keys automatically, and saves user column labels', async () => {
-  const { save, user } = setup()
-  await user.selectOptions(screen.getByLabelText('Managed table'), 'source_1')
-  expect(screen.queryByLabelText('Object ID')).not.toBeInTheDocument()
-  expect(screen.queryByRole('textbox', { name: 'Display name' })).not.toBeInTheDocument()
-  expect(screen.getByLabelText('Display name for product_id')).toHaveValue('product_id')
-  expect(screen.getByLabelText('Key product_name')).toBeDisabled()
-  await user.click(screen.getByLabelText('Key product_id'))
-  expect(screen.getByLabelText('Expose product_id')).toBeChecked()
-  expect(screen.getByLabelText('Expose product_id')).toBeDisabled()
-  await user.clear(screen.getByLabelText('Display name for product_id'))
-  await user.type(screen.getByLabelText('Display name for product_id'), 'Product ID')
-  expect(screen.getByLabelText('Expose product_name')).toBeChecked()
-  await user.click(screen.getByRole('button', { name: 'Save metadata' }))
+  const user = userEvent.setup()
+  const keys = within(screen.getByRole('group', { name: 'Select keys from Parent keys' }))
+  await user.click(keys.getByLabelText('product'))
+  expect(screen.getByRole('tab', { name: 'Product' })).toHaveAttribute('aria-selected', 'true')
+  expect(screen.queryByRole('tab', { name: 'Composite' })).not.toBeInTheDocument()
+  let attributes = within(screen.getByRole('group', { name: 'Attributes from Product' }))
+  await user.click(attributes.getByRole('button', { name: 'Deselect all' }))
+  expect(attributes.getByLabelText('label')).not.toBeChecked()
+  await user.click(keys.getByLabelText('date'))
+  expect(screen.getByRole('tab', { name: 'Time' })).toBeInTheDocument()
+  expect(
+    within(screen.getByLabelText('Product dimension column 1'))
+      .getAllByRole('option')
+      .map((o) => o.textContent),
+  ).toEqual(['Select…', 'product', 'label'])
+  await user.click(screen.getByRole('tab', { name: 'Time' }))
+  expect(
+    within(screen.getByLabelText('Time dimension column 1'))
+      .getAllByRole('option')
+      .map((o) => o.textContent),
+  ).toEqual(['Select…', 'date', 'label'])
+  await user.click(screen.getByRole('tab', { name: 'Product' }))
+  attributes = within(screen.getByRole('group', { name: 'Attributes from Product' }))
+  expect(attributes.getByLabelText('label')).not.toBeChecked()
+  await user.click(attributes.getByRole('button', { name: 'Select all' }))
+  expect(attributes.getByLabelText('product')).toBeChecked()
+  expect(attributes.getByLabelText('label')).toBeChecked()
+  expect(screen.queryByRole('heading', { name: 'Grain identity' })).not.toBeInTheDocument()
+  expect(screen.queryByLabelText(/Grain name/)).not.toBeInTheDocument()
+  await user.click(keys.getByLabelText('date'))
+  expect(screen.queryByRole('tab', { name: 'Time' })).not.toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'Save' }))
   expect(save).toHaveBeenCalledWith(
     expect.objectContaining({
-      name: 'Product',
-      displayName: 'Product',
       definition: expect.objectContaining({
-        keyColumnIds: ['col_1'],
-        attributeColumnIds: ['col_1', 'col_2'],
-        columns: expect.arrayContaining([
-          expect.objectContaining({ name: 'product_id', displayName: 'Product ID' }),
-        ]),
+        memberBindings: [
+          expect.objectContaining({
+            memberCatalogId: 'Product',
+            selectedAttributeColumnIds: ['product', 'label'],
+          }),
+        ],
       }),
     }),
   )
 })
-it('allows cancelling before keys are selected and makes removed keys exposure editable', async () => {
-  const { cancel, user } = setup()
-  await user.selectOptions(screen.getByLabelText('Managed table'), 'source_1')
-  expect(screen.getByRole('button', { name: 'Save metadata' })).toBeDisabled()
-  expect(screen.getByRole('button', { name: 'Cancel' })).toBeEnabled()
-  await user.click(screen.getByLabelText('Key product_id'))
-  await user.click(screen.getByLabelText('Key product_id'))
-  expect(screen.getByLabelText('Expose product_id')).toBeEnabled()
-  await user.click(screen.getByRole('button', { name: 'Cancel' }))
-  expect(cancel).toHaveBeenCalled()
-})
 
-it('defaults all columns to exposed and lets users deselect non-key attributes', async () => {
-  const { save, user } = setup()
-  await user.selectOptions(screen.getByLabelText('Managed table'), 'source_1')
-  expect(screen.getByLabelText('Expose product_id')).toBeChecked()
-  expect(screen.getByLabelText('Expose product_name')).toBeChecked()
-  await user.click(screen.getByLabelText('Key product_id'))
-  await user.click(screen.getByLabelText('Expose product_name'))
-  await user.click(screen.getByRole('button', { name: 'Save metadata' }))
-  expect(save).toHaveBeenCalledWith(
-    expect.objectContaining({
-      definition: expect.objectContaining({ attributeColumnIds: ['col_1'] }),
-    }),
-  )
-})
-
-it('keeps saved attribute deselections when reopening a dimension', async () => {
-  const saved: Dimension = {
-    ...initial,
+it('offers every column of the selected dimension and saves a non-primary attribute mapping', async () => {
+  const data = emptySnapshot()
+  const envelope = { modelId: 'm', revisionId: 'r', version: 1, createdAt: '', updatedAt: '' }
+  data.dimensionMembers = dimensionMembers.map((d) => ({ ...d, ...envelope }))
+  data.sources = [
+    {
+      ...envelope,
+      objectId: 'source',
+      kind: 'source',
+      name: 'Source',
+      description: '',
+      definition: {
+        tableName: 'Source',
+        inScope: true,
+        keyColumns: [],
+        columns: ['product', 'location', 'date'].map((columnId) => ({
+          columnId,
+          name: columnId,
+          physicalType: 'String',
+          nullable: false,
+        })),
+      },
+    },
+  ]
+  const initial: Dimension = {
+    ...parent,
     definition: {
-      ...initial.definition,
-      columns: [
+      ...parent.definition,
+      memberBindings: [
         {
-          columnId: 'col_1',
-          sourceColumnId: 'col_1',
-          name: 'product_id',
-          displayName: 'Product ID',
-        },
-        {
-          columnId: 'col_2',
-          sourceColumnId: 'col_2',
-          name: 'product_name',
-          displayName: 'Product name',
+          ...binding('Product', ['product']),
+          keyMappings: [{ memberColumnId: 'product', grainColumnId: 'parent_location' }],
         },
       ],
-      keyColumnIds: ['col_1'],
-      labelColumnId: 'col_1',
-      attributeColumnIds: ['col_1'],
     },
   }
-  const { save, user } = setup(saved)
-  expect(screen.getByLabelText('Expose product_name')).not.toBeChecked()
-  await user.click(screen.getByRole('button', { name: 'Save metadata' }))
+  const save = vi.fn(async () => {})
+  render(
+    <DimensionEditor
+      initial={initial}
+      data={data}
+      editing={true}
+      busy={false}
+      onSave={save}
+      onCancel={() => {}}
+    />,
+  )
+  const select = screen.getByLabelText('Product dimension column 1')
+  expect(select).toHaveValue('product')
+  expect(
+    within(select)
+      .getAllByRole('option')
+      .map((o) => o.textContent),
+  ).toEqual(['Select…', 'product', 'label'])
+  const user = userEvent.setup()
+  await user.selectOptions(select, 'label')
+  await user.selectOptions(screen.getByLabelText('Product Dimension column 1'), 'parent_product')
+  expect(screen.queryByLabelText('Location dimension column 1')).not.toBeInTheDocument()
+  await user.selectOptions(screen.getByLabelText('Add dimension'), 'Location')
+  expect(screen.getByRole('tab', { name: 'Location' })).toHaveAttribute('aria-selected', 'true')
+  expect(screen.queryByLabelText('Product dimension column 1')).not.toBeInTheDocument()
+  await user.click(screen.getByRole('tab', { name: 'Product' }))
+  expect(screen.getByLabelText('Product dimension column 1')).toHaveValue('label')
+  await user.click(screen.getByRole('tab', { name: 'Location' }))
+  await user.click(screen.getByRole('button', { name: 'Remove Location binding' }))
+  expect(screen.queryByRole('tab', { name: 'Location' })).not.toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'Save' }))
   expect(save).toHaveBeenCalledWith(
     expect.objectContaining({
-      definition: expect.objectContaining({ attributeColumnIds: ['col_1'] }),
+      definition: expect.objectContaining({
+        memberBindings: [
+          expect.objectContaining({
+            keyMappings: [{ memberColumnId: 'label', grainColumnId: 'parent_product' }],
+          }),
+        ],
+      }),
     }),
   )
+})
+
+it('inherits a parent binding that joins a non-primary dimension attribute', () => {
+  const alternateParent: Dimension = {
+    ...parent,
+    definition: {
+      ...parent.definition,
+      memberBindings: [
+        {
+          memberCatalogId: 'Product',
+          keyMappings: [{ memberColumnId: 'label', grainColumnId: 'parent_product' }],
+          selectedAttributeColumnIds: [],
+        },
+      ],
+    },
+  }
+  expect(
+    projectionBindings(alternateParent, projected('product'), [], dimensionMembers)[0].keyMappings,
+  ).toEqual([{ memberColumnId: 'label', grainColumnId: 'child_product' }])
+  expect(projectionBindings(alternateParent, projected('date'), [], dimensionMembers)).toEqual([])
+})
+
+it('preserves manual attribute-level bindings while parent keys are not retained', () => {
+  const columns: GrainColumn[] = [
+    {
+      grainColumnId: 'brand',
+      name: 'Brand',
+      populationRef: { sourceOutputColumnId: 'brand_output' },
+    },
+  ]
+  const manual: Binding = {
+    memberCatalogId: 'Product',
+    keyMappings: [{ grainColumnId: 'brand', memberColumnId: 'label' }],
+    selectedAttributeColumnIds: [],
+  }
+  expect(projectionBindings(parent, columns, [manual], dimensionMembers)).toEqual([manual])
+})
+
+it('loads selectable parent attributes from schema without requiring a built table', async () => {
+  const base = '/models/m/revisions/r'
+  const request = vi.spyOn(metadataApi, 'request').mockResolvedValue({
+    columns: [
+      { columnId: 'parent_product', name: 'product', role: 'key', physicalType: 'String' },
+      { columnId: 'brand_output', name: 'Brand', role: 'attribute', physicalType: 'String' },
+    ],
+  })
+  const data = emptySnapshot()
+  data.dimensions = [parent as never]
+  data.dimensionMembers = dimensionMembers as never
+  const initial: Dimension = {
+    objectId: 'child',
+    kind: 'dimension',
+    name: 'Child',
+    displayName: 'Child',
+    description: '',
+    definition: {
+      population: { operation: 'distinct_projection', sourceDimensionId: 'plt' },
+      grain: { columns: [], keyIds: [] },
+      memberBindings: [],
+    },
+  }
+  render(
+    <DimensionEditor
+      initial={initial}
+      data={data}
+      editing={false}
+      busy={false}
+      base={base}
+      onSave={vi.fn()}
+      onCancel={() => {}}
+    />,
+  )
+  const attributes = within(
+    screen.getByRole('group', { name: 'Make Parent attribute as a grain key' }),
+  )
+  expect(await attributes.findByLabelText('Brand')).toBeVisible()
+  await userEvent.click(attributes.getByLabelText('Brand'))
+  expect(attributes.getByLabelText('Brand')).toBeChecked()
+  expect(request).toHaveBeenCalledWith(
+    base + '/dimensions/schema',
+    'POST',
+    expect.objectContaining({ objectId: 'plt' }),
+    undefined,
+    expect.any(AbortSignal),
+  )
+  expect(request.mock.calls.some(([path]) => path.endsWith('/table'))).toBe(false)
 })

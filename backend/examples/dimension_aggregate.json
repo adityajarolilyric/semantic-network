@@ -1,0 +1,86 @@
+{
+  "objectId": "dim_product",
+  "name": "Product",
+  "description": "",
+  "schemaVersion": 1,
+  "displayName": "Product",
+  "kind": "dimension",
+  "definition": {
+    "population": {
+      "operation": "source",
+      "sourceId": "src_products"
+    },
+    "grain": {
+      "keyIds": [
+        "product_id"
+      ],
+      "columns": [
+        {
+          "grainColumnId": "product_id",
+          "name": "product_id",
+          "populationRef": {
+            "factorId": null,
+            "columnId": "col_1",
+            "sourceGrainColumnId": null,
+            "sourceOutputColumnId": null
+          }
+        }
+      ]
+    },
+    "populationAttributes": [],
+    "memberBindings": [
+      {
+        "memberCatalogId": "members_product",
+        "lookupCardinality": "many_to_one",
+        "keyMappings": [
+          {
+            "grainColumnId": "product_id",
+            "populationColumnId": null,
+            "memberColumnId": "product_id"
+          }
+        ],
+        "selectedAttributeColumnIds": [
+          "brand"
+        ],
+        "unmatchedMemberPolicy": "reject"
+      }
+    ],
+    "filters": null,
+    "duplicateKeyPolicy": "reject",
+    "nullKeyPolicy": "reject"
+  },
+  "memberCatalogId": "members_product",
+  "memberCatalog": {
+    "sourceId": "src_products",
+    "columns": [
+      {
+        "columnId": "product_id",
+        "name": "product_id",
+        "displayName": "Product ID",
+        "sourceColumnId": "col_1"
+      },
+      {
+        "columnId": "brand",
+        "name": "brand",
+        "displayName": "Brand",
+        "sourceColumnId": "col_2"
+      }
+    ],
+    "keyColumnIds": [
+      "product_id"
+    ],
+    "labelColumnId": "product_id",
+    "attributeColumnIds": [
+      "product_id",
+      "brand"
+    ],
+    "filters": null,
+    "time": null
+  },
+  "isTimeDim": false,
+  "modelId": "default_model",
+  "revisionId": "revision_1",
+  "version": 1,
+  "createdAt": "2026-11-06T00:00:00Z",
+  "updatedAt": "2026-11-06T00:00:00Z"
+}

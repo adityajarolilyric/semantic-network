@@ -1,8 +1,9 @@
+import { ViewSqlButton } from '../../components/ViewSqlButton'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { metadataApi } from '../api'
 import type { AttributeValue, PivotPair, PivotStage, Source, SourceColumn } from '../types'
 import { Check, Checks, Select } from './Fields'
-import { PlanningResult, type PlanningTableStatus } from '../PlanningTablePanel'
+import { PlanningResult, type DimensionTableStatus } from '../DimensionTablePanel'
 const id = (prefix: string) => prefix + crypto.randomUUID().replaceAll('-', '')
 const pair = (): PivotPair => ({
   pairId: id('pair_'),
@@ -24,7 +25,7 @@ export function ObjectPivotEditor({
   objectId: string
   source?: Source
   base?: string
-  kind: 'dimensions' | 'transactions'
+  kind: 'dimension-members' | 'transactions'
   value?: PivotStage | null
   showConfiguration?: boolean
   onChange: (value: PivotStage | null) => void
@@ -49,12 +50,14 @@ export function ObjectPivotEditor({
   const [active, setActive] = useState('')
   const [choices, setChoices] = useState<Record<string, PivotPair['outputs']>>({})
   const [error, setError] = useState('')
+  const [suggestionMessage, setSuggestionMessage] = useState('')
+  const [suggesting, setSuggesting] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [preview, setPreview] = useState<PlanningTableStatus | null>(null)
+  const [preview, setPreview] = useState<DimensionTableStatus | null>(null)
   const previousStage = useRef(value)
   if (value) previousStage.current = value
   const pending = useRef<AbortController | null>(null)
-  useEffect(() => () => pending.current?.abort(), [])
+  useEffect(() => () => pending.current?.abort(), [source?.objectId, inputSignature])
   const latest = useRef(onColumns)
   latest.current = onColumns
   const signature = JSON.stringify(savedValue ?? null)
@@ -109,6 +112,7 @@ export function ObjectPivotEditor({
     setChoices({})
     setPreview(null)
     setError('')
+    setSuggestionMessage('')
     onChange(null)
   }
   function update(patch: Partial<PivotStage>) {
@@ -124,6 +128,44 @@ export function ObjectPivotEditor({
   }
   function updatePair(p: PivotPair, patch: Partial<PivotPair>) {
     update({ pairs: value!.pairs.map((x) => (x.pairId === p.pairId ? { ...x, ...patch } : x)) })
+  }
+  async function suggestPivot() {
+    if (!base || !source) return
+    pending.current?.abort()
+    const controller = new AbortController()
+    pending.current = controller
+    setBusy(true)
+    setSuggesting(true)
+    setError('')
+    setSuggestionMessage('')
+    try {
+      const result = await metadataApi.request<{
+        pivot: PivotStage | null
+        reasons: string[]
+        warnings: string[]
+      }>(
+        base + '/managed-tables/pivot-suggestion',
+        'POST',
+        { tableId: source.objectId },
+        undefined,
+        controller.signal,
+      )
+      if (controller.signal.aborted) return
+      if (result.pivot) {
+        setChoices({})
+        setActive(result.pivot.pairs[0]?.pairId ?? '')
+        onChange(result.pivot)
+      }
+      setSuggestionMessage([...result.reasons, ...result.warnings].join(' '))
+    } catch (error) {
+      if (!controller.signal.aborted)
+        setError(error instanceof Error ? error.message : 'Could not suggest a pivot.')
+    } finally {
+      if (pending.current === controller) {
+        setBusy(false)
+        setSuggesting(false)
+      }
+    }
   }
   async function discover(p: PivotPair) {
     if (!base || !source) return
@@ -194,6 +236,21 @@ export function ObjectPivotEditor({
   }
   return (
     <fieldset className="meta-subsection" disabled={disabled || busy || !source}>
+      <div className="meta-toolbar">
+        <button
+          type="button"
+          className="primary-button"
+          disabled={!base || !source || busy}
+          onClick={() => void suggestPivot()}
+        >
+          {suggesting ? 'Inspecting table…' : 'Suggest pivot'}
+        </button>
+      </div>
+      {suggestionMessage && (
+        <p className="meta-hint" role="status">
+          {suggestionMessage}
+        </p>
+      )}
       {!showConfiguration && (
         <Check
           label="Pivot long-format columns"
@@ -227,10 +284,6 @@ export function ObjectPivotEditor({
       )}
       {value?.enabled && (
         <>
-          <p className="meta-hint">
-            This pivot belongs only to this {kind === 'dimensions' ? 'Dimension' : 'Transaction'}.
-            Other objects using this Managed Table keep their own configuration.
-          </p>
           <div className="managed-pivot-layout">
             <div>
               <Checks
@@ -348,37 +401,47 @@ export function ObjectPivotEditor({
               )}
             </div>
           </div>
-          {!complete && (
-            <p className="meta-hint">
-              Choose the attribute/value columns and Discover output columns to complete this pivot.
-            </p>
-          )}
-          {kind !== 'dimensions' && (
-            <button
-              type="button"
-              className="secondary-button"
-              disabled={!complete || !source || !base}
-              onClick={async () => {
-                setBusy(true)
-                setPreview(null)
-                setError('')
-                try {
-                  setPreview(
-                    await metadataApi.request(base + '/' + kind + '/input/preview', 'POST', {
-                      objectId,
-                      sourceId: source!.objectId,
-                      pivot: value,
-                    }),
+          {!complete}
+          {kind !== 'dimension-members' && (
+            <div className="meta-toolbar">
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={!complete || !source || !base}
+                onClick={async () => {
+                  setBusy(true)
+                  setPreview(null)
+                  setError('')
+                  try {
+                    setPreview(
+                      await metadataApi.request(base + '/' + kind + '/input/preview', 'POST', {
+                        objectId,
+                        sourceId: source!.objectId,
+                        pivot: value,
+                      }),
+                    )
+                  } catch (e) {
+                    setError(e instanceof Error ? e.message : 'Pivot preview failed.')
+                  } finally {
+                    setBusy(false)
+                  }
+                }}
+              >
+                Preview pivot output
+              </button>
+              <ViewSqlButton
+                disabled={busy || !complete || !source || !base}
+                loadSql={(signal) =>
+                  metadataApi.request(
+                    base + '/' + kind + '/input/preview?sql_only=true',
+                    'POST',
+                    { objectId, sourceId: source!.objectId, pivot: value },
+                    undefined,
+                    signal,
                   )
-                } catch (e) {
-                  setError(e instanceof Error ? e.message : 'Pivot preview failed.')
-                } finally {
-                  setBusy(false)
                 }
-              }}
-            >
-              Preview pivot output
-            </button>
+              />
+            </div>
           )}
         </>
       )}

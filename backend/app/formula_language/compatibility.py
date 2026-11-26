@@ -1,6 +1,7 @@
 """Read pre-simplification count definitions without changing historical records."""
 
 import json
+
 from .expressions import contains_counts
 
 
@@ -14,7 +15,11 @@ def source_text(node):
     if kind == "attributeRef":
         return (
             "["
-            + (node.get("dimensionId") or node["planningLevelId"])
+            + (
+                node.get("memberCatalogId")
+                or node.get("dimensionId")
+                or node["transactionId"]
+            )
             + "."
             + node["columnId"]
             + "]"
@@ -50,15 +55,21 @@ def source_text(node):
 
 
 def normalize_count_definition(definition):
-    if "countingPlanningLevelId" not in definition:
+    if "countingDimensionId" not in definition:
         return definition
     result = dict(definition)
-    counting = result.pop("countingPlanningLevelId")
+    counting = result.pop("countingDimensionId")
     expression = (result.get("formula") or {}).get("expression")
     if not counting or not contains_counts(expression):
         return result
-    previous = result["nativePlanningLevelId"]
-    result["nativePlanningLevelId"] = counting
+    previous = (
+        result.get("nativeGrainId")
+        or result.get("nativeDimensionId")
+        or (result.get("outputGrain") or {}).get("objectId")
+    )
+    result["nativeGrainId"] = counting
+    if "nativeDimensionId" in result:
+        result["nativeDimensionId"] = counting
     if previous == counting:
         return result
 
@@ -66,7 +77,7 @@ def normalize_count_definition(definition):
         if node["type"] == "grainRef":
             return {
                 "type": "attributeRef",
-                "planningLevelId": counting if inside_count else previous,
+                "dimensionId": counting if inside_count else previous,
                 "columnId": node["grainColumnId"],
             }
         if node["type"] == "binary":
